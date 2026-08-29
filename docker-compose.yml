@@ -1,32 +1,38 @@
+# Alapertelmezes: a MAR FUTO, sajat MongoDB-det hasznalja (lasd .env -> MONGO_URL).
+#
+#   docker compose up --build
+#
+# Ha nincs sajat Mongo-d, indits egyet a projekttel egyutt:
+#
+#   docker compose --profile local-mongo up --build
+#
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    volumes:
-      - mongo-data:/data/db
-    ports:
-      - "27017:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-
   detector:
     build: .
     restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
     environment:
-      MONGO_URL: mongodb://mongo:27017
-      MONGO_DB: pumpdump
+      # Linux/macOS egyarant: a host.docker.internal a gazdagepre mutat.
+      # Sajat Mongo eseten a mongod-nak elerhetonek kell lennie a docker bridge-rol
+      # (bindIp: 0.0.0.0) -- vagy hasznald lentebb a network_mode: host valtozatot.
+      MONGO_URL: ${MONGO_URL:-mongodb://host.docker.internal:27017}
+      MONGO_DB: ${MONGO_DB:-pumpdump}
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       FUTURES_TESTNET: ${FUTURES_TESTNET:-0}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Csak a "local-mongo" profillal indul el.
+  mongo:
+    image: mongo:7
+    profiles: ["local-mongo"]
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
 
 volumes:
   mongo-data:

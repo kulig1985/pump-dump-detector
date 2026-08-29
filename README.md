@@ -51,6 +51,9 @@ cp .env.example .env
 Szerkeszd a `.env` fájlt:
 
 ```bash
+MONGO_URL=mongodb://host.docker.internal:27017
+MONGO_DB=pumpdump
+
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 TELEGRAM_CHAT_ID=123456789
 
@@ -64,11 +67,48 @@ A `.env` a `.gitignore`-ban van, nem kerül a repóba.
 
 ## 3. Indítás
 
+### a) Van már saját MongoDB-d (alapértelmezés)
+
 ```bash
 docker compose up --build
 ```
 
-Első indításnál a Mongo image letöltése 1-2 perc. Utána a logban ezt kell látnod:
+A `MONGO_URL` alapból a gazdagépre mutat (`host.docker.internal`). Ehhez a mongod-nak
+elérhetőnek kell lennie a Docker bridge felől — a **mongod alapból csak a
+`127.0.0.1`-re hallgat**, ami a konténerből nem érhető el. Két megoldás:
+
+1. **Nyisd meg a mongod-ot a bridge felé** (`/etc/mongod.conf`):
+   ```yaml
+   net:
+     bindIp: 127.0.0.1,172.17.0.1     # a docker0 interfész címe
+   ```
+   `sudo systemctl restart mongod`. A `172.17.0.1`-et az `ip addr show docker0` mutatja meg.
+   Ne írj ide `0.0.0.0`-t tűzfal nélkül.
+
+2. **Vagy futtasd a detectort a host hálózaton** (csak Linuxon) — nem kell mongod-ot
+   piszkálni. A `docker-compose.yml`-ben a `detector` alá:
+   ```yaml
+       network_mode: host
+   ```
+   és a `.env`-ben `MONGO_URL=mongodb://127.0.0.1:27017`.
+
+Ellenőrzés, hogy a konténer eléri-e:
+```bash
+docker compose run --rm detector python -c \
+  "import socket;socket.create_connection(('host.docker.internal',27017),3);print('elerheto')"
+```
+
+### b) Nincs saját MongoDB-d
+
+Indítsd a projekttel együtt — ilyenkor `MONGO_URL=mongodb://mongo:27017` kell a `.env`-be:
+
+```bash
+docker compose --profile local-mongo up --build
+```
+
+### Várt kimenet
+
+Utána a logban ezt kell látnod:
 
 ```
 12:04:11 INFO  db        MongoDB kapcsolat kesz: mongodb://mongo:27017/pumpdump
@@ -94,6 +134,9 @@ Innentől csendben figyel. Ha van mozgás:
 
 Háttérben: `docker compose up -d --build`, log: `docker compose logs -f detector`,
 leállítás: `docker compose down`.
+
+> A lenti `docker compose exec mongo ...` parancsok a `local-mongo` profilra vonatkoznak.
+> Saját Mongo esetén simán `mongosh pumpdump` a gazdagépen.
 
 ### Működik-e? — gyors próba
 
@@ -206,6 +249,7 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 | tünet | ok / megoldás |
 |---|---|
 | `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
+| a detector csendben áll, nincs `MongoDB kapcsolat kesz` sor | nem éri el a Mongo-t — lásd a 3/a pont `bindIp` részét |
 | `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. Vagy közvetlenül: `db.config.updateOne({_id:"telegram"},{$set:{botToken:"...",chatId:"..."}})` |
 | nincs jelzés órák óta | normális nyugodt piacon — nézd a fenti gyors próbát |
 | `WS #1 szakadas ... ujracsatlakozas` | átmeneti hálózati hiba, magától visszaáll (exponenciális backoff) |
