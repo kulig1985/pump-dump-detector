@@ -1,0 +1,16 @@
+# titkok -- SOHA ne kerüljön a repóba
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# adat
+mongo-data/

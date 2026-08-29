@@ -1,0 +1,216 @@
+# pump-dump-detector
+
+Valós idejű pump/dump detektor a **Binance USDⓈ-M Futures** perpetual piacra.
+Másodperces skálán észreveszi a hirtelen ármozgásokat (nem vár gyertyazárásra),
+gyors order book + EMA elemzést végez, pontoz, **Telegramra** küld, és opcionálisan
+(alapból **kikapcsolva**) pozíciót is nyit.
+
+```
+Binance WebSocket -> MarketDataService -> MovementDetector
+   -> (trigger) -> OrderBookAnalyzer + TAAnalyzer -> scoring
+   -> SignalService -> MongoDB -> TelegramNotifier -> [TradingService]
+```
+
+---
+
+## Előfeltételek
+
+| | macOS (Apple Silicon és Intel) | Ubuntu |
+|---|---|---|
+| Docker | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | `sudo apt install docker.io docker-compose-plugin` |
+| ellenőrzés | `docker compose version` | `docker compose version` |
+
+Az image-ek (`python:3.12-slim`, `mongo:7`) hivatalos multi-arch buildek, így
+`arm64` (Apple Silicon) és `amd64` (Ubuntu) alatt is ugyanaz a parancs működik —
+nem kell `--platform` kapcsoló.
+
+> Ubuntun, ha a `docker` parancs `permission denied`-et ad:
+> `sudo usermod -aG docker $USER`, majd be- és kijelentkezés.
+
+---
+
+## 1. Telegram bot létrehozása
+
+1. Telegramban írj a [@BotFather](https://t.me/BotFather)-nek: `/newbot`, adj neki nevet.
+   A válaszban kapott token lesz a `TELEGRAM_BOT_TOKEN`.
+2. Írj egy üzenetet az új botodnak (különben nem tud neked küldeni).
+3. A chat ID-ért nyisd meg böngészőben:
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` → a `result[0].message.chat.id`
+   érték lesz a `TELEGRAM_CHAT_ID`.
+
+Csoportba küldéshez add hozzá a botot a csoporthoz, és a chat ID negatív szám lesz.
+
+## 2. Konfiguráció
+
+```bash
+git clone https://github.com/kulig1985/pump-dump-detector.git
+cd pump-dump-detector
+cp .env.example .env
+```
+
+Szerkeszd a `.env` fájlt:
+
+```bash
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_CHAT_ID=123456789
+
+# csak akkor kell, ha később bekapcsolod az auto tradinget
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+FUTURES_TESTNET=0
+```
+
+A `.env` a `.gitignore`-ban van, nem kerül a repóba.
+
+## 3. Indítás
+
+```bash
+docker compose up --build
+```
+
+Első indításnál a Mongo image letöltése 1-2 perc. Utána a logban ezt kell látnod:
+
+```
+12:04:11 INFO  db        MongoDB kapcsolat kesz: mongodb://mongo:27017/pumpdump
+12:04:11 INFO  config    Config letrehozva defaultokkal: detector
+12:04:11 INFO  main      Kuszobok: 1s 0.30% | 3s 0.60% | 5s 0.90% | min score 60 | cooldown 60s
+12:04:11 INFO  main      Auto trading: KI
+12:04:12 INFO  rest      Perpetual USDT parok: 412 | forgalom >= 50,000,000 USDT: 187 | figyelunk: 187
+12:04:12 INFO  market    Indul 2 WebSocket kapcsolat, osszesen 187 symbol
+12:04:13 INFO  market    WS #1 csatlakozva (150 stream)
+12:04:13 INFO  market    WS #2 csatlakozva (37 stream)
+```
+
+Innentől csendben figyel. Ha van mozgás:
+
+```
+12:05:22 WARN  detector  [PEPEUSDT] TRIGGER LONG | 1s +0.34% | 3s +0.71% | 5s +1.02%
+12:05:22 INFO  orderbook [PEPEUSDT] 20 szint | akadaly LONG iranyban: 0.83% tavolsagra (4.2x atlag)
+12:05:22 INFO  ta        [PEPEUSDT] EMA9 0.0000124 > EMA21 0.0000123 -> bullish (ar van EMA9 felett)
+12:05:22 WARN  signal    [PEPEUSDT] SCORE 78/100 | mozgas 1.1x kuszob, gyorsulo, EMA bullish, wall 0.83%-ra
+12:05:23 INFO  telegram  [PEPEUSDT] ertesites elkuldve
+12:05:23 INFO  trading   [PEPEUSDT] auto trading KI -- nincs megbizas
+```
+
+Háttérben: `docker compose up -d --build`, log: `docker compose logs -f detector`,
+leállítás: `docker compose down`.
+
+### Működik-e? — gyors próba
+
+Nyugodt piacon órákig nem jön jelzés. Ideiglenesen vedd le a küszöböt:
+
+```bash
+docker compose exec mongo mongosh pumpdump --eval \
+  'db.config.updateOne({_id:"detector"},{$set:{priceChangeThreshold1s:0.05}})'
+```
+
+Percen belül jönnie kell triggernek. A config 30 másodpercen belül magától újratöltődik,
+**nem kell újraindítani**. Utána állítsd vissza `0.30`-ra.
+
+### Docker nélkül
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export MONGO_URL=mongodb://localhost:27017      # kell egy futó MongoDB
+python -m app.main
+```
+
+Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
+
+---
+
+## Hangolás
+
+Minden beállítás a MongoDB `config` collectionjében van, három dokumentumban.
+**A DB az igazság** — módosítás után 30 másodpercen belül él, újraindítás nélkül.
+
+```bash
+docker compose exec mongo mongosh pumpdump
+```
+
+```js
+db.config.find().pretty()
+
+// érzékenyebb detektor
+db.config.updateOne({_id:"detector"}, {$set:{priceChangeThreshold1s:0.20, minSignalScore:50}})
+
+// az utolsó 5 jelzés
+db.signals.find().sort({timestamp:-1}).limit(5)
+```
+
+### `detector`
+
+| kulcs | default | mit csinál |
+|---|---|---|
+| `enabled` | `true` | fő kapcsoló |
+| `telegramEnabled` | `true` | értesítés küldése |
+| `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
+| `maxSymbols` | `200` | top N pár forgalom szerint |
+| `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban |
+| `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
+| `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
+| `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
+| `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
+| `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |
+| `emaFast` / `emaSlow` / `emaInterval` | `9 / 21 / 1m` | trendfilter |
+
+### `trading` — alapból kikapcsolva
+
+| kulcs | default |
+|---|---|
+| `autoTradingEnabled` | **`false`** |
+| `positionSizeUSDT` | `20` (notional, nem margin) |
+| `leverage` / `marginMode` | `5` / `ISOLATED` |
+| `takeProfitPct` / `stopLossPct` | `1.5` / `0.8` |
+| `maxOpenPositions` | `3` |
+| `longEnabled` / `shortEnabled` | `true` / `true` |
+| `minScoreForTrade` | `75` |
+
+**Bekapcsolás előtt testneten próbáld:** `FUTURES_TESTNET=1` a `.env`-ben,
+[testnet kulcsok](https://testnet.binancefuture.com/) beírása, majd:
+
+```js
+db.config.updateOne({_id:"trading"}, {$set:{autoTradingEnabled:true}})
+```
+
+A Binance API kulcson engedélyezni kell a Futures kereskedést, és érdemes
+IP-korlátozást beállítani.
+
+---
+
+## Collectionök
+
+Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
+
+- `config` — a fenti három dokumentum
+- `signals` — minden detektált jelzés (score, EMA, order book összefoglaló, Telegram/trade státusz)
+- `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
+- `orders` — a TradingService eredményei és hibái
+
+## Binance API — mit használunk
+
+WebSocket (`wss://fstream.binance.com`):
+- `/stream?streams=<sym>@aggTrade/...` — árfolyam tickek. Futures-ön max 200 subscription /
+  kapcsolat, ezért 150-esével bontjuk.
+- `/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
+
+WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/account.position`.
+
+REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
+`/fapi/v1/exchangeInfo`, `/fapi/v1/ticker/24hr` (symbol univerzum), `/fapi/v1/klines` (EMA),
+`/fapi/v1/leverage`, `/fapi/v1/marginType` (a WS API-ban nincs rájuk metódus).
+
+## Hibakeresés
+
+| tünet | ok / megoldás |
+|---|---|
+| `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
+| `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. Vagy közvetlenül: `db.config.updateOne({_id:"telegram"},{$set:{botToken:"...",chatId:"..."}})` |
+| nincs jelzés órák óta | normális nyugodt piacon — nézd a fenti gyors próbát |
+| `WS #1 szakadas ... ujracsatlakozas` | átmeneti hálózati hiba, magától visszaáll (exponenciális backoff) |
+
+## Figyelmeztetés
+
+Ez egy jelzésdetektor, nem befektetési tanács. Az automatikus kereskedés valódi pénzt
+kockáztat — csak testneten letesztelve, saját felelősségre kapcsold be.
