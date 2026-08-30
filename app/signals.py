@@ -12,7 +12,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from . import orderbook, ta, scoring, telegram, events, binance_rest
+from . import orderbook, ta, scoring, telegram, events, binance_rest, outcome
 
 log = logging.getLogger("signal")
 
@@ -45,6 +45,14 @@ class SignalService:
             orderbook.analyze(symbol, raw["price"], direction, shared),
             ta.analyze(symbol, raw["price"], shared),
         )
+        # Ha a mozgas nem nagyobb erdemben a spreadnel, akkor nem mozgas tortent,
+        # csak valaki atlepte a spreadet -- ezt nem lehet lekereskedni.
+        elutasitas = self._spread_check(raw, ob, shared)
+        if elutasitas:
+            log.info("[%s] %s eldobva: %s", symbol, detector, elutasitas)
+            events.add(f"{symbol:<14} {detector} eldobva -- {elutasitas}")
+            return
+
         score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared)
         recent = self._count_recent(detector, symbol, direction,
                                     shared["signalWindowMinutes"])
@@ -92,6 +100,10 @@ class SignalService:
     async def _save(self, signal, raw, ob, ta_result, parts):
         symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
+        # minden mentett jelzest lemerunk -- a kuszob alattiakat is, kulonben nem
+        # derulne ki, hogy jo helyen van-e a kuszob
+        asyncio.create_task(outcome.track(self.db, result.inserted_id, signal,
+                                          self.cfg.detector))
 
         # A snapshot mentese kulon van kezelve: ha ez elszall, a signal akkor is
         # megmarad, es hangosan megmondjuk, mi a baj -- nem tunik el egy altalanos
@@ -115,6 +127,21 @@ class SignalService:
                       symbol, type(e).__name__, e)
             events.add(f"{symbol:<14} market_snapshots mentes HIBA: {e}")
 
+
+    @staticmethod
+    def _spread_check(raw, ob, cfg):
+        """None, ha rendben; kulonben az elutasitas oka szovegesen."""
+        move = raw.get("movePct")
+        if ob is None or move is None:
+            return None
+        spread = ob.get("spreadPct")
+        if not spread:
+            return None
+        kell = cfg["minMoveToSpreadRatio"] * spread
+        if move < kell:
+            return (f"a mozgas ({move:.3f}%) nem eri el a spread "
+                    f"{cfg['minMoveToSpreadRatio']:.0f}-szereset ({kell:.3f}%)")
+        return None
 
     def _count_recent(self, detector, symbol, direction, window_minutes):
         """Hanyadik ez a jelzes ettol a detektortol, ebben az iranyban, az ablakban."""

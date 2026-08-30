@@ -45,6 +45,8 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |
 | `app/scoring.py` | 0–100 score + indoklás, `contextMode` szerint momentum/reversal ág |
+| `app/outcome.py` | mi történt a jelzés után (MFE/MAE, találati arány score sávonként) |
+| `app/prices.py` | utolsó ismert ár symbolonként, az eredményméréshez |
 | `app/fmt.py` | közös formázók a státusz táblához |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
 | `app/telegram.py` | Bot API sendMessage + üzenetformázás |

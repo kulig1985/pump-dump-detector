@@ -71,8 +71,10 @@ async def analyze(symbol, price, direction, cfg):
     behind_liq = _liquidity(behind, price, max_dist)
     obstacle = sell_wall if direction == "LONG" else buy_wall
 
+    spread_pct = (asks[0][0] - bids[0][0]) / price * 100.0
     result = {
         "refPrice": price,          # a snapshot kozepara, ehhez mertunk
+        "spreadPct": round(spread_pct, 4),
         "nearestBuyWall": buy_wall,
         "nearestSellWall": sell_wall,
         "aheadLiquidity": round(ahead_liq, 2),

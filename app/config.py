@@ -24,6 +24,10 @@ DETECTOR_DEFAULTS = {
                                        # akkor nem hirtelen mozgas -- nem erdekel
     "minSlopePctPerSec": 0.15,         # ennyi %/masodperc kell a jelzeshez
     "minConsistency": 0.70,            # a lepesek ekkora hanyada mutasson egy iranyba
+    "minVolumeFactor": 1.0,            # az ablakban legalabb ennyiszer annyi forgalom
+                                       # legyen, mint a par atlaga ugyanennyi ido alatt
+    "minMoveToSpreadRatio": 3.0,       # a mozgas legyen legalabb ennyiszer a spread --
+                                       # kulonben nem mozgas, csak a spread atlepese
     "volatilityMultiplier": 4.0,       # 0 = ki. A meredekseg-kuszob sose megy a fenti
                                        # ertek ala, de zajos parokon feljebb megy
     # --- csak a tablazatban mutatott 1/3/5 mp-es szamokhoz ---
@@ -34,6 +38,10 @@ DETECTOR_DEFAULTS = {
     "symbolCooldownSec": 60,
     "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
     "signalWindowMinutes": 10,        # ennyi idore visszamenoleg szamoljuk a jelzeseket
+    # --- eredmenymeres: mi tortent a jelzes utan ---
+    "outcomeMinutes": 5,              # ennyi ideig kovetjuk az arat a jelzes utan
+    "outcomeTargetPct": 0.3,          # ezt elerve szamit jonak a jelzes
+    "outcomeStopPct": 0.3,            # ezt elerve szamit rossznak
     # --- order book ---
     "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
     "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall

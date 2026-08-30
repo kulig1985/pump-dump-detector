@@ -50,13 +50,14 @@ class PumpDumpDetector(Detector):
         self.vol = {}                       # symbol -> atlagos abszolut meredekseg
 
     def on_trade(self, trade):
-        return self.on_price(trade.symbol, trade.price, trade.ts)
+        return self.on_price(trade.symbol, trade.price, trade.ts,
+                             trade.price * trade.qty)
 
-    def on_price(self, symbol, price, ts):
+    def on_price(self, symbol, price, ts, quote_qty=0.0):
         """Uj ar. Visszaad egy signal dictet, vagy None-t."""
         c = self.cfg.detector
         h = self.history[symbol]
-        h.append((ts, price))
+        h.append((ts, price, quote_qty))
         # annyi elozmenyt tartunk, amennyi a meredekseghez es a tablazathoz kell
         keep = max(HISTORY_SEC, c["maxSpanSec"] * 2)
         while h and h[0][0] < ts - keep:
@@ -66,7 +67,7 @@ class PumpDumpDetector(Detector):
         changes = {w: self._change(h, ts, w, price,
                                    c["maxRefAgeFactor"], c["minTicksInWindow"])
                    for w in WINDOWS}
-        trend = self._trend(h, c)
+        trend = self._trend(h, c, symbol)
         self.latest[symbol] = (price, changes, trend)
 
         if trend is None:
@@ -99,12 +100,16 @@ class PumpDumpDetector(Detector):
             strength=abs(trend["pctPerSec"]) / threshold,
             accelerating=trend["accelerating"],
             context_mode="momentum",
+            move_pct=abs(trend["totalPct"]),
             detail={
                 "slopePctPerSec": round(trend["pctPerSec"], 5),
                 "slopeThreshold": round(threshold, 5),
                 "consistency": round(trend["consistency"], 3),
                 "spanSec": round(trend["spanSec"], 3),
                 "totalPct": round(trend["totalPct"], 4),
+                "movePct": abs(round(trend["totalPct"], 4)),
+                "volumeUSDT": round(trend["volume"], 2),
+                "expectedVolumeUSDT": round(trend["expectedVolume"], 2),
                 "tradeWindow": c["tradeWindow"],
                 "priceChange": {f"s{w}": v for w, v in changes.items()},
             },
@@ -113,14 +118,16 @@ class PumpDumpDetector(Detector):
                 ("egyiranyusag", f"{trend['consistency']:.0%}   "
                                  f"({c['tradeWindow']} trade / {trend['spanSec']:.2f} mp)"),
                 ("ablakban", f"{trend['totalPct']:+.2f}%"),
+                ("forgalom", f"{money(trend['volume'])} USDT   "
+                             f"(atlag {money(trend['expectedVolume'])})"),
                 ("1s / 3s / 5s", f"{_pct(changes[1])}   {_pct(changes[3])}   "
                                  f"{_pct(changes[5])}"),
             ],
-            history=list(h),
+            history=[(ts, p) for ts, p, _ in h],
         )
 
     @staticmethod
-    def _trend(history, c):
+    def _trend(history, c, symbol=None):
         """Az utolso N trade-re illesztett egyenes meredeksege es a mozgas egyiranyusaga.
 
         None, ha nincs meg N trade, vagy ha azok tul hosszu ido alatt tortentek
@@ -134,9 +141,17 @@ class PumpDumpDetector(Detector):
         if span <= 0 or span > c["maxSpanSec"]:
             return None
 
+        # legyen valodi penz mogotte: 30 apro trade-bol ugyanolyan meredek egyenes
+        # jon ki, mint egy komoly vasarlasbol
+        volume = sum(q for _, _, q in w)
+        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol) if symbol else None
+        elvart = vol24 / 86400.0 * span * c["minVolumeFactor"] if vol24 else 0.0
+        if volume < elvart:
+            return None
+
         t0 = w[0][0]
-        xs = [t - t0 for t, _ in w]
-        ys = [p for _, p in w]
+        xs = [t - t0 for t, _, _ in w]
+        ys = [p for _, p, _ in w]
         mean_x = sum(xs) / n
         mean_y = sum(ys) / n
         sxx = sum((x - mean_x) ** 2 for x in xs)
@@ -158,6 +173,7 @@ class PumpDumpDetector(Detector):
         second = (ys[-1] - ys[half]) / max(xs[-1] - xs[half], 1e-9)
 
         return {"pctPerSec": pct_per_sec, "spanSec": span, "consistency": consistency,
+                "volume": volume, "expectedVolume": elvart,
                 "totalPct": (ys[-1] - ys[0]) / ys[0] * 100.0,
                 "accelerating": abs(second) > abs(first) and second * first > 0}
 
@@ -177,7 +193,7 @@ class PumpDumpDetector(Detector):
 
         ref = ref_ts = None
         ticks_inside = 0
-        for ts, p in history:          # ponytail: linearis keres, a deque max par szaz elem
+        for ts, p, _ in history:          # ponytail: linearis keres, a deque max par szaz elem
             if ts > start:
                 ticks_inside += 1
             else:

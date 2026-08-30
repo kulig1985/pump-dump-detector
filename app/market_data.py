@@ -29,7 +29,7 @@ import websockets
 
 from datetime import datetime, timezone
 
-from . import binance_rest, events
+from . import binance_rest, events, prices
 from .detectors.base import Trade
 from .fmt import clock
 
@@ -149,6 +149,7 @@ class MarketDataService:
         # m=true -> az agresszor az elado; m=false -> az agresszor a vevo.
         trade = Trade(symbol=data["s"], price=float(data["p"]), qty=float(data["q"]),
                       ts=data["T"] / 1000.0, buy_taker=not data["m"])
+        prices.LAST[trade.symbol] = trade.price          # az eredmenymereshez
         for sig in self.detectors.on_trade(trade):
             # a reszletes elemzes lassu (order book + klines), nem blokkolhatja a stream olvasast
             asyncio.create_task(self.on_signal(sig))

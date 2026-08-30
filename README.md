@@ -319,6 +319,63 @@ trend természetesen még a régi irányba mutat — ezért nem az EMA iránya s
 módban (pump/dump) marad a régi értelmezés: a trend támogassa az irányt, és ne legyen wall
 előttünk.
 
+## Túl sok a jelzés? — mérd, ne tippelj
+
+Minden mentett jelzés után a rendszer `outcomeMinutes` (alap 5) percig figyeli az árat, és
+visszaírja a `signals` dokumentumba, mi történt. Nem szimulál kereskedést, csak mér:
+
+```js
+db.signals.findOne({}, {symbol:1, score:1, outcome:1})
+// outcome: { mfePct: 0.62, maePct: -0.11, closePct: 0.44,
+//            checkpoints: {m1: 0.21, m3: 0.44, m5: 0.44},
+//            result: "cel", good: true }
+```
+
+- `mfePct` — a legjobb elmozdulás a jelzés irányába
+- `maePct` — a legrosszabb elmozdulás ellenirányba
+- `good` — elérte-e a `outcomeTargetPct`-ot, mielőtt a `outcomeStopPct`-ot ütötte volna
+
+**A küszöb alatti jelzéseket is méri** — különben nem derülne ki, hogy jó helyen van-e a
+küszöb. 10 percenként összesítést ír a logba:
+
+```
+  EREDMENYEK -- mi tortent a jelzesek utan 5 percben (cel +0.3%, stop -0.3%)
+  detektor      score sav   darab   talalat   atlag zaras   atlag legjobb   atlag legrosszabb
+  pump_dump         50-59      31       19%        -0.08%           0.14%              -0.31%
+  pump_dump         70-79      12       67%         0.41%           0.63%              -0.18%
+  reversal          60-69      24       33%        -0.02%           0.22%              -0.27%
+  reversal          80-89       6       83%         0.55%           0.71%              -0.09%
+```
+
+Ebből látszik, **hol húzd meg a `minSignalScore`-t**: a fenti példában a 70 alatti
+pump/dump jelzések nem érnek semmit, a reversal viszont csak 80 felett működik.
+
+### Ha addig is kevesebb jelzés kell
+
+| beavatkozás | hatás |
+|---|---|
+| `minSignalScore: 75` | a leggyorsabb, de vak — előbb nézd meg az eredménytáblát |
+| `minVolumeFactor: 2` (detector) | a pump/dump ablakában legyen kétszer az átlagos forgalom |
+| `minFlowVolumeFactor: 2` (reversal) | ugyanez a flow ablakra |
+| `minMoveToSpreadRatio: 5` | a mozgás legyen 5× a spread |
+| `minConsistency: 0.85` | csak a tiszta, egyirányú mozgások |
+| `symbolCooldownSec: 300` | páronként ritkábban |
+
+## Két szűrő, ami a zajt vágja
+
+**Volumen padló.** Egy meredek egyenes 30 apró kötésből ugyanúgy kijön, mint valódi
+vásárlásból. Mindkét detektor megköveteli, hogy az ablakban legalább annyi forgalom
+legyen, mint a pár saját átlaga ugyanennyi idő alatt (`24h forgalom / 86400 × ablak`).
+Páronként automatikusan skálázódik.
+
+**Spread szűrő.** Ha a mozgás nem nagyobb érdemben a spreadnél, akkor nem mozgás történt,
+csak valaki átlépte a spreadet — az nem lekereskedhető. A `minMoveToSpreadRatio` (alap 3)
+ezt dobja el, és a logban meg is mondja:
+
+```
+INFO signal [XYZUSDT] pump_dump eldobva: a mozgas (0.250%) nem eri el a spread 3-szereset (0.360%)
+```
+
 ## Meme coinok kiszűrése
 
 A forgalmi küszöb önmagában nem elég: a `4USDT`-nek is 62M a 24 órás forgalma. Három fogó:
@@ -397,6 +454,10 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
 | `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |
 | `signalWindowMinutes` | `10` | ekkora visszatekintéssel számolja, hányadik a jelzés |
+| `minVolumeFactor` | `1.0` | az ablakban legalább ennyiszer a pár átlagos forgalma |
+| `minMoveToSpreadRatio` | `3.0` | a mozgás legyen legalább ennyiszer a spread |
+| `outcomeMinutes` | `5` | ennyi ideig méri az árat a jelzés után |
+| `outcomeTargetPct` / `outcomeStopPct` | `0.3` / `0.3` | mikor számít jónak, illetve rossznak |
 | `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
 | `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
 | `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |

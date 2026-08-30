@@ -14,7 +14,7 @@ from .detectors import DetectorManager, PumpDumpDetector, ReversalDetector
 from .signals import SignalService
 from .telegram import TelegramNotifier
 from .trading import TradingService
-from . import binance_rest
+from . import binance_rest, outcome
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +52,8 @@ async def main():
     market = MarketDataService(cfg, db, detectors, on_signal=signals.handle_trigger)
 
     try:
-        await asyncio.gather(cfg.refresh_loop(), market.run())
+        await asyncio.gather(cfg.refresh_loop(), market.run(),
+                             outcome.summary_loop(db, cfg.detector))
     finally:
         await notifier.close()
         await trader.close()
