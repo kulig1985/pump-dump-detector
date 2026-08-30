@@ -54,10 +54,10 @@ class SignalService:
             events.add(f"{symbol:<14} {detector} eldobva -- {elutasitas}")
             return
 
-        score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared)
+        terv = plan.build(raw, shared)
+        score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared, terv)
         recent = self._count_recent(detector, symbol, direction,
                                     shared["signalWindowMinutes"])
-        terv = plan.build(raw, shared)
 
         signal = {
             "timestamp": datetime.now(timezone.utc),

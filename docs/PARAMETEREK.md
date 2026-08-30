@@ -52,6 +52,41 @@ elfogyott, és az ár rendszeresen visszaesett.
 
 ---
 
+## Hogyan jön ki a score?
+
+Öt rész, összesen 100 pont. A `minSignalScore` (60) alatt a jelzés mentődik, de nem megy ki.
+
+| rész | max | mit mér | hogyan |
+|---|---|---|---|
+| `movement` | 30 | mennyivel lépte túl a saját küszöbét | 1× küszöb = 15 pont, 2× = 30 (itt megáll) |
+| `acceleration` | 10 | gyorsul-e / erős-e az áttörés | igen = 10, nem = 0 |
+| `ema` | 20 | támogatja-e a trend | momentumnál: EMA az irányba = 20 (ha az ár is a jó oldalon), ellentétes = 0. Fordulónál: az ár visszavette-e az EMA9-et |
+| `orderbook` | 20 | van-e hely elmozdulni | nincs wall előttünk = 20; minél közelebb a wall, annál kevesebb. Fordulónál a támasz is számít |
+| `rewardRisk` | 20 | **megéri-e egyáltalán felvenni** | 1.0:1 alatt 0 pont, 3.0:1 felett 20, közte arányosan |
+
+Nincs adat (order book / EMA / terv nem elérhető) → az adott rész a maximum 40%-át kapja,
+hogy egy hiányzó információ ne büntessen úgy, mint egy rossz információ.
+
+### Példa egy valós jelzésre
+
+```
+[BTRUSDT] pump_dump  mozgas 3.3x kuszob, EMA bearish, wall 0.13%-ra, hozam/kockazat 0.8:1
+
+  movement       30   (3.3x küszöb, a plafonon)
+  acceleration    0   (nem gyorsult)
+  ema            20   (bearish trend, SHORT irány -> támogatja)
+  orderbook       2   (a wall 0.13%-ra van, gyakorlatilag azonnal útban)
+  rewardRisk      0   (0.8:1 -- a cél közelebb van, mint a stop)
+  ────────────────
+  összesen       52   -> a 60-as küszöb alatt, NEM megy ki
+```
+
+Ugyanez a jelzés a `rewardRisk` rész nélkül 67 pontot kapott volna, és kiment volna —
+miközben a terv szerint nem érte meg felvenni. Az „erősen mozog" önmagában nem jelzés,
+csak akkor az, ha van hova mennie.
+
+---
+
 ## `detector` — a pump/dump detektor és a közös beállítások
 
 ### Mikor jelez
@@ -84,6 +119,8 @@ elfogyott, és az ár rendszeresen visszaesett.
 | `minSignalScore` | 60 | ez alatt csak mentünk, nem küldünk |
 | `minMoveToSpreadRatio` | 3.0 | a mozgás legyen legalább ennyiszer a spread. Ha nem, akkor nem mozgás történt, csak valaki átlépte a spreadet — az nem lekereskedhető |
 | `stopBufferPct` | 0.05 | a stop ennyivel kerül a horgony túloldalára |
+| `momentumStopRetracementPct` | 50 | lendületnél a stop az impulzus ennyi %-ánál. Ha a mozgás felét visszaadja, a tézis halott — a teljes impulzust kockáztatni ugyanakkora célért szerkezetileg 1:1 arányt adna |
+| `momentumTargetFactor` | 1.0 | a cél az impulzussal azonos méretű folytatás (mért mozgás) |
 | `minRewardRisk` | 1.5 | ez alatt „gyenge arányú"-nak **jelöljük** a jelzést (nem dobjuk el) |
 | `orderBookLevels` | 20 | vizsgált árszintek (5 / 10 / 20) |
 | `wallSensitivity` | 3.0 | wall = egy szint ≥ 3× az oldal átlaga |

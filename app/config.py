@@ -45,6 +45,10 @@ DETECTOR_DEFAULTS = {
     "minEfficiency": 0.25,            # ez alatt kizarjuk a part (0 = kikapcsolva)
     # --- kereskedelmi terv ---
     "stopBufferPct": 0.05,            # a stop ennyivel kerul a horgony tuloldalara
+    "momentumStopRetracementPct": 50, # lendulet: a stop az impulzus ennyi %-anal.
+                                      # Ha az impulzus felet visszaadja, a tezis halott --
+                                      # nem kell megvarni, hogy a teljes mozgas visszajojjon.
+    "momentumTargetFactor": 1.0,      # a cel az impulzussal azonos meretu folytatas
     "minRewardRisk": 1.5,             # ez alatt "gyenge aranyu"-nak jeloljuk a jelzest
     # --- eredmenymeres: mi tortent a jelzes utan ---
     "outcomeMinutes": 5,              # ennyi ideig kovetjuk az arat a jelzes utan

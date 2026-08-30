@@ -33,6 +33,9 @@ CFG = {
     "shadowMinHitRate": 0.55,
     "minMoveToSpreadRatio": 3.0,
     "minVolumeFactor": 1.0,
+    "momentumStopRetracementPct": 50,
+    "momentumTargetFactor": 1.0,
+    "minSignalScore": 60,
     "wallSensitivity": 3.0,
     "wallMaxDistancePct": 1.5,
 }
@@ -467,9 +470,11 @@ def test_reversal_scoring_survives_opposite_ema():
           "nearestBuyWall": support, "nearestSellWall": resistance}
 
     momentum, _, _ = scoring.score_signal(
-        _sig(1.5, accelerating=True, mode="momentum"), ob, bearish_but_reclaimed, CFG)
+        _sig(1.5, accelerating=True, mode="momentum"), ob, bearish_but_reclaimed,
+        CFG, JO_TERV)
     reversal, _, _ = scoring.score_signal(
-        _sig(1.5, accelerating=True, mode="reversal"), ob, bearish_but_reclaimed, CFG)
+        _sig(1.5, accelerating=True, mode="reversal"), ob, bearish_but_reclaimed,
+        CFG, JO_TERV)
 
     assert momentum < 60, momentum          # a regi logikaval sosem menne ki
     assert reversal >= 60, reversal         # a reversal ertelmezessel atmegy
@@ -589,9 +594,52 @@ def test_signal_carries_its_own_thresholds():
     assert sig["strength"] > 1.0
 
 
+JO_TERV = {"rewardRisk": 3.0}
+
+
+def test_score_accounts_for_reward_risk():
+    """Valos eset: 67 pont allt egy 0.8:1 aranyu terv mellett -- ellentmondas.
+
+    Az "erosen mozog" onmagaban nem jelzes; csak akkor az, ha van hova mennie.
+    """
+    sig = {"direction": "SHORT", "strength": 3.3, "accelerating": False,
+           "contextMode": "momentum"}
+    ta = {"trend": "bearish", "aboveFast": False}
+    ob = {"obstacleAhead": {"distancePct": 0.13}, "liquidityRatio": 1.0,
+          "nearestBuyWall": {"distancePct": 0.13}, "nearestSellWall": None}
+
+    rossz, _, p1 = scoring.score_signal(sig, ob, ta, CFG, {"rewardRisk": 0.8})
+    jo, _, p2 = scoring.score_signal(sig, ob, ta, CFG, {"rewardRisk": 3.0})
+    assert p1["rewardRisk"] == 0.0
+    assert rossz < CFG["minSignalScore"], rossz     # nem mehet ki
+    assert jo > rossz and jo - rossz == p2["rewardRisk"]
+
+
+def test_score_parts_sum_to_100_at_best():
+    sig = {"direction": "LONG", "strength": 10.0, "accelerating": True,
+           "contextMode": "momentum"}
+    ta = {"trend": "bullish", "aboveFast": True}
+    ob = {"obstacleAhead": None, "liquidityRatio": 1.0,
+          "nearestBuyWall": None, "nearestSellWall": None}
+    total, _, parts = scoring.score_signal(sig, ob, ta, CFG, {"rewardRisk": 5.0})
+    assert total == 100, parts
+    assert sum(parts.values()) == 100
+
+
+def test_momentum_plan_risks_half_the_impulse():
+    """A stop az impulzus felenel van, nem az aljan -- kulonben az arany 1:1 lenne."""
+    origin, ar = 100.00, 100.22
+    stop_a = origin + (ar - origin) * (1 - CFG["momentumStopRetracementPct"] / 100)
+    cel_a = ar + (ar - origin) * CFG["momentumTargetFactor"]
+    t = build_plan({"price": ar, "direction": "LONG",
+                    "stopAnchor": stop_a, "targetAnchor": cel_a}, CFG)
+    assert t["rewardRisk"] > 1.3, t
+    assert t["stop"] < stop_a < t["entry"] < t["target"]
+
+
 def test_score_increases_with_stronger_move():
-    weak, _, _ = scoring.score_signal(_sig(1.0), None, None, CFG)
-    strong, _, _ = scoring.score_signal(_sig(2.0), None, None, CFG)
+    weak, _, _ = scoring.score_signal(_sig(1.0), None, None, CFG, JO_TERV)
+    strong, _, _ = scoring.score_signal(_sig(2.0), None, None, CFG, JO_TERV)
     assert strong > weak, (weak, strong)
 
 
@@ -605,8 +653,8 @@ def test_score_penalises_opposite_ema_and_near_wall():
                   "liquidityRatio": 1.0, "nearestBuyWall": None,
                   "nearestSellWall": {"distancePct": 0.05, "ratio": 8.0}}
 
-    best, _, _ = scoring.score_signal(trig, clear_ob, good_ta, CFG)
-    worst, _, _ = scoring.score_signal(trig, blocked_ob, bad_ta, CFG)
+    best, _, _ = scoring.score_signal(trig, clear_ob, good_ta, CFG, JO_TERV)
+    worst, _, _ = scoring.score_signal(trig, blocked_ob, bad_ta, CFG, JO_TERV)
     assert best > worst
     assert best <= 100 and worst >= 0
 

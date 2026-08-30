@@ -103,11 +103,12 @@ class PumpDumpDetector(Detector):
             accelerating=trend["accelerating"],
             context_mode="momentum",
             move_pct=abs(trend["totalPct"]),
-            # a lendulet kiindulopontja alatt/felett mar nem all a tezis;
-            # a cel egy azonos nagysagu folytatas (mert mozgas)
-            stop_anchor=trend["origin"],
-            target_anchor=price * (1 + (1 if direction == "LONG" else -1)
-                                   * abs(trend["totalPct"]) / 100.0),
+            # A stop nem a teljes impulzus aljan van, hanem annak felenel: ha a
+            # mozgas felet visszaadja, a tezis mar halott. A teljes impulzust
+            # kockaztatni ugyanakkora celert szerkezetileg 1:1 aranyt adna.
+            stop_anchor=(trend["origin"] + (price - trend["origin"])
+                         * (1 - c["momentumStopRetracementPct"] / 100.0)),
+            target_anchor=price + (price - trend["origin"]) * c["momentumTargetFactor"],
             detail={
                 "slopePctPerSec": round(trend["pctPerSec"], 5),
                 "slopeThreshold": round(threshold, 5),
