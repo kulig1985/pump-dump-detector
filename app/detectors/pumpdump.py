@@ -225,6 +225,7 @@ class PumpDumpDetector(Detector):
                 "symbols": len(self.latest), "rows": rows[:top]}
 
     blocked = frozenset()      # a manager tolti, csak a kijelzeshez
+    noise = {}                 # symbol -> tick zaj %, szinten a managertol
 
     def status_lines(self):
         """Az "mi tortenik most az arakkal" tabla."""
@@ -235,18 +236,21 @@ class PumpDumpDetector(Detector):
             f"{c['slopeWindowSec']:.0f} masodpercen belul, {c['minSlopePctPerSec']:.2f}%/mp "
             f"tempoval es {c['minConsistency']:.0%} egyiranyusaggal",
             f"  {pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
-            f"{'mozgas':>9}{'%/mp':>9}{'kuszob':>8}{'egyirany':>10}   mi van vele",
+            f"{'mozgas':>9}{'%/mp':>9}{'kuszob':>8}{'egyirany':>10}{'tick zaj':>10}"
+            f"   mi van vele",
         ]
         for r in snap["rows"]:
             mozgas = f"{r['movePct']:+.2f}%" if r["movePct"] is not None else "--"
             slope = f"{r['slope']:+.3f}" if r["slope"] is not None else "--"
             cons = f"{r['consistency']:.0%}" if r["consistency"] is not None else "--"
-            allapot = ("KIZARVA -- szaggatott mozgas" if r["symbol"] in self.blocked
-                       else _verdict(r))
+            allapot = ("KIZARVA -- egy kotes tul sokat mozdit"
+                       if r["symbol"] in self.blocked else _verdict(r))
+            zaj = self.noise.get(r["symbol"])
+            zaj_txt = f"{zaj:.3f}%" if zaj is not None else "--"
             out.append(f"  {pad(r['symbol'], 14)}"
                        f"{money(binance_rest.SYMBOL_VOLUME.get(r['symbol'])):>11}"
                        f"{fprice(r['price']):>13}"
-                       f"{mozgas:>9}{slope:>9}{r['threshold']:>8.3f}{cons:>10}"
+                       f"{mozgas:>9}{slope:>9}{r['threshold']:>8.3f}{cons:>10}{zaj_txt:>10}"
                        f"   {allapot}")
         return out
 

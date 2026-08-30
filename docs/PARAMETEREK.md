@@ -71,6 +71,21 @@ Most az ablak `slopeWindowSec` (2 mp) hosszú, és három feltétel van rá: leg
 `minTradesInWindow` trade essen bele, a tényleges időszakasz fedje le az ablak felét, és
 a nettó elmozdulás érje el a `minTotalMovePct`-ot.
 
+## Miért nem a „hatékonysági arány" szűri a meme coinokat?
+
+Először az volt itt, hogy `nettó elmozdulás / megtett út` 50 trade-en. Ez **a pillanatnyi
+állapotot mérte, nem a pár jellegét**, és két bajt okozott:
+
+- Egy likvid páron 50 aggTrade ezredmásodperceket fed le, ott az ár a spreaden pattog.
+  A BTCUSDT így 0.02-es „hatékonyságot" kapott, és kizárva maradt — pedig épp az ilyen
+  párokon a legértékesebb a jelzés.
+- A mérték simítva változik, tehát amikor egy lapos pár **végre megmozdult**, a szűrő még
+  mindig a régi, lapos állapotot látta, és kizárta — vagyis pontosan a keresett eseményt.
+
+Most a mérték a **tick zaj**: mekkorát mozdít az áron egyetlen kötés. Ez a pár jellemzője,
+stabil, és pontosan azt fogja meg, ami zavaró: ha egy trade 0.5%-ot mozdít, ott hiába
+akarsz 0.3%-os mozgást elkapni.
+
 ## Hogyan jön ki a score?
 
 Öt rész, összesen 100 pont. A `minSignalScore` (60) alatt a jelzés mentődik, de nem megy ki.
@@ -130,8 +145,7 @@ csak akkor az, ha van hova mennie.
 | `minQuoteVolume24h` | 50 000 000 | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | 200 | top N pár forgalom szerint |
 | `excludeSymbols` | `[]` | névre kizárt párok |
-| `qualityWindow` | 50 | ennyi trade-ből mérjük a mozgásminőséget |
-| `minEfficiency` | 0.25 | **a szaggatott párok kizárása.** Hatékonysági arány = nettó elmozdulás / megtett út. Tiszta mozgás 0.7–1.0, normál pár 0.3–0.6, össze-vissza ugráló meme 0.0–0.2. `0` = kikapcsolva |
+| `maxTickNoisePct` | 0.08 | **a szaggatott párok kizárása.** Ha *egyetlen kötés* átlagosan ennél többet mozdít az áron, ott nem lehet 0.2–0.5%-os mozgást megfogni. BTC/ETH: 0.000x%, normál alt: 0.00x–0.0x%, össze-vissza ugráló: 0.1% felett. A táblázat `tick zaj` oszlopa mutatja a mért értéket. `0` = kikapcsolva |
 
 ### Jelzés-minőség
 

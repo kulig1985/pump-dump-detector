@@ -5,6 +5,7 @@ a jelzeseket, nem ment, nem ertesit.
 """
 import logging
 
+from .. import events
 from ..quality import SymbolQuality
 
 log = logging.getLogger("detectors")
@@ -31,8 +32,8 @@ class DetectorManager:
         # A szaggatott, ossze-vissza ugralo parokra nem adunk jelzest: ott nincs mit
         # megfogni. A detektorok viszont latjak az adatot, kulonben a statusz tabla
         # "nincs eleg kereskedes"-t irna rajuk a valos ok (kizaras) helyett.
-        blokkolt = (self.cfg.detector["minEfficiency"]
-                    and not self.quality.tradeable(trade.symbol)[0])
+        mehet, kizaras_oka = self.quality.tradeable(trade.symbol)
+        blokkolt = not mehet
 
         signals = []
         for d in self.detectors:
@@ -49,7 +50,12 @@ class DetectorManager:
                                   trade.symbol, d.name, e)
                 continue
             if sig and blokkolt:
+                # a detektor mar kiirta a triggert -- mondjuk meg, miert nem lett belole
+                # jelzes, kulonben ugy tunik, mintha nyom nelkul eltunt volna
                 self.skipped += 1
+                log.warning("[%s] a(z) %s jelzese ELDOBVA: %s",
+                            trade.symbol, d.name, kizaras_oka)
+                events.add(f"{trade.symbol:<14} {d.name} jelzes ELDOBVA -- {kizaras_oka}")
             elif sig:
                 self.total_signals += 1
                 signals.append(sig)
@@ -60,6 +66,7 @@ class DetectorManager:
         for d in self.detectors:            # a kijelzeshez lassak a kizart parokat
             if hasattr(d, "blocked"):
                 d.blocked = frozenset(self.quality.blocked)
+                d.noise = dict(self.quality.noise)
         out = list(self.quality.blocked_summary())
         if out:
             out.append("")

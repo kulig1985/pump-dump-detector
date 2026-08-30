@@ -45,8 +45,10 @@ DETECTOR_DEFAULTS = {
     "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
     "signalWindowMinutes": 10,        # ennyi idore visszamenoleg szamoljuk a jelzeseket
     # --- mozgasminoseg: a szaggatott parokra nem lehet jelezni ---
-    "qualityWindow": 50,              # ennyi trade-bol szamoljuk a hatekonysagi aranyt
-    "minEfficiency": 0.25,            # ez alatt kizarjuk a part (0 = kikapcsolva)
+    "maxTickNoisePct": 0.08,          # ha EGY kotes atlagosan ennel tobbet mozdit az
+                                      # aron, a par nem kereskedheto (0 = kikapcsolva).
+                                      # BTC/ETH: 0.000x%  normal alt: 0.00x-0.0x%
+                                      # ossze-vissza ugralo meme: 0.1% folott
     # --- kereskedelmi terv ---
     "stopBufferPct": 0.05,            # a stop ennyivel kerul a horgony tuloldalara
     "momentumStopRetracementPct": 50, # lendulet: a stop az impulzus ennyi %-anal.

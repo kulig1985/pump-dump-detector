@@ -14,6 +14,7 @@ from app.fmt import pad as _pad
 from app import orderbook, scoring
 from app.ta import ema
 from app.plan import build as build_plan
+from app import events
 import app.config as C_CFG
 
 CFG = {
@@ -27,8 +28,7 @@ CFG = {
     "volatilityMultiplier": 0.0,       # a legtobb teszt fix kuszobbel szamol
     "stopBufferPct": 0.05,
     "minRewardRisk": 1.5,
-    "qualityWindow": 50,
-    "minEfficiency": 0.25,
+    "maxTickNoisePct": 0.08,
     "shadowMinSamples": 50,
     "shadowMinHitRate": 0.55,
     "minMoveToSpreadRatio": 3.0,
@@ -381,31 +381,51 @@ def test_detector_status_lines_render():
     assert det.last_ts > 0
 
 
-def test_choppy_symbol_is_excluded():
-    """Ossze-vissza ugralo par: a hatekonysagi arany alacsony -> nem jelzunk ra."""
+def test_liquid_pair_is_not_excluded_by_bid_ask_bounce():
+    """Regresszio: a BTCUSDT-t kizarta a szuro, mert a likvid parokon az ar a
+    spreaden pattog. Az nem "szaggatott mozgas", hanem normalis mikrostruktura --
+    es a jelzes epp ilyen parokon a legertekesebb."""
     from app.quality import SymbolQuality
     q = SymbolQuality(cfg_obj)
-    for i in range(120):                       # fureszfog: nagy ut, nulla nettó
-        q.on_trade(Trade("CHOPUSDT", 100.0 + (i % 2) * 0.5, 1.0, 1000.0 + i * 0.1, True))
-    for i in range(120):                       # egyenletes emelkedes
-        q.on_trade(Trade("CLEANUSDT", 100.0 + i * 0.01, 1.0, 1000.0 + i * 0.1, True))
-
-    chop, clean = q.efficiency("CHOPUSDT"), q.efficiency("CLEANUSDT")
-    assert chop < 0.15, chop
-    assert clean > 0.85, clean
-    assert q.tradeable("CHOPUSDT")[0] is False
-    assert q.tradeable("CLEANUSDT")[0] is True
-    assert "CHOPUSDT" in q.blocked_summary()[1]
+    for i in range(200):                       # 0.1 tick pattogas 61000-en
+        q.on_trade(Trade("BTCUSDT", 61000.0 + (i % 2) * 0.1, 1.0, 1000.0 + i * 0.01, True))
+    zaj = q.tick_noise("BTCUSDT")
+    assert zaj < 0.001, zaj                    # ~0.00016%
+    assert q.tradeable("BTCUSDT")[0] is True
 
 
-def test_manager_blocks_choppy_symbols():
-    det = ReversalDetector(rev_cfg)
-    mgr = DetectorManager(rev_cfg, [det])
-    for i in range(120):                       # eloszor szaggatottra tanitjuk
-        mgr.on_trade(Trade("CYSUSDT", 0.78 + (i % 2) * 0.004, 1.0, 900.0 + i * 0.1, True))
+def test_jumpy_symbol_is_excluded():
+    """Egy kotes tized szazalekokat mozdit -> ott nem lehet 0.2%-ot megfogni."""
+    from app.quality import SymbolQuality
+    q = SymbolQuality(cfg_obj)
+    for i in range(200):                       # +-0.25% ugrasok kotesenkent
+        q.on_trade(Trade("JUMPUSDT", 0.01 * (1 + 0.005 * (i % 2)), 1.0,
+                         1000.0 + i * 0.1, True))
+    zaj = q.tick_noise("JUMPUSDT")
+    assert zaj > CFG["maxTickNoisePct"], zaj
+    assert q.tradeable("JUMPUSDT")[0] is False
+    assert "JUMPUSDT" in q.blocked_summary()[1]
+
+
+def test_quality_needs_samples_before_judging():
+    from app.quality import SymbolQuality
+    q = SymbolQuality(cfg_obj)
+    for i in range(5):
+        q.on_trade(Trade("NEWUSDT", 1.0 * (1 + 0.01 * i), 1.0, 1000.0 + i, True))
+    assert q.tradeable("NEWUSDT")[0] is True, "keves mintabol nem itelunk"
+
+
+def test_manager_reports_dropped_signals():
+    """A detektor mar kiirta a triggert -- ha a szuro eldobja, azt is lassuk."""
+    mgr = DetectorManager(rev_cfg, [ReversalDetector(rev_cfg)])
+    for i in range(200):                       # eloszor ugralonak tanitjuk
+        mgr.on_trade(Trade("CYSUSDT", 0.78 * (1 + 0.005 * (i % 2)), 1.0,
+                           900.0 + i * 0.1, True))
     assert mgr.quality.tradeable("CYSUSDT")[0] is False
+    events.drain()
     assert [s for t in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(t)] == []
     assert mgr.skipped > 0
+    assert any("ELDOBVA" in txt for _, txt in events.drain()), "az eldobas legyen lathato"
 
 
 # ---------------------------------------------------------------- kereskedelmi terv

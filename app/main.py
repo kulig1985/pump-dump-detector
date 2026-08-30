@@ -55,7 +55,7 @@ def startup_summary(cfg):
         f"{r['maxRetracementPct']:.0f}%-an belul, max {r['maxExtremeAgeSec']:.0f} mp regi "
         f"szelsoertekre | min score {r['minSignalScore']} | cooldown {r['cooldownSec']}s",
         f"Szures: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
-        f"hatekonysag >= {d['minEfficiency']:.2f}, "
+        f"egy kotes max {d['maxTickNoisePct']:.3f}%-ot mozdit, "
         f"mozgas >= {d['minMoveToSpreadRatio']:.0f}x spread",
         f"Telegram: pump_dump={d['telegramMode']}, reversal={r['telegramMode']} "
         f"(auto = csak {d['shadowMinSamples']} lemert jelzes es "
