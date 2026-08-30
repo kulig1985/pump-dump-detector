@@ -10,6 +10,7 @@ import logging
 import pathlib
 
 from .db import Database
+from . import config as C
 from .config import ConfigStore
 from .market_data import MarketDataService
 from .detectors import DetectorManager, PumpDumpDetector, ReversalDetector
@@ -48,7 +49,13 @@ def startup_summary(cfg):
     kulcs miatt indulaskor elhasalt az egesz alkalmazas.
     """
     d, r, t = cfg.detector, cfg.reversal, cfg.trading
-    return [
+    eltero = []
+    for defaults, akt in ((C.DETECTOR_DEFAULTS, d), (C.REVERSAL_DEFAULTS, r),
+                          (C.TRADING_DEFAULTS, t)):
+        for k, alap in defaults.items():
+            if k != "_id" and akt.get(k) != alap:
+                eltero.append(f"{k}={akt.get(k)} (alap {alap})")
+    return ([f"A DB-ben eltero beallitas: {', '.join(eltero)}"] if eltero else []) + [
         f"Kereskedhetoseg: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
         f"spread <= {d['maxSpreadPct']:.3f}%, melyseg >= {d['minTopDepthUSDT']:,.0f} USDT, "
         f"legalabb {d['minTradesPerMinute']} kotes/perc",

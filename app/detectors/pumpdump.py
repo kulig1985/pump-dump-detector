@@ -168,25 +168,31 @@ class PumpDumpDetector(Detector):
     # ------------------------------------------------------------------ DEBUG tabla
 
     def readiness(self):
-        """(hany parnak van mar baseline-ja, hany merheto, a legkozelebbi jelolt)."""
+        """Hany parnak van mar normalja, es melyik van legkozelebb a jelzeshez.
+
+        A nyers szamokat is mutatja: hidegindulaskor a median lehet ~0.001%, amitol
+        egy jelentektelen mozgas is "266x"-nek latszana. A dontest ez nem rontja el
+        (a minMovePct padlo dominal), de a kijelzes felrevezeto lenne.
+        """
         c = self.cfg.detector
-        kesz = legjobb = None
-        keszek = 0
+        keszek, legjobb = 0, None
         for symbol, m in self.latest.items():
             if m is None:
                 continue
             alap = self.baseline.value(symbol)
-            if alap is None:
+            if alap is None or alap <= 0:
                 continue
             keszek += 1
-            arany = abs(m["movePct"]) / alap if alap > 0 else 0
-            if legjobb is None or arany > legjobb[1]:
-                legjobb = (symbol, arany)
-        kesz = f"baseline kesz: {keszek}/{len(self.latest)} par"
+            kell = max(c["minMovePct"], alap * c["baselineRatio"])
+            hanyad = abs(m["movePct"]) / kell
+            if legjobb is None or hanyad > legjobb[0]:
+                legjobb = (hanyad, symbol, abs(m["movePct"]), kell, alap)
+        sor = f"normal kesz: {keszek}/{len(self.latest)} par"
         if legjobb:
-            kesz += (f" | legkozelebbi jelolt: {legjobb[0]} {legjobb[1]:.1f}x normal "
-                     f"(kell {c['baselineRatio']:.1f}x)")
-        return kesz
+            _, symbol, mozgas, kell, alap = legjobb
+            sor += (f" | legkozelebb: {symbol} {mozgas:.3f}% "
+                    f"(kell {kell:.3f}%, normalja {alap:.3f}%)")
+        return sor
 
     def status_lines(self, top=10):
         """Reszletes paronkenti allapot -- csak DEBUG szinten kerul kiirasra."""

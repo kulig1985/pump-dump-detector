@@ -414,6 +414,46 @@ def test_distribution_block_is_safe_and_informative():
     assert "spread" in sorok[1]
 
 
+def test_depth_uses_median_of_recent_observations():
+    """A legjobb szinten allo mennyiseg masodpercenkent kiurul: a pillanatnyi ertek
+    11 es 30,000 USDT kozott ugral. Elesben ez 40 parbol 34-et zart ki."""
+    e = Eligibility(cfg_obj)
+    # valtakozva vekony es vastag pillanatkepek, median ~5,000 USDT
+    for i in range(40):
+        vastag = i % 2 == 0
+        qty = (10_000.0 if vastag else 30.0)
+        e.on_book_ticker({"e": "bookTicker", "s": "FLIPUSDT", "b": "1.0000",
+                          "B": str(qty), "a": "1.0001", "A": str(qty)})
+    m = e.metrics("FLIPUSDT")
+    assert 30.0 < m["topDepthUSDT"] < 10_000.0, m
+    _aktivitas(e, "FLIPUSDT")
+    assert e.check("FLIPUSDT")[0] is True, "a median alapjan atmegy, a pillanatkep alapjan nem"
+
+
+def test_detectors_build_state_even_for_ineligible_pairs():
+    """A szuro a JELZESNEL all, nem a detektor elott: igy a baseline minden figyelt
+    paron epul, es egy par nem nullarol indul, amint kereskedhetove valik."""
+    e = Eligibility(cfg_obj)
+    _book(e, "OTHERUSDT", 1.0000, 1.0001)
+    _book(e, "CYSUSDT", 0.7800, 0.7830)            # szeles spread -> nem kereskedheto
+    det = ReversalDetector(rev_cfg)
+    mgr = DetectorManager(rev_cfg, [det], e)
+    for t in rev_tape(0.78380, 0.78330, 0.78450):
+        mgr.on_trade(t)
+    assert mgr.total_candidates == 0, "jelzes nem mehet ki"
+    assert mgr.skipped > 0
+    assert det.trades["CYSUSDT"], "de a detektor allapota epult"
+
+
+def test_readiness_shows_raw_numbers_not_just_a_ratio():
+    """Hidegindulaskor a median lehet ~0.001%, amitol barmi '266x'-nek latszana."""
+    det = PumpDumpDetector(cfg_obj)
+    _tanit(det, "RUSDT", 0.02)
+    sor = det.readiness()
+    assert "normal kesz:" in sor
+    assert "%" in sor and "kell" in sor, sor
+
+
 def test_outcome_is_off_by_default():
     """Elso korben nem merunk: se task, se EREDMENYEK sor."""
     assert C_CFG.DETECTOR_DEFAULTS["outcomeEnabled"] is False

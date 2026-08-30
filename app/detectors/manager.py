@@ -26,10 +26,11 @@ class DetectorManager:
         self.ticks += 1
         self.eligibility.on_trade(trade)
 
-        mehet, _, _ = self.eligibility.check(trade.symbol)
-        if not mehet:
-            self.skipped += 1
-            return []
+        # A szuro NEM a detektor elott all meg, hanem a jelzes kiadasanal. Igy a
+        # baseline minden figyelt paron epul, es amint egy par kereskedhetove valik,
+        # azonnal kesz allapotbol indul -- nem nullarol. (40 par mellett a detektorok
+        # futtatasa elhanyagolhato koltseg.)
+        mehet, kizaras_oka, _ = self.eligibility.check(trade.symbol)
 
         candidates = []
         for d in self.detectors:
@@ -45,9 +46,16 @@ class DetectorManager:
                     log.exception("[%s] a(z) %s detektor hibat dobott: %s",
                                   trade.symbol, d.name, e)
                 continue
-            if sig:
-                self.total_candidates += 1
-                candidates.append(sig)
+            if not sig:
+                continue
+            if not mehet:
+                # a detektor allapota epult, de jelzest nem adunk ki
+                self.skipped += 1
+                log.info("REJECTED   %-14s %-5s %s", trade.symbol,
+                         sig.get("direction", ""), kizaras_oka)
+                continue
+            self.total_candidates += 1
+            candidates.append(sig)
         return candidates
 
     def debug_lines(self):

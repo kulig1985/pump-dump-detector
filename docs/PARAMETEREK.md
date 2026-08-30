@@ -95,7 +95,7 @@ kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 | kulcs | alap | mit csinál | ha növeled |
 |---|---|---|---|
 | `maxSpreadPct` | 0.05 | ennél szélesebb spreadnél a be- és kiszállás felemészti a mozgást | több pár fér be |
-| `minTopDepthUSDT` | 5 000 | a legjobb szinten ennyi pénz legyen. **Ez egyetlen árszint, nem a teljes könyv:** BTC ~150e, SOL ~31e, egy 50M-os alt ~2e USDT | csak a vastag könyvű párok |
+| `minTopDepthUSDT` | 1 000 | a legjobb szinten ennyi pénz legyen, a **friss megfigyelések mediánján** mérve. Ez egyetlen árszint, nem a teljes könyv, és másodpercenként kiürül — a pillanatnyi érték 11 és 30 000 USDT között ugrál, ezért median-alapú és alacsony. A STATUS percentilis sorából hangolható |
 | `minTradesPerMinute` | 30 | ritka kereskedésnél nincs mit megfogni | csak az aktív párok |
 
 ### Pump/dump
@@ -236,6 +236,23 @@ STATUS  39 par | 14,113 tick/60s | konyv: 752 par | 0 candidate, 0 jelzes, 0 elu
 A percentilis sorokból **adatból** állítható a küszöb, nem vaktában: látod az eloszlást,
 a jelenlegi küszöböt, és hogy hány pár esik kívül. Az utolsó sor megmondja, hogy a
 detektor egyáltalán mennyire van közel jelzéshez.
+
+## Ha a DB-ben más van, mint az alapértelmezés
+
+A config dokumentum a meglévő **értékeket sosem írja felül** (hogy ne törölje a
+hangolásodat) — csak a hiányzó kulcsokat veszi fel. Ezért ha egy alapértelmezés
+megváltozik, az nem jut el egy már létező dokumentumba. Induláskor kiírjuk, mi tér el:
+
+```
+INFO main  A DB-ben eltero beallitas: minTopDepthUSDT=20000 (alap 1000)
+```
+
+Ha át akarod venni az új alapértelmezést, egy `$unset` elég — a következő indításnál
+visszakerül a friss defaulttal:
+
+```js
+db.config.updateOne({_id:"detector"}, {$unset:{minTopDepthUSDT:""}})
+```
 
 ## Hangolási sorrend
 

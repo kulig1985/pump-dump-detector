@@ -24,9 +24,11 @@ DETECTOR_DEFAULTS = {
 
     # ---- realtime kereskedhetoseg (a detektorok ELOTT szur) ----
     "maxSpreadPct": 0.05,              # ennel szelesebb spreadnel a scalp nem eri meg
-    "minTopDepthUSDT": 5_000,          # a legjobb szinten ennyi penz legyen.
-                                       # Ez EGYETLEN arszint, nem a teljes konyv:
-                                       # BTC ~150e, SOL ~30e, egy 50M-os alt ~2e USDT
+    "minTopDepthUSDT": 1_000,          # a legjobb szinten ennyi penz legyen, a friss
+                                       # megfigyelesek MEDIANJAN merve. Ez EGYETLEN
+                                       # arszint, nem a teljes konyv, es masodpercenkent
+                                       # kiurul -- ezert alacsony es median alapu.
+                                       # A STATUS percentilis sorabol hangolhato.
     "minTradesPerMinute": 30,          # ritka kereskedesnel nincs mit megfogni
 
     # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----

@@ -17,12 +17,14 @@ from collections import deque, defaultdict
 log = logging.getLogger("eligibility")
 
 AKTIVITAS_ABLAK_SEC = 60.0
+DEPTH_MINTA = 40            # ennyi friss megfigyeles medianja adja a melyseget
 
 
 class Eligibility:
     def __init__(self, cfg):
         self.cfg = cfg
         self.book = {}                          # symbol -> (bid, bidQty, ask, askQty)
+        self.depth = defaultdict(deque)         # symbol -> friss melyseg-megfigyelesek
         self.book_messages = 0                  # kaptunk-e egyaltalan konyv-adatot
         self.trades = defaultdict(deque)        # symbol -> trade idobelyegek
         self.rejected = {}                      # symbol -> ok (a percenkenti osszesitohoz)
@@ -32,9 +34,17 @@ class Eligibility:
     def on_book_ticker(self, data):
         """Egy !bookTicker uzenet feldolgozasa."""
         try:
-            self.book[data["s"]] = (float(data["b"]), float(data["B"]),
-                                    float(data["a"]), float(data["A"]))
+            bid, bid_qty = float(data["b"]), float(data["B"])
+            ask, ask_qty = float(data["a"]), float(data["A"])
+            self.book[data["s"]] = (bid, bid_qty, ask, ask_qty)
             self.book_messages += 1
+            # A legjobb szinten allo mennyiseg masodpercenkent kiurul es ujratoltodik.
+            # A pillanatnyi ertek ezert ide-oda ugral (11 USDT es 30,000 kozott is) --
+            # a friss megfigyelesek medianjat hasznaljuk helyette.
+            w = self.depth[data["s"]]
+            w.append(min(bid * bid_qty, ask * ask_qty))
+            if len(w) > DEPTH_MINTA:
+                w.popleft()
         except (KeyError, TypeError, ValueError):
             pass
 
@@ -56,7 +66,8 @@ class Eligibility:
             kozep = (bid + ask) / 2
             if kozep > 0:
                 m["spreadPct"] = round((ask - bid) / kozep * 100, 5)
-                m["topDepthUSDT"] = round(min(bid * bid_qty, ask * ask_qty), 2)
+                minta = self.depth.get(symbol)
+                m["topDepthUSDT"] = round(statistics.median(minta), 2) if minta else 0.0
         return m
 
     def check(self, symbol):
