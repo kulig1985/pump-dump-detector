@@ -237,7 +237,7 @@ class PumpDumpDetector(Detector):
             f"tempoval es {c['minConsistency']:.0%} egyiranyusaggal",
             f"  {pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
             f"{'mozgas':>9}{'%/mp':>9}{'kuszob':>8}{'egyirany':>10}{'tick zaj':>10}"
-            f"   mi van vele",
+            f"   allapot",
         ]
         for r in snap["rows"]:
             mozgas = f"{r['movePct']:+.2f}%" if r["movePct"] is not None else "--"
@@ -258,27 +258,27 @@ class PumpDumpDetector(Detector):
 def _verdict(r):
     """Emberi nyelven: mi van ezzel a parral."""
     if r["slope"] is None:
-        return "nincs eleg friss kereskedes a mereshez"
+        return "keves friss kotes, nem merheto"
     irany = "emelkedik" if r["rising"] else "esik"
     eleg_egyiranyu = r["consistency"] >= r["minConsistency"]
 
     if r["ratio"] >= 1.0:
         if r["cooling"]:
-            return "jelzes mar elment, varakozas a kovetkezoig"
+            return "jelzes mar elment, varakozunk a kovetkezore"
         if not eleg_egyiranyu:
-            return (f"gyorsan {irany}, de osszevissza "
-                    f"(egyirany {r['consistency']:.0%}, kell {r['minConsistency']:.0%})")
-        return f"kuszob atlepve, {irany}"
+            return (f"gyorsan {irany}, de kapkodva "
+                    f"({r['consistency']:.0%} egy iranyba, kell {r['minConsistency']:.0%})")
+        return f"kuszob felett {irany}"
 
     hiany = f"{(r['threshold'] - abs(r['slope'])):.3f}%/mp"
     if not eleg_egyiranyu and r["ratio"] >= 0.5:
-        return f"{irany}, de osszevissza (egyirany {r['consistency']:.0%})"
+        return f"{irany}, de kapkodva ({r['consistency']:.0%} egy iranyba)"
     if r["ratio"] >= 0.9:
-        return f"MINDJART JELZES! {irany}, meg {hiany} hianyzik"
+        return f"MINDJART JELZES -- {irany}, meg {hiany} hianyzik"
     if r["ratio"] >= 0.6:
-        return f"erosen {irany}, meg {hiany} hianyzik a jelzeshez"
+        return f"hatarozottan {irany}, meg {hiany} hianyzik"
     if r["ratio"] >= 0.3:
-        return f"{irany}, de meg messze van a jelzestol"
+        return f"{irany}, de meg messze a jelzestol"
     return "alig mozdul"
 
 

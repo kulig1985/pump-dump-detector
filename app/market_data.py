@@ -46,6 +46,8 @@ SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvon
 
 
 class MarketDataService:
+    telegram_status = None      # fuggveny, ami a Telegram allapot sorait adja
+
     def __init__(self, cfg, db, detectors, on_signal):
         self.cfg = cfg
         self.db = db
@@ -199,6 +201,8 @@ class MarketDataService:
         ]
         head += self._events_section()
         head += [line]
+        if self.telegram_status:
+            self.detectors.telegram_status = self.telegram_status()
         head += self.detectors.status_lines()      # detektoronkent sajat blokk
         return "\n".join(head + [line])
 

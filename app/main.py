@@ -85,6 +85,7 @@ async def main():
         f"{d.name} ({'BE' if detectors.enabled(d) else 'KI'})" for d in detectors.detectors))
 
     market = MarketDataService(cfg, db, detectors, on_signal=signals.handle_trigger)
+    market.telegram_status = signals.telegram_status_lines
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run(),

@@ -104,8 +104,11 @@ async def load_symbols(min_quote_volume, max_symbols, exclude=(), quotes=("USDT"
             q = next((q for q in sorted(quotes, key=len, reverse=True)
                       if sym.endswith(q)), "?")
             bontas[q] = bontas.get(q, 0) + 1
-        log.info("Elszamolo deviza szerint: %s",
-                 "  ".join(f"{q}: {n}" for q, n in sorted(bontas.items())))
+        log.info("Elszamolo deviza szerint: %s   |   legnagyobb: %s (%s) "
+                 "legkisebb bevalasztott: %s (%s)",
+                 "  ".join(f"{q}: {n}" for q, n in sorted(bontas.items())),
+                 symbols[0], f"{SYMBOL_VOLUME[symbols[0]]:,.0f}",
+                 symbols[-1], f"{SYMBOL_VOLUME[symbols[-1]]:,.0f}")
     if liquid:
         # latszodjon, hol huz a szuro -- ha keves symbol jon at, itt derul ki, hogy miert
         log.info("Figyelt parok forgalom szerint csokkeno sorrendben:")

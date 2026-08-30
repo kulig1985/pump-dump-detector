@@ -374,7 +374,7 @@ def test_detector_status_lines_render():
     det = ReversalDetector(rev_cfg)
     rev_run(det, rev_tape(0.78380, 0.78330, 0.78400))     # alakzat, attores nelkul
     sorok = det.status_lines()
-    assert any("REVERSAL FIGYELO" in x for x in sorok), sorok
+    assert any("FORDULOK" in x for x in sorok), sorok
     # a statusz a TOZSDEI idot hasznalja, nem a helyi orat -- kulonben a szintetikus
     # (vagy elcsuszott oraju) idobelyegeknel minden alakzat "elavultnak" latszana
     assert any("CYSUSDT" in x for x in sorok), sorok

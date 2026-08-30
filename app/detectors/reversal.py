@@ -303,7 +303,8 @@ class ReversalDetector(Detector):
         eleg_adat = sum(1 for w in self.trades.values()
                         if len(w) >= c["minTradesInFlowWindow"])
 
-        fazisok = {"visszapattanasra var": 0, "micro szintre var": 0, "attoresre var": 0}
+        fazisok = {"meg nem pattant vissza": 0, "micro szint hianyzik": 0,
+                   "attoresre var": 0}
         rows = []
         for symbol, st in self.setups.items():
             if now - st.extreme_ts > c["maxSetupAgeSec"]:
@@ -311,24 +312,24 @@ class ReversalDetector(Detector):
             if st.micro is not None:
                 fazis = "attoresre var"
             elif st.peak != st.extreme:
-                fazis = "micro szintre var"
+                fazis = "micro szint hianyzik"
             else:
-                fazis = "visszapattanasra var"
+                fazis = "meg nem pattant vissza"
             fazisok[fazis] += 1
             rows.append((st.move_pct, symbol, st, fazis))
 
-        fej = (f"  REVERSAL FIGYELO   {eleg_adat} paron van eleg adat   "
-               f"{len(rows)} alakzat all   jelzes indulas ota: {self.total_signals}")
-        felt = (f"    kell hozza: {c['minMovePct']:.2f}% elozetes mozgas, majd a mozgas "
-                f"{c['bounceOfMovePct']:.0f}%-ig visszapattanas, "
-                f"{c['pullbackOfBouncePct']:.0f}% visszahuzas, "
-                f"{c['minFlowRatio']:.1f}x flow es attores -- de a belepes a mozgas "
-                f"{c['maxRetracementPct']:.0f}%-an belul")
+        fej = (f"  FORDULOK   {eleg_adat} paron van eleg adat   "
+               f"{len(rows)} alakzat epul   jelzes indulas ota: {self.total_signals}")
+        felt = (f"    a jelzeshez kell: {c['minMovePct']:.2f}% elozetes mozgas, "
+                f"visszapattanas a mozgas {c['bounceOfMovePct']:.0f}%-aig, majd "
+                f"{c['pullbackOfBouncePct']:.0f}% visszahuzas, vegul "
+                f"{c['minFlowRatio']:.1f}x kotesaramlas es attores. "
+                f"Belepni csak a mozgas {c['maxRetracementPct']:.0f}%-an belul lehet.")
         if not rows:
-            return [fej, felt, "    -- eppen egyetlen par sem all fordulo-alakzatban --"]
+            return [fej, felt, "    -- eppen egy paron sem epul fordulo --"]
 
         allapot = "    ".join(f"{n}: {db}" for n, db in fazisok.items() if db)
-        out = [fej, felt, f"    fazisok:  {allapot}"]
+        out = [fej, felt, f"    hol tartanak:  {allapot}"]
         rows.sort(reverse=True, key=lambda r: r[0])
         for _, symbol, st, fazis in rows[:top]:
             szint = "LOW " if st.side == "LONG" else "HIGH"
@@ -342,15 +343,15 @@ class ReversalDetector(Detector):
                 flow_jo = (flow["buyDominant"] == kell_vetel
                            and flow["ratio"] >= c["minFlowRatio"])
             if st.micro is None:
-                kell = f"kell: {fazis}"
+                kell = fazis
             elif not flow_jo:
-                kell = (f"kell: {c['minFlowRatio']:.1f}x "
-                        f"{'veteli' if kell_vetel else 'eladoi'} flow, majd attores")
+                kell = (f"varunk {c['minFlowRatio']:.1f}x "
+                        f"{'veteli' if kell_vetel else 'eladoi'} kotesaramlast, majd attorest")
             else:
                 irany = ">" if st.side == "LONG" else "<"
-                kell = f"kell: attores, ar {irany} {fprice(st.micro)}"
+                kell = f"MINDJART -- attores kell, ar {irany} {fprice(st.micro)}"
             out.append(f"    {pad(symbol, 14)}{szint} {fprice(st.extreme):>13}  "
                        f"mozgas {st.move_pct:5.2f}%  "
                        f"micro {(fprice(st.micro) if st.micro else '-'):>12}  "
-                       f"flow {flow_txt:<13} {kell}")
+                       f"aramlas {flow_txt:<13} {kell}")
         return out

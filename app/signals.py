@@ -182,6 +182,35 @@ class SignalService:
                 log.warning("talalati aranyok frissitese sikertelen: %s", e)
             await asyncio.sleep(interval)
 
+    def telegram_status_lines(self):
+        """Miert megy (vagy nem megy) Telegram uzenet -- ez ne legyen rejtely."""
+        c = self.cfg.detector
+        sorok = []
+        for nev, kulcs in (("pump/dump", "detector"), ("reversal", "reversal")):
+            own = getattr(self.cfg, kulcs, c)
+            mod = own.get("telegramMode", "auto")
+            if mod == "always":
+                sorok.append(f"    {nev:<12} MINDEN jelzest kuld (telegramMode: always)")
+                continue
+            if mod == "never":
+                sorok.append(f"    {nev:<12} nem kuld semmit (telegramMode: never)")
+                continue
+            det = "pump_dump" if kulcs == "detector" else "reversal"
+            savok = {sav: v for (d, sav), v in self.hit_rates.items() if d == det}
+            if not savok:
+                sorok.append(f"    {nev:<12} meg egy lemert jelzes sincs -- "
+                             f"a meres {c['outcomeMinutes']} perccel a jelzes utan zarul")
+                continue
+            reszek = []
+            for sav in sorted(savok):
+                darab, arany = savok[sav]
+                elo = (darab >= c["shadowMinSamples"] and arany >= c["shadowMinHitRate"])
+                reszek.append(f"{sav}-{sav + 9}: {darab}db {arany:.0%}"
+                              f"{' ELO' if elo else ''}")
+            sorok.append(f"    {nev:<12} " + "   ".join(reszek))
+        return [f"  TELEGRAM   arnyek mod: {c['shadowMinSamples']} lemert jelzes es "
+                f"{c['shadowMinHitRate']:.0%} talalat kell egy score savhoz"] + sorok
+
     @staticmethod
     def _spread_check(raw, ob, cfg):
         """None, ha rendben; kulonben az elutasitas oka szovegesen."""

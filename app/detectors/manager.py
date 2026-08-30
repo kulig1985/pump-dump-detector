@@ -61,14 +61,19 @@ class DetectorManager:
                 signals.append(sig)
         return signals
 
+    telegram_status = None      # a SignalService tolti, csak a kijelzeshez
+
     def status_lines(self):
         """A detektorok sajat blokkjai a statusz tablahoz, egymas ala fuzve."""
         for d in self.detectors:            # a kijelzeshez lassak a kizart parokat
             if hasattr(d, "blocked"):
                 d.blocked = frozenset(self.quality.blocked)
                 d.noise = dict(self.quality.noise)
-        out = list(self.quality.blocked_summary())
-        if out:
+        out = []
+        if self.telegram_status:
+            out += self.telegram_status + [""]
+        out += self.quality.blocked_summary()
+        if out and out[-1] != "":
             out.append("")
         for d in self.detectors:
             if not self.enabled(d):

@@ -11,10 +11,24 @@ def pct(v, none="--"):
     return none if v is None else f"{v:+.2f}%"
 
 
+def _width(text):
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
 def pad(text, width):
-    """Balra igazitas kijelzesi szelesseg szerint -- a CJK karakter ket oszlop szeles."""
-    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-    return text + " " * max(0, width - w)
+    """Balra igazitas kijelzesi szelesseg szerint.
+
+    A CJK karakter ket oszlop szeles, a tul hosszu nev pedig levagodik -- kulonben
+    egy 15 karakteres symbol (BROCCOLIF3BUSDT) szetcsusztatja az egesz tablat.
+    """
+    if _width(text) > width:
+        out = ""
+        for c in text:
+            if _width(out + c) > width - 1:
+                break
+            out += c
+        text = out + "…"
+    return text + " " * max(0, width - _width(text))
 
 
 def price(p):
