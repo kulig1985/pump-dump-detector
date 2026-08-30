@@ -6,10 +6,19 @@ gyors order book + EMA elemzést végez, pontoz, **Telegramra** küld, és opcio
 (alapból **kikapcsolva**) pozíciót is nyit.
 
 ```
-Binance WebSocket -> MarketDataService -> MovementDetector
-   -> (trigger) -> OrderBookAnalyzer + TAAnalyzer -> scoring
+Binance WebSocket -> MarketDataService -> DetectorManager
+                                            ├── PumpDumpDetector
+                                            └── ReversalDetector
+   -> (jelzés) -> OrderBookAnalyzer + TAAnalyzer -> scoring
    -> SignalService -> MongoDB -> TelegramNotifier -> [TradingService]
 ```
+
+Két detektor fut párhuzamosan ugyanazon a trade-folyamon, külön konfigurációval:
+
+| detektor | mit keres | config dokumentum |
+|---|---|---|
+| `pump_dump` | hirtelen, egyirányú ármozgás 1/3/5 mp-es ablakban | `detector` |
+| `reversal` | rövid távú lokális árforduló (mélypont → visszapattanás → micro-high áttörés) | `reversal` |
 
 ---
 
@@ -209,6 +218,64 @@ Három szűrő védi a hamis jelzésektől, mindhárom kikapcsolható:
 Ha kevés a jelzés, ezek a lazítás fogói (`volatilityMultiplier: 2`, `minTicksInWindow: 2`).
 Ha sok a hamis jelzés, szigoríts (`volatilityMultiplier: 6`).
 
+## ReversalDetector
+
+Nem gyertyákból dolgozik, hanem egy néhány másodperces rolling `aggTrade` ablakból.
+Nincs benne EMA / RSI / MACD trigger. A LONG eseménysor (a SHORT pontos tükörképe):
+
+```
+LEMOZGÁS -> LOKÁLIS MINIMUM -> VISSZAPATTANÁS -> NINCS ÚJ MINIMUM
+         -> MICRO-HIGH RÖGZÜL -> VÉTELI FLOW -> MICRO-HIGH ÁTTÖRÉS -> LONG_REVERSAL
+```
+
+A buy/sell oldalt a Binance `aggTrade` `m` mezőjéből határozzuk meg: `m: true` esetén a
+vevő a maker, tehát az agresszor az eladó. A flow arány quote (USDT) mennyiséggel számol.
+
+A státusz táblában külön blokk mutatja, hol tart minden alakzat, és mi hiányzik még:
+
+```
+  REVERSAL FIGYELO  (2 par alakzatban, jelzes indulas ota: 0)
+    4USDT      LOW  0.01891485  mozgas 0.78%  micro 0.01906368  flow 1.2x   kell: flow 1.6x + attores > 0.01906368
+    SKRUSDT    LOW  0.01292000  mozgas 0.62%  micro          -  flow 1.8x   kell: micro-high rogzulese
+```
+
+### `reversal` config
+
+| kulcs | default | mit csinál |
+|---|---|---|
+| `enabled` | `true` | a detektor kapcsolója |
+| `minSignalScore` | `60` | saját küszöb, független a pump/dump-étól |
+| `cooldownSec` | `120` | páronkénti szünet két jelzés között |
+| `windowSeconds` | `20` | a rolling trade ablak hossza |
+| `minMovePct` | `0.40` | mekkora mozgás kell a forduló előtt |
+| `bouncePct` | `0.15` | ennyit kell eltávolodni a szélsőértéktől |
+| `pullbackPct` | `0.08` | ennyi visszahúzás rögzíti a micro-szintet |
+| `newExtremeTolerancePct` | `0.05` | ennél mélyebb minimum új alakzatot indít |
+| `breakTolerancePct` | `0.02` | ennyivel kell átütni a micro-szintet |
+| `flowWindowSeconds` | `3` | ekkora ablakon mérjük a trade flow-t |
+| `minFlowRatio` | `1.6` | buy/sell (vagy sell/buy) arány |
+| `minTradesInFlowWindow` | `5` | ennyi trade kell az ablakba |
+| `maxSetupAgeSec` | `30` | ennyi idő után elavul egy alakzat |
+
+### Pontozás fordulóknál
+
+A jelzés magával viszi, hogyan kell olvasni a kontextust (`contextMode`). Fordulónál a
+trend természetesen még a régi irányba mutat — ezért nem az EMA iránya számít, hanem hogy
+**az ár visszavette-e az EMA9-et**, és hogy van-e **támasz** a szélsőérték mögött. Momentum
+módban (pump/dump) marad a régi értelmezés: a trend támogassa az irányt, és ne legyen wall
+előttünk.
+
+## Új detektor hozzáadása
+
+1. Új fájl az `app/detectors/` alá egy osztállyal, ami tud `name`-et, `config_key`-t és
+   `on_trade(trade)`-et (opcionálisan `status_lines()`-t).
+2. Egy `*_DEFAULTS` dokumentum az `app/config.py`-ban.
+3. Egy sor az `app/main.py` detektor-listájában.
+
+A `SignalService`, a `scoring`, a `telegram`, a Mongo-mentés és a trading nem igényel
+módosítást — a detektor-specifikus rész a jelzés `detail` (Mongo) és `lines` (Telegram)
+mezőjében utazik.
+
 ## Hangolás
 
 Minden beállítás a MongoDB `config` collectionjében van, három dokumentumban.
@@ -282,7 +349,8 @@ Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
 - `status` — egyetlen dokumentum (`_id: "detector"`), 5 másodpercenként frissül:
-  uptime, tick/s, élő WS kapcsolatok, trigger számláló, a 10 legmozgékonyabb pár
+  uptime, tick/s, élő WS kapcsolatok, jelzésszámláló, az aktív detektorok és a
+  konzolon látható státusz sorok
 
 ## Binance API — mit használunk
 

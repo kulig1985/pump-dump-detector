@@ -1,7 +1,10 @@
-"""SignalService -- a trigger utani lanc osszefogasa.
+"""SignalService -- a detektorok jelzese utani lanc osszefogasa.
 
-trigger -> OrderBookAnalyzer + TAAnalyzer (parhuzamosan) -> score -> MongoDB
-        -> Telegram -> opcionalisan TradingService
+signal -> OrderBookAnalyzer + TAAnalyzer (parhuzamosan) -> score -> MongoDB
+       -> Telegram -> opcionalisan TradingService
+
+Detektor-fuggetlen: barmelyik detektor jelzese ugyanezen az uton megy vegig.
+A detektor-specifikus resz a signal "detail" es "lines" mezojeben utazik.
 """
 import time
 import asyncio
@@ -22,34 +25,40 @@ class SignalService:
         self.trader = trader
         self.recent = deque()      # (ts, symbol, direction) a friss jelzesekrol
 
-    async def handle_trigger(self, trigger):
-        symbol = trigger["symbol"]
+    async def handle_trigger(self, raw):
+        """Egy detektor jelzese. Sose dob kivetelt tovabb a stream fele."""
         try:
-            await self._process(trigger)
+            await self._process(raw)
         except Exception as e:
-            log.exception("[%s] signal feldolgozas hiba: %s", symbol, e)
+            log.exception("[%s] signal feldolgozas hiba: %s", raw.get("symbol"), e)
 
-    async def _process(self, trigger):
-        symbol = trigger["symbol"]
-        c = self.cfg.detector
+    async def _process(self, raw):
+        symbol, direction = raw["symbol"], raw["direction"]
+        detector = raw["detector"]
+        # a kozos beallitasok (order book, EMA, jelzes-ablak) a detector dokumentumban
+        # vannak, a kuszob viszont a jelzest ado detektor sajat configjabol jon
+        shared = self.cfg.detector
+        own = getattr(self.cfg, raw["configKey"], shared)
+        min_score = own.get("minSignalScore", shared["minSignalScore"])
 
         ob, ta_result = await asyncio.gather(
-            orderbook.analyze(symbol, trigger["price"], trigger["direction"], c),
-            ta.analyze(symbol, trigger["price"], c),
+            orderbook.analyze(symbol, raw["price"], direction, shared),
+            ta.analyze(symbol, raw["price"], shared),
         )
-        score, reason, parts = scoring.score_signal(trigger, ob, ta_result, c)
-        recent = self._count_recent(symbol, trigger["direction"], c["signalWindowMinutes"])
+        score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared)
+        recent = self._count_recent(detector, symbol, direction,
+                                    shared["signalWindowMinutes"])
 
-        ch = trigger["changes"]
         signal = {
             "timestamp": datetime.now(timezone.utc),
+            "detector": detector,
             "symbol": symbol,
-            "direction": trigger["direction"],
-            "price": trigger["price"],
+            "direction": direction,
+            "price": raw["price"],
             "quoteVolume24h": binance_rest.SYMBOL_VOLUME.get(symbol),
-            "priceChange": {"s1": ch[1], "s3": ch[3], "s5": ch[5]},
-            # a parra ervenyes kuszobok: a config ertek, vagy a sajat zajszinthez igazitva
-            "thresholds": {f"s{w}": v for w, v in trigger["thresholds"].items()},
+            "strength": round(raw["strength"], 3),
+            "detail": raw["detail"],          # detektor-specifikus bizonyitek
+            "lines": raw["lines"],
             "ema": ta_result,
             "orderBook": _without_snapshot(ob),
             "score": score,
@@ -59,27 +68,27 @@ class SignalService:
             "trade": {"executed": False, "orderId": None, "error": None},
         }
 
-        if score < c["minSignalScore"]:
-            log.info("[%s] SCORE %d/100 -- kuszob (%d) alatt, nem kuldjuk | %s",
-                     symbol, score, c["minSignalScore"], reason)
-            events.add(f"{symbol:<14} score {score:>3}/100 -- kuszob ({c['minSignalScore']}) "
-                       f"alatt, nem kuldtuk")
-            await self._save(signal, trigger, ob, ta_result, parts)
+        if score < min_score:
+            log.info("[%s] %s SCORE %d/100 -- kuszob (%d) alatt, nem kuldjuk | %s",
+                     symbol, detector, score, min_score, reason)
+            events.add(f"{symbol:<14} {detector} score {score:>3}/100 -- "
+                       f"kuszob ({min_score}) alatt, nem kuldtuk")
+            await self._save(signal, raw, ob, ta_result, parts)
             return
 
-        log.warning("[%s] SCORE %d/100 | %s", symbol, score, reason)
+        log.warning("[%s] %s SCORE %d/100 | %s", symbol, detector, score, reason)
 
         signal["trade"] = await self.trader.maybe_open(signal)
         signal["telegram"] = await self.notifier.send(symbol, telegram.format_signal(signal))
-        await self._save(signal, trigger, ob, ta_result, parts)
+        await self._save(signal, raw, ob, ta_result, parts)
 
         kimenet = "TELEGRAM ELKULDVE" if signal["telegram"]["sent"] else \
                   f"Telegram NEM ment ki ({signal['telegram']['error']})"
-        events.add(f"{symbol:<14} score {score:>3}/100 -- {kimenet}  "
-                   f"({recent['sameSymbolSameDirection']}. {trigger['direction']} "
+        events.add(f"{symbol:<14} {detector} score {score:>3}/100 -- {kimenet}  "
+                   f"({recent['sameDirection']}. {direction} "
                    f"{recent['windowMinutes']} percen belul)")
 
-    async def _save(self, signal, trigger, ob, ta_result, parts):
+    async def _save(self, signal, raw, ob, ta_result, parts):
         symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
 
@@ -90,9 +99,10 @@ class SignalService:
             snap = await self.db.snapshots.insert_one({
                 "timestamp": signal["timestamp"],
                 "signalId": result.inserted_id,
+                "detector": signal["detector"],
                 "symbol": symbol,
                 "price": signal["price"],
-                "priceHistory": [[ts, p] for ts, p in trigger["history"]],
+                "priceHistory": [[ts, p] for ts, p in raw["history"]],
                 "orderBook": ob["snapshot"] if ob else None,
                 "ema": ta_result,
                 "scoreInputs": parts,
@@ -105,19 +115,21 @@ class SignalService:
             events.add(f"{symbol:<14} market_snapshots mentes HIBA: {e}")
 
 
-    def _count_recent(self, symbol, direction, window_minutes):
-        """Hanyadik ez a jelzes az adott iranyban az elmult ablakban."""
+    def _count_recent(self, detector, symbol, direction, window_minutes):
+        """Hanyadik ez a jelzes ettol a detektortol, ebben az iranyban, az ablakban."""
         now = time.time()
         cutoff = now - window_minutes * 60
         while self.recent and self.recent[0][0] < cutoff:
             self.recent.popleft()
-        self.recent.append((now, symbol, direction))
+        self.recent.append((now, detector, symbol, direction))
         return {
             "windowMinutes": window_minutes,
-            "sameSymbolSameDirection": sum(1 for _, s, d in self.recent
-                                           if s == symbol and d == direction),
-            "marketLong": sum(1 for _, _, d in self.recent if d == "LONG"),
-            "marketShort": sum(1 for _, _, d in self.recent if d == "SHORT"),
+            "sameDirection": sum(1 for _, det, s, d in self.recent
+                                 if det == detector and s == symbol and d == direction),
+            "marketLong": sum(1 for _, det, _, d in self.recent
+                              if det == detector and d == "LONG"),
+            "marketShort": sum(1 for _, det, _, d in self.recent
+                               if det == detector and d == "SHORT"),
         }
 
 

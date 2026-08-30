@@ -23,6 +23,7 @@ class Database:
     async def init(self):
         await self.signals.create_index([("timestamp", -1)])
         await self.signals.create_index([("symbol", 1), ("timestamp", -1)])
+        await self.signals.create_index([("detector", 1), ("timestamp", -1)])
         await self.snapshots.create_index([("timestamp", -1)])
         await self.orders.create_index([("timestamp", -1)])
         log.info("MongoDB kapcsolat kesz: %s/%s", MONGO_URL, MONGO_DB)

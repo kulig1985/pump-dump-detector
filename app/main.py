@@ -10,6 +10,7 @@ import logging
 from .db import Database
 from .config import ConfigStore
 from .market_data import MarketDataService
+from .detectors import DetectorManager, PumpDumpDetector, ReversalDetector
 from .signals import SignalService
 from .telegram import TelegramNotifier
 from .trading import TradingService
@@ -41,7 +42,13 @@ async def main():
     notifier = TelegramNotifier(cfg)
     trader = TradingService(cfg, db)
     signals = SignalService(cfg, db, notifier, trader)
-    market = MarketDataService(cfg, db, on_trigger=signals.handle_trigger)
+
+    # Uj detektor hozzaadasa: egy uj osztaly az app/detectors/ ala, es egy sor ide.
+    detectors = DetectorManager(cfg, [PumpDumpDetector(cfg), ReversalDetector(cfg)])
+    log.info("Detektorok: %s", ", ".join(
+        f"{d.name} ({'BE' if detectors.enabled(d) else 'KI'})" for d in detectors.detectors))
+
+    market = MarketDataService(cfg, db, detectors, on_signal=signals.handle_trigger)
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run())

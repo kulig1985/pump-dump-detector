@@ -44,44 +44,56 @@ class TelegramNotifier:
             await self.session.close()
 
 
+HEADERS = {
+    ("pump_dump", "LONG"): "🚨 FUTURES PUMP DETECTED",
+    ("pump_dump", "SHORT"): "🔻 FUTURES DUMP DETECTED",
+    ("reversal", "LONG"): "🟢 FUTURES LONG REVERSAL",
+    ("reversal", "SHORT"): "🔴 FUTURES SHORT REVERSAL",
+}
+
+
 def format_signal(sig):
-    """A kert uzenetformatum."""
-    pump = sig["direction"] == "LONG"
-    ch = sig["priceChange"]
+    """Kozos boritek + a detektor sajat reszletezo sorai.
+
+    Uj detektor eseten itt nem kell modositani semmit: a detektor a signal "lines"
+    mezojeben adja a sajat bizonyitekait. Csak a fejlec szovege johet a HEADERS-bol
+    (ha nincs benne, egy altalanos fejlecet hasznalunk).
+    """
+    detector, direction = sig.get("detector", "pump_dump"), sig["direction"]
     lines = [
-        "🚨 FUTURES PUMP DETECTED" if pump else "🔻 FUTURES DUMP DETECTED",
+        HEADERS.get((detector, direction), f"⚡ {detector.upper()} {direction}"),
         sig["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC"),
         "",
         sig["symbol"],
-        f"Direction: {sig['direction']}",
+        f"Direction: {direction}",
         f"Price: {sig['price']:.8g}",
-        f"24h volume: {sig['quoteVolume24h'] / 1e6:,.0f}M USDT"
-        if sig.get("quoteVolume24h") else "24h volume: n/a",
-        "",
-        f"1s: {_pct(ch['s1'])}",
-        f"3s: {_pct(ch['s3'])}",
-        f"5s: {_pct(ch['s5'])}",
-        "",
     ]
+    if sig.get("quoteVolume24h"):
+        lines.append(f"24h volume: {sig['quoteVolume24h'] / 1e6:,.0f}M USDT")
+
+    # a detektor sajat blokkja
+    lines.append("")
+    lines += sig.get("lines", [])
+
+    lines.append("")
     ema = sig.get("ema")
     lines.append(f"EMA: {ema['trend'] if ema else 'n/a'}")
 
     ob = sig.get("orderBook") or {}
+    pump = direction == "LONG"
     wall = ob.get("nearestSellWall") if pump else ob.get("nearestBuyWall")
     label = "Nearest sell wall" if pump else "Nearest buy wall"
     lines.append(f"{label}: {wall['distancePct']:.2f}% away" if wall else f"{label}: none nearby")
 
-    th = sig.get("thresholds")
-    if th:
-        lines.append(f"Trigger threshold (1s): {th['s1']:.2f}%")
     lines.append(f"Signal score: {sig['score']}/100")
 
     r = sig.get("recent")
     if r:
         lines.append("")
-        lines.append(f"Ez a(z) {r['sameSymbolSameDirection']}. {sig['direction']} jelzes "
-                     f"{sig['symbol']}-re {r['windowMinutes']} percen belul")
-        lines.append(f"A teljes piacon {r['windowMinutes']} perc alatt: "
+        lines.append(f"Ez a(z) {r['sameDirection']}. {direction} jelzes "
+                     f"{sig['symbol']}-re {r['windowMinutes']} percen belul "
+                     f"({detector})")
+        lines.append(f"Ettol a detektortol {r['windowMinutes']} perc alatt: "
                      f"{r['marketLong']} LONG / {r['marketShort']} SHORT")
 
     lines.append("")
@@ -89,7 +101,3 @@ def format_signal(sig):
     if sig.get("trade", {}).get("executed"):
         lines.append(f"Trade: OPENED (order {sig['trade']['orderId']})")
     return "\n".join(lines)
-
-
-def _pct(v):
-    return "n/a" if v is None else f"{v:+.2f}%"

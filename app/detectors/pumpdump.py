@@ -1,22 +1,30 @@
-"""MovementDetector -- masodperces skalaju hirtelen armozgas detektalas.
+"""PumpDumpDetector -- masodperces skalaju hirtelen armozgas detektalas.
 
-Symbolonkent memoriaban tartjuk az utolso ~6 masodperc arait, es minden uj tick-nel
+Symbolonkent memoriaban tartjuk az utolso ~6 masodperc arait, es minden uj trade-nel
 kiszamoljuk az 1s / 3s / 5s valtozast. Nem varunk gyertyazarasra.
+
+A statusz tablat is ez a detektor rajzolja (status_lines) -- az "mi tortenik az
+arakkal" nezet ehhez a detektorhoz tartozik.
 """
 import time
 import logging
 from collections import deque, defaultdict
 
-from . import events
+from .. import events, binance_rest
+from ..fmt import pad, pct as fpct, price as fprice, money
+from .base import Detector, make_signal
 
-log = logging.getLogger("detector")
+log = logging.getLogger("pumpdump")
 
 WINDOWS = (1, 3, 5)          # masodperc
 HISTORY_SEC = max(WINDOWS) + 1
 VOL_ALPHA = 0.01             # a volatilitas EWMA tanulasi rata (~40 masodperc emlekezet)
 
 
-class MovementDetector:
+class PumpDumpDetector(Detector):
+    name = "pump_dump"
+    config_key = "detector"
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.history = defaultdict(deque)   # symbol -> deque[(ts, price)]
@@ -27,8 +35,11 @@ class MovementDetector:
         self.latest = {}                    # symbol -> (ar, valtozasok)
         self.vol = {}                       # symbol -> {ablak: atlagos abszolut valtozas}
 
+    def on_trade(self, trade):
+        return self.on_price(trade.symbol, trade.price, trade.ts)
+
     def on_price(self, symbol, price, ts):
-        """Uj ar. Visszaad egy trigger dictet, vagy None-t."""
+        """Uj ar. Visszaad egy signal dictet, vagy None-t."""
         h = self.history[symbol]
         h.append((ts, price))
         while h and h[0][0] < ts - HISTORY_SEC:
@@ -65,17 +76,28 @@ class MovementDetector:
         log.warning("[%s] TRIGGER %s | 1s %s | 3s %s | 5s %s | sajat kuszob 1mp %.2f%%",
                     symbol, direction, _pct(changes[1]), _pct(changes[3]), _pct(changes[5]),
                     thresholds[1])
-        events.add(f"{symbol:<14} TRIGGER {direction:<5} "
+        events.add(f"{symbol:<14} PUMP/DUMP {direction:<5} "
                    f"1s {_pct(changes[1])}  3s {_pct(changes[3])}  5s {_pct(changes[5])}")
-        return {
-            "symbol": symbol,
-            "direction": direction,
-            "price": price,
-            "timestamp": ts,
-            "changes": changes,
-            "history": list(h),
-            "thresholds": thresholds,
-        }
+
+        ratios = [abs(ch) / thresholds[w] for w, ch in changes.items() if ch is not None]
+        c1, c5 = changes[1], changes[5]
+        return make_signal(
+            self.name, self.config_key, symbol, direction, price, ts,
+            strength=max(ratios) if ratios else 0.0,
+            # gyorsul, ha az utolso 1 masodperc tempoja meghaladja az 5 mp-es atlagot
+            accelerating=(c1 is not None and c5 is not None
+                          and abs(c5) > 0 and abs(c1) > abs(c5) / 5),
+            context_mode="momentum",
+            detail={
+                "priceChange": {f"s{w}": v for w, v in changes.items()},
+                "thresholds": {f"s{w}": v for w, v in thresholds.items()},
+            },
+            lines=[f"1s: {_pct(changes[1])}",
+                   f"3s: {_pct(changes[3])}",
+                   f"5s: {_pct(changes[5])}",
+                   f"Trigger threshold (1s): {thresholds[1]:.2f}%"],
+            history=list(h),
+        )
 
     @staticmethod
     def _change(history, now, window, price, max_ref_age_factor, min_ticks):
@@ -156,6 +178,44 @@ class MovementDetector:
         ticks, self.ticks = self.ticks, 0
         return {"ticks": ticks, "totalTriggers": self.total_triggers,
                 "symbols": len(self.latest), "rows": rows[:top]}
+
+
+    def status_lines(self):
+        """Az "mi tortenik most az arakkal" tabla."""
+        snap = self.snapshot()
+        th = self.base_thresholds()
+        out = [
+            f"  ARFOLYAMOK   alap kuszob: 1 mp {th[1]:.2f}%  |  3 mp {th[3]:.2f}%  |  "
+            f"5 mp {th[5]:.2f}%   (paronkent a sajat zajszinthez igazitva)",
+            f"  {pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
+            f"{'1 mp':>8}{'3 mp':>8}{'5 mp':>8}{'sajat kuszob':>14}   mi van vele",
+        ]
+        for r in snap["rows"]:
+            c = r["changes"]
+            out.append(f"  {pad(r['symbol'], 14)}"
+                       f"{money(binance_rest.SYMBOL_VOLUME.get(r['symbol'])):>11}"
+                       f"{fprice(r['price']):>13}"
+                       f"{fpct(c[1]):>8}{fpct(c[3]):>8}{fpct(c[5]):>8}"
+                       f"{r['ownThreshold']:>13.2f}%   {_verdict(r)}")
+        return out
+
+
+def _verdict(r):
+    """Emberi nyelven: mi van ezzel a parral."""
+    if r["window"] is None:
+        return "keves kereskedes, nem merheto"
+    irany = "emelkedik" if r["rising"] else "esik"
+    if r["missing"] <= 0:
+        return ("jelzes mar elment, varakozas a kovetkezoig" if r["cooling"]
+                else f"kuszob atlepve, {irany}")
+    hiany = f"{r['missing']:.2f}%"
+    if r["ratio"] >= 0.9:
+        return f"MINDJART JELZES! {irany}, meg {hiany} hianyzik"
+    if r["ratio"] >= 0.6:
+        return f"erosen {irany}, meg {hiany} hianyzik a jelzeshez"
+    if r["ratio"] >= 0.3:
+        return f"{irany}, de meg messze van a jelzestol"
+    return "alig mozdul"
 
 
 def _pct(v):

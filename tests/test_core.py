@@ -6,8 +6,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from app.detector import MovementDetector
-from app.market_data import _mongo_row, _pad
+from app.detectors.pumpdump import PumpDumpDetector
+from app.detectors.reversal import ReversalDetector
+from app.detectors.manager import DetectorManager
+from app.detectors.base import Trade
+from app.fmt import pad as _pad
 from app import orderbook, scoring
 from app.ta import ema
 
@@ -36,23 +39,23 @@ def feed(det, symbol, start_ts, prices, step=0.2):
 
 
 def test_no_trigger_below_threshold():
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     # 6 masodperc alatt +0.1% -- minden kuszob alatt
     prices = [100.0 + i * 0.0033 for i in range(31)]
     assert feed(det, "AAAUSDT", 1000.0, prices) == []
 
 
 def test_trigger_above_threshold():
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     prices = [100.0] * 26 + [100.5] * 5      # ugras +0.5% egy tickben
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
     assert triggers[0]["direction"] == "LONG"
-    assert triggers[0]["changes"][1] > 0.30
+    assert triggers[0]["detail"]["priceChange"]["s1"] > 0.30
 
 
 def test_dump_direction():
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     prices = [100.0] * 26 + [99.5] * 5
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
@@ -60,21 +63,21 @@ def test_dump_direction():
 
 
 def test_cooldown_suppresses_repeat():
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     # ket kulon ugras 4 masodperc kulonbseggel, a cooldown 60s -> csak az elso jon at
     prices = [100.0] * 26 + [100.5] * 20 + [101.5] * 5
     assert len(feed(det, "DDDUSDT", 1000.0, prices)) == 1
 
 
 def test_no_trigger_without_enough_history():
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     # rogton egy nagy ugras, elozmeny nelkul -> nincs mihez viszonyitani
     assert feed(det, "EEEUSDT", 1000.0, [100.0, 105.0]) == []
 
 
 def test_stale_reference_is_rejected():
     """Ritka par: egyetlen trade a spreaden at nem szamit 1 masodperces mozgasnak."""
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     # sok tick, majd 2.5 mp szunet, majd egy nagy ugras
     ticks = [(1000.0 + i * 0.1, 100.0) for i in range(30)]      # 0.0 - 2.9
     ticks.append((1005.4, 100.5))                                # 2.5 mp szunet utan +0.5%
@@ -84,7 +87,7 @@ def test_stale_reference_is_rejected():
 
 def test_too_few_ticks_in_window_is_rejected():
     """Ket trade nem mozgas, csak zaj -- minTicksInWindow = 3."""
-    det = MovementDetector(cfg_obj)
+    det = PumpDumpDetector(cfg_obj)
     base = [(1000.0 + i * 0.1, 100.0) for i in range(30)]
     out = [det.on_price("HHHUSDT", p, t) for t, p in base]
     assert not any(out)
@@ -99,7 +102,7 @@ def test_too_few_ticks_in_window_is_rejected():
 def test_volatility_raises_threshold_for_noisy_symbol():
     """A nyugtalan parnak tobbet kell mozdulnia; a config ertek a padlo."""
     cfg = types.SimpleNamespace(detector={**CFG, "volatilityMultiplier": 4.0})
-    det = MovementDetector(cfg)
+    det = PumpDumpDetector(cfg)
 
     # nyugodt par: gyakorlatilag all
     for i in range(300):
@@ -112,6 +115,183 @@ def test_volatility_raises_threshold_for_noisy_symbol():
     noisy = det.thresholds("NOISYUSDT")[1]
     assert calm == CFG["priceChangeThreshold1s"], calm
     assert noisy > calm, (calm, noisy)
+
+
+# ---------------------------------------------------------------- ReversalDetector
+
+REV = {
+    "enabled": True, "minSignalScore": 60, "cooldownSec": 120,
+    "windowSeconds": 20, "minTradesInFlowWindow": 5, "maxSetupAgeSec": 30,
+    "minMovePct": 0.40, "bouncePct": 0.15, "pullbackPct": 0.08,
+    "newExtremeTolerancePct": 0.05, "breakTolerancePct": 0.02,
+    "flowWindowSeconds": 3, "minFlowRatio": 1.6,
+}
+rev_cfg = types.SimpleNamespace(detector=CFG, reversal=REV)
+
+
+class Tape:
+    """Szintetikus trade sorozat epitese a reversal teszteken."""
+
+    def __init__(self, symbol="RRRUSDT", t0=1000.0):
+        self.symbol, self.t = symbol, t0
+        self.trades = []
+
+    def add(self, price, buy=True, qty=100.0, dt=0.1):
+        self.t += dt
+        self.trades.append(Trade(self.symbol, price, qty, self.t, buy))
+        return self
+
+    def ramp(self, start, end, n, buy=True, qty=100.0):
+        for i in range(n):
+            self.add(start + (end - start) * (i + 1) / n, buy, qty)
+        return self
+
+    def run(self, det):
+        return [s for s in (det.on_trade(tr) for tr in self.trades) if s]
+
+
+def _long_setup(tape):
+    """Kozos elotag: 100.0 -> 99.4 eses (-0.6%), majd visszapattanas 99.65-ig,
+    aztan visszahuzas 99.55-re (itt rogzul a 99.65-os micro-high)."""
+    tape.ramp(100.0, 100.0, 6, buy=False)      # kiindulasi szint
+    tape.ramp(99.95, 99.40, 12, buy=False)     # LEMOZGAS: -0.6%
+    tape.ramp(99.45, 99.65, 6, buy=True)       # VISSZAPATTANAS: +0.25%
+    tape.ramp(99.62, 99.55, 4, buy=True)       # visszahuzas -> micro-high rogzul
+    return tape
+
+
+def test_long_reversal_happy_path():
+    det = ReversalDetector(rev_cfg)
+    tape = _long_setup(Tape())
+    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)   # veteli flow + attores
+    signals = tape.run(det)
+    assert len(signals) == 1, [s["detail"] for s in signals]
+    sig = signals[0]
+    assert sig["detector"] == "reversal"
+    assert sig["direction"] == "LONG"
+    assert sig["contextMode"] == "reversal"
+    d = sig["detail"]
+    assert d["movePct"] >= REV["minMovePct"]
+    assert d["flowRatio"] >= REV["minFlowRatio"]
+    assert d["microLevel"] is not None and sig["price"] > d["microLevel"]
+    assert d["extreme"] <= 99.41
+
+
+def test_no_reversal_without_buy_flow():
+    """Minden alakzat megvan, de az elado oldal marad a domináns."""
+    det = ReversalDetector(rev_cfg)
+    tape = _long_setup(Tape())
+    tape.ramp(99.60, 99.80, 8, buy=False, qty=500.0)   # attores, de eladoi flow
+    assert tape.run(det) == []
+
+
+def test_no_reversal_without_micro_break():
+    """Visszapattan, a micro-high rogzul, de nem tori at."""
+    det = ReversalDetector(rev_cfg)
+    tape = _long_setup(Tape())
+    tape.ramp(99.56, 99.62, 8, buy=True, qty=500.0)    # a 99.65 ala marad
+    assert tape.run(det) == []
+
+
+def test_new_lower_low_resets_the_setup():
+    """Uj, melyebb minimum -> az alakzat ujraindul, nincs jelzes a regi micro-szintre."""
+    det = ReversalDetector(rev_cfg)
+    tape = _long_setup(Tape())
+    tape.ramp(99.50, 99.10, 6, buy=False)              # UJ MELYPONT
+    tape.ramp(99.15, 99.66, 10, buy=True, qty=500.0)   # a regi micro-high fole megy
+    signals = tape.run(det)
+    # ha lenne jelzes, az mar az uj melypontra epulne, nem a regire
+    for s in signals:
+        assert s["detail"]["extreme"] <= 99.11, s["detail"]
+
+
+def test_short_reversal_mirror():
+    det = ReversalDetector(rev_cfg)
+    tape = Tape("SSSUSDT")
+    tape.ramp(100.0, 100.0, 6, buy=True)
+    tape.ramp(100.05, 100.60, 12, buy=True)            # FELMOZGAS: +0.6%
+    tape.ramp(100.55, 100.35, 6, buy=False)            # visszafordulas
+    tape.ramp(100.38, 100.45, 4, buy=False)            # micro-low rogzul
+    tape.ramp(100.40, 100.20, 8, buy=False, qty=500.0) # eladoi flow + attores
+    signals = tape.run(det)
+    assert len(signals) == 1, [s["detail"] for s in signals]
+    assert signals[0]["direction"] == "SHORT"
+    assert signals[0]["detail"]["extreme"] >= 100.59
+
+
+def test_reversal_cooldown():
+    det = ReversalDetector(rev_cfg)
+    tape = _long_setup(Tape())
+    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
+    assert len(tape.run(det)) == 1
+    # ugyanaz az alakzat ujra, a cooldown ablakon belul
+    tape2 = _long_setup(Tape(t0=tape.t))
+    tape2.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
+    assert tape2.run(det) == []
+
+
+def test_flow_ratio_is_finite_when_one_side_is_empty():
+    """Ha az egyik oldalon nincs volumen, az arany nem lehet vegtelen (Mongo + score)."""
+    det = ReversalDetector(rev_cfg)
+    tape = Tape("JJJUSDT")
+    for i in range(10):
+        tape.add(100.0 + i * 0.01, buy=True)          # kizarolag veteli oldal
+    flow = det._flow([t for t in tape.trades], tape.t, REV)
+    assert flow["sell"] == 0
+    assert flow["ratio"] == 99.0
+    assert math.isfinite(flow["ratio"])
+
+
+def test_reversal_scoring_survives_opposite_ema():
+    """A fo buktato: LONG reversal utan az EMA meg bearish. Momentum modban ez
+    0 pont es a jelzes sose menne ki; reversal modban az szamit, hogy az ar
+    visszavette-e az EMA9-et."""
+    bearish_but_reclaimed = {"trend": "bearish", "aboveFast": True,
+                             "fast": 1.0, "slow": 2.0}
+    # tipikus kep egy aljon: tamasz alattunk, ellenallas felettunk
+    resistance = {"distancePct": 0.3, "ratio": 5.0}
+    support = {"distancePct": 0.2, "ratio": 5.0}
+    ob = {"obstacleAhead": resistance, "liquidityRatio": 1.0,
+          "nearestBuyWall": support, "nearestSellWall": resistance}
+
+    momentum, _, _ = scoring.score_signal(
+        _sig(1.5, accelerating=True, mode="momentum"), ob, bearish_but_reclaimed, CFG)
+    reversal, _, _ = scoring.score_signal(
+        _sig(1.5, accelerating=True, mode="reversal"), ob, bearish_but_reclaimed, CFG)
+
+    assert momentum < 60, momentum          # a regi logikaval sosem menne ki
+    assert reversal >= 60, reversal         # a reversal ertelmezessel atmegy
+
+
+# ---------------------------------------------------------------- DetectorManager
+
+class BoomDetector:
+    name, config_key = "boom", "detector"
+
+    def on_trade(self, trade):
+        raise RuntimeError("szandekos hiba")
+
+    def status_lines(self):
+        return []
+
+
+def test_manager_fans_out_and_survives_a_broken_detector():
+    rev = ReversalDetector(rev_cfg)
+    mgr = DetectorManager(rev_cfg, [BoomDetector(), rev])
+    tape = _long_setup(Tape())
+    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
+    signals = [s for tr in tape.trades for s in mgr.on_trade(tr)]
+    assert len(signals) == 1, "a hibas detektor nem nyelheti el a masik jelzeset"
+    assert mgr.ticks == len(tape.trades)
+    assert mgr.total_signals == 1
+
+
+def test_manager_skips_disabled_detector():
+    cfg = types.SimpleNamespace(detector=CFG, reversal={**REV, "enabled": False})
+    mgr = DetectorManager(cfg, [ReversalDetector(cfg)])
+    tape = _long_setup(Tape())
+    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
+    assert [s for tr in tape.trades for s in mgr.on_trade(tr)] == []
 
 
 def test_wall_detection():
@@ -149,12 +329,10 @@ def test_cjk_symbol_column_alignment():
     assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
-def test_status_row_is_mongo_safe():
-    """A Mongo csak string kulcsot fogad -- a changes dict kulcsai egesz szamok."""
-    det = MovementDetector(cfg_obj)
-    feed(det, "FFFUSDT", 1000.0, [100.0 + i * 0.01 for i in range(40)])
-    rows = [_mongo_row(r) for r in det.snapshot()["rows"]]
-    assert rows
+def test_signal_detail_is_mongo_safe():
+    """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
+    det = PumpDumpDetector(cfg_obj)
+    sig = feed(det, "FFFUSDT", 1000.0, [100.0] * 26 + [100.5] * 5)[0]
 
     def check(o, path="doc"):
         if isinstance(o, dict):
@@ -165,8 +343,9 @@ def test_status_row_is_mongo_safe():
             for i, v in enumerate(o):
                 check(v, f"{path}[{i}]")
 
-    check({"topMovers": rows})
-    assert set(rows[0]["changes"]) == {"s1", "s3", "s5"}
+    check(sig["detail"])
+    assert set(sig["detail"]["priceChange"]) == {"s1", "s3", "s5"}
+    assert set(sig["detail"]["thresholds"]) == {"s1", "s3", "s5"}
 
 
 def test_wall_behind_price_is_not_an_obstacle():
@@ -185,34 +364,37 @@ def test_wall_behind_price_is_not_an_obstacle():
     assert 0.0 < buy["distancePct"] < 0.1
 
 
-def _trigger(c1, c3, c5):
-    return {"symbol": "X", "direction": "LONG", "price": 100.0,
-            "changes": {1: c1, 3: c3, 5: c5},
-            "thresholds": {1: CFG["priceChangeThreshold1s"],
-                           3: CFG["priceChangeThreshold3s"],
-                           5: CFG["priceChangeThreshold5s"]}}
+def _sig(strength, accelerating=False, mode="momentum", direction="LONG"):
+    return {"symbol": "X", "direction": direction, "price": 100.0,
+            "strength": strength, "accelerating": accelerating, "contextMode": mode}
 
 
-def test_trigger_carries_its_own_thresholds():
-    """A trigger viszi magaval az ervenyes kuszoboket, hogy a scoring azokhoz merjen."""
-    det = MovementDetector(cfg_obj)
-    prices = [100.0] * 26 + [100.5] * 5
-    t = feed(det, "IIIUSDT", 1000.0, prices)[0]
-    assert t["thresholds"] == {1: 0.30, 3: 0.60, 5: 0.90}
+def test_signal_carries_its_own_thresholds():
+    """A jelzes viszi magaval az ervenyes kuszoboket es a sajat bizonyitekat."""
+    det = PumpDumpDetector(cfg_obj)
+    sig = feed(det, "IIIUSDT", 1000.0, [100.0] * 26 + [100.5] * 5)[0]
+    assert sig["detector"] == "pump_dump"
+    assert sig["configKey"] == "detector"
+    assert sig["contextMode"] == "momentum"
+    assert sig["detail"]["thresholds"] == {"s1": 0.30, "s3": 0.60, "s5": 0.90}
+    assert sig["strength"] > 1.0
 
 
 def test_score_increases_with_stronger_move():
-    weak, _, _ = scoring.score_signal(_trigger(0.31, 0.4, 0.5), None, None, CFG)
-    strong, _, _ = scoring.score_signal(_trigger(0.90, 1.2, 1.4), None, None, CFG)
+    weak, _, _ = scoring.score_signal(_sig(1.0), None, None, CFG)
+    strong, _, _ = scoring.score_signal(_sig(2.0), None, None, CFG)
     assert strong > weak, (weak, strong)
 
 
 def test_score_penalises_opposite_ema_and_near_wall():
-    trig = _trigger(0.6, 0.8, 1.0)
+    trig = _sig(1.5)
     good_ta = {"trend": "bullish", "aboveFast": True, "fast": 1, "slow": 0}
     bad_ta = {"trend": "bearish", "aboveFast": False, "fast": 0, "slow": 1}
-    clear_ob = {"obstacleAhead": None, "liquidityRatio": 1.0}
-    blocked_ob = {"obstacleAhead": {"distancePct": 0.05, "ratio": 8.0}, "liquidityRatio": 1.0}
+    clear_ob = {"obstacleAhead": None, "liquidityRatio": 1.0,
+                "nearestBuyWall": None, "nearestSellWall": None}
+    blocked_ob = {"obstacleAhead": {"distancePct": 0.05, "ratio": 8.0},
+                  "liquidityRatio": 1.0, "nearestBuyWall": None,
+                  "nearestSellWall": {"distancePct": 0.05, "ratio": 8.0}}
 
     best, _, _ = scoring.score_signal(trig, clear_ob, good_ta, CFG)
     worst, _, _ = scoring.score_signal(trig, blocked_ob, bad_ta, CFG)

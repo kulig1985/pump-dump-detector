@@ -19,10 +19,15 @@ Teszt hálózat nélkül: `python tests/test_core.py`
 ## Adatfolyam
 
 ```
-Binance WebSocket -> MarketDataService -> MovementDetector
-   -> (trigger) -> OrderBookAnalyzer + TAAnalyzer -> scoring
+Binance WebSocket -> MarketDataService -> DetectorManager
+                                            ├── PumpDumpDetector
+                                            └── ReversalDetector
+   -> (jelzés) -> OrderBookAnalyzer + TAAnalyzer -> scoring
    -> SignalService -> MongoDB -> TelegramNotifier -> [TradingService]
 ```
+
+Új detektor = új fájl az `app/detectors/` alá + egy `*_DEFAULTS` a `config.py`-ban +
+egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 
 ## Modulok
 
@@ -33,17 +38,21 @@ Binance WebSocket -> MarketDataService -> MovementDetector
 | `app/config.py` | config seed + betöltés Mongo-ból, 30 mp-enként újratöltve |
 | `app/binance_rest.py` | exchangeInfo / ticker24hr / klines, aláírt REST (leverage, marginType) |
 | `app/market_data.py` | aggTrade WS-ek 150-es chunkokban, reconnect |
-| `app/detector.py` | 1s/3s/5s rolling ablak, trigger, per-symbol cooldown |
+| `app/detectors/base.py` | közös `Trade` / `Signal` alak, `Detector` interfész |
+| `app/detectors/manager.py` | fan-out a detektorokra, detektoronkénti hibakezelés |
+| `app/detectors/pumpdump.py` | 1s/3s/5s rolling ablak, trigger, cooldown, ártábla |
+| `app/detectors/reversal.py` | lokális árforduló állapotgép `aggTrade`-ből |
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |
-| `app/scoring.py` | 0–100 score + indoklás — **itt hangolható a detektor ízlése** |
+| `app/scoring.py` | 0–100 score + indoklás, `contextMode` szerint momentum/reversal ág |
+| `app/fmt.py` | közös formázók a státusz táblához |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
 | `app/telegram.py` | Bot API sendMessage + üzenetformázás |
 | `app/trading.py` | WS API `order.place`, TP/SL, pozíciólimitek |
 
 ## Konfiguráció
 
-Minden a MongoDB `config` collectionben, három dokumentumban: `detector`, `trading`,
+Minden a MongoDB `config` collectionben, négy dokumentumban: `detector`, `reversal`, `trading`,
 `telegram`. Első indulásnál a defaultok bekerülnek, utána **a DB az igazság** — menet
 közbeni módosítás 30 mp-en belül életbe lép, újraindítás nélkül.
 

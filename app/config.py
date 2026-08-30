@@ -41,6 +41,26 @@ DETECTOR_DEFAULTS = {
     "emaInterval": "1m",
 }
 
+REVERSAL_DEFAULTS = {
+    "_id": "reversal",
+    "enabled": True,
+    "minSignalScore": 60,              # sajat kuszob, fuggetlen a pump/dump-etol
+    "cooldownSec": 120,
+    # --- rolling trade ablak ---
+    "windowSeconds": 20,
+    "minTradesInFlowWindow": 5,
+    "maxSetupAgeSec": 30,              # ennyi ido utan elavul egy alakzat
+    # --- alakzat ---
+    "minMovePct": 0.40,                # a fordulo elotti mozgas merteke
+    "bouncePct": 0.15,                 # ennyit kell eltavolodni a szelsoertektol
+    "pullbackPct": 0.08,               # a micro szint rogzitesehez szukseges visszahuzas
+    "newExtremeTolerancePct": 0.05,    # ennel melyebb minimum = uj alakzat
+    "breakTolerancePct": 0.02,         # ennyivel kell atutni a micro szintet
+    # --- trade flow ---
+    "flowWindowSeconds": 3,
+    "minFlowRatio": 1.6,               # buy/sell (vagy sell/buy) arany
+}
+
 TRADING_DEFAULTS = {
     "_id": "trading",
     "autoTradingEnabled": False,       # ALAPERTELMEZETTEN KIKAPCSOLVA
@@ -66,12 +86,14 @@ class ConfigStore:
     def __init__(self, db):
         self.db = db
         self.detector = dict(DETECTOR_DEFAULTS)
+        self.reversal = dict(REVERSAL_DEFAULTS)
         self.trading = dict(TRADING_DEFAULTS)
         self.telegram = dict(TELEGRAM_DEFAULTS)
 
     async def load(self):
         for defaults, attr in (
             (DETECTOR_DEFAULTS, "detector"),
+            (REVERSAL_DEFAULTS, "reversal"),
             (TRADING_DEFAULTS, "trading"),
             (TELEGRAM_DEFAULTS, "telegram"),
         ):

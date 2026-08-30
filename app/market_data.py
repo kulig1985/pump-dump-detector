@@ -20,7 +20,6 @@ eseten) -- a _stream ciklus ezt automatikusan ujraepiti.
 """
 import os
 import json
-import unicodedata
 import time
 import uuid
 import asyncio
@@ -31,7 +30,8 @@ import websockets
 from datetime import datetime, timezone
 
 from . import binance_rest, events
-from .detector import MovementDetector
+from .detectors.base import Trade
+from .fmt import clock
 
 log = logging.getLogger("market")
 
@@ -46,11 +46,11 @@ SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvon
 
 
 class MarketDataService:
-    def __init__(self, cfg, db, on_trigger):
+    def __init__(self, cfg, db, detectors, on_signal):
         self.cfg = cfg
         self.db = db
-        self.on_trigger = on_trigger
-        self.detector = MovementDetector(cfg)
+        self.detectors = detectors      # DetectorManager
+        self.on_signal = on_signal
         self.symbols = []
         self.started = time.time()
         self.connected = 0
@@ -145,10 +145,13 @@ class MarketDataService:
             if self.ignored <= 3:      # az elso parat mutassuk, hatha hibauzenet
                 log.warning("Ismeretlen WS uzenet eldobva: %s", str(msg)[:200])
             return False
-        trigger = self.detector.on_price(data["s"], float(data["p"]), data["T"] / 1000.0)
-        if trigger:
+        # buy_taker: az "m" mezo azt mondja meg, a VEVO volt-e a maker.
+        # m=true -> az agresszor az elado; m=false -> az agresszor a vevo.
+        trade = Trade(symbol=data["s"], price=float(data["p"]), qty=float(data["q"]),
+                      ts=data["T"] / 1000.0, buy_taker=not data["m"])
+        for sig in self.detectors.on_trade(trade):
             # a reszletes elemzes lassu (order book + klines), nem blokkolhatja a stream olvasast
-            asyncio.create_task(self.on_trigger(trigger))
+            asyncio.create_task(self.on_signal(sig))
         return True
 
     async def _status_loop(self):
@@ -160,24 +163,23 @@ class MarketDataService:
         while True:
             interval = self.cfg.detector["statusIntervalSec"]
             await asyncio.sleep(interval)
-            snap = self.detector.snapshot()
+            ticks = self.detectors.take_ticks()
             self.cycle += 1
-            level = logging.ERROR if snap["ticks"] == 0 else logging.INFO
-            log.log(level, "\n%s", self._render(snap, interval))
+            level = logging.ERROR if ticks == 0 else logging.INFO
+            log.log(level, "\n%s", self._render(ticks, interval))
             self.cycle_start = time.time()
-            await self._save_status(snap, interval)
+            await self._save_status(ticks, interval)
 
-    def _render(self, snap, interval):
-        th = self.detector.base_thresholds()
+    def _render(self, ticks, interval):
         line = "  " + "─" * 110
-        now = time.time()
         head = [
             line,
-            f"  #{self.cycle}   {_clock(self.cycle_start)} - {_clock(now)}   "
-            f"{len(self.symbols)} par figyelese   jelzes indulas ota: {snap['totalTriggers']}",
+            f"  #{self.cycle}   {clock(self.cycle_start)} - {clock(time.time())}   "
+            f"{len(self.symbols)} par figyelese   "
+            f"jelzes indulas ota: {self.detectors.total_signals}",
         ]
 
-        if snap["ticks"] == 0:
+        if ticks == 0:
             if self.messages == 0:
                 head.append("  A Binance kapcsolat all, de EGYETLEN UZENET SEM erkezett.")
                 head.append("  Meg a feliratkozas nyugtaja sem -- ellenorizd a kimeno halozatot")
@@ -189,27 +191,13 @@ class MarketDataService:
             return "\n".join(head + [line])
 
         head += [
-            f"  {snap['ticks']:,} arvaltozas erkezett {interval} mp alatt   "
+            f"  {ticks:,} arvaltozas erkezett {interval} mp alatt   "
             f"({self.connected}/{self._chunk_count()} kapcsolat el)",
-            f"  alap kuszob: 1 mp {th[1]:.2f}%  |  3 mp {th[3]:.2f}%  |  5 mp {th[5]:.2f}%   "
-            f"(paronkent a sajat zajszinthez igazitva, lasd a jobb oldali oszlopot)",
             line,
         ]
-
         head += self._events_section()
-        head += [
-            line,
-            f"  {_pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
-            f"{'1 mp':>8}{'3 mp':>8}{'5 mp':>8}{'sajat kuszob':>14}   mi van vele",
-        ]
-        for r in snap["rows"]:
-            c = r["changes"]
-            vol = binance_rest.SYMBOL_VOLUME.get(r["symbol"])
-            head.append(f"  {_pad(r['symbol'], 14)}"
-                        f"{(f'{vol / 1e6:,.0f}M' if vol else '?'):>11}"
-                        f"{_price(r['price']):>13}"
-                        f"{_pct(c[1]):>8}{_pct(c[3]):>8}{_pct(c[5]):>8}"
-                        f"{r['ownThreshold']:>13.2f}%   {_verdict(r)}")
+        head += [line]
+        head += self.detectors.status_lines()      # detektoronkent sajat blokk
         return "\n".join(head + [line])
 
     @staticmethod
@@ -219,12 +207,12 @@ class MarketDataService:
             return ["  AZ ELOZO TABLA OTA: nem tortent semmi"]
         out = [f"  AZ ELOZO TABLA OTA TORTENT ({len(items)}):"]
         for ts, text in items[-limit:]:
-            out.append(f"    {_clock(ts)}  {text}")
+            out.append(f"    {clock(ts)}  {text}")
         if len(items) > limit:
             out.insert(1, f"    ... {len(items) - limit} korabbi esemeny kihagyva")
         return out
 
-    async def _save_status(self, snap, interval):
+    async def _save_status(self, ticks, interval):
         try:
             await self.db.status.update_one(
                 {"_id": "detector"},
@@ -233,59 +221,14 @@ class MarketDataService:
                           "watchedSymbols": len(self.symbols),
                           "wsConnected": self.connected,
                           "wsTotal": self._chunk_count(),
-                          "ticksPerSec": round(snap["ticks"] / interval, 1),
-                          "totalTriggers": snap["totalTriggers"],
-                          "topMovers": [_mongo_row(r) for r in snap["rows"]]}},
+                          "ticksPerSec": round(ticks / interval, 1),
+                          "totalSignals": self.detectors.total_signals,
+                          "detectors": [d.name for d in self.detectors.detectors
+                                        if self.detectors.enabled(d)],
+                          "statusLines": self.detectors.status_lines()}},
                 upsert=True)
         except Exception as e:
             log.warning("statusz mentese sikertelen: %s", e)
 
     def _chunk_count(self):
         return max(1, -(-len(self.symbols) // STREAMS_PER_CONNECTION))
-
-
-def _clock(ts):
-    return time.strftime("%H:%M:%S", time.localtime(ts))
-
-
-def _mongo_row(r):
-    """A changes kulcsai egesz szamok (1/3/5 mp) -- a Mongo csak string kulcsot fogad."""
-    return {**r, "changes": {f"s{w}": v for w, v in r["changes"].items()}}
-
-
-def _pct(v):
-    return "--" if v is None else f"{v:+.2f}%"
-
-
-def _pad(text, width):
-    """Balra igazitas kijelzesi szelesseg szerint -- a CJK karakter ket oszlop szeles."""
-    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-    return text + " " * max(0, width - w)
-
-
-def _price(p):
-    """Olvashato arformatum: a nagy arak ket tizedessel, a torpek teljes hosszban."""
-    if p >= 100:
-        return f"{p:,.2f}"
-    if p >= 1:
-        return f"{p:.4f}"
-    return f"{p:.8f}"
-
-
-def _verdict(r):
-    """Emberi nyelven: mi van ezzel a parral."""
-    if r["window"] is None:
-        return "keves kereskedes, nem merheto"
-    irany = "emelkedik" if r["rising"] else "esik"
-    if r["missing"] <= 0:
-        # a kuszobot mar atlepte -- vagy most ment el a jelzes, vagy varakozunk
-        return (f"jelzes mar elment, varakozas a kovetkezoig" if r["cooling"]
-                else f"kuszob atlepve, {irany}")
-    hiany = f"{r['missing']:.2f}%"
-    if r["ratio"] >= 0.9:
-        return f"MINDJART JELZES! {irany}, meg {hiany} hianyzik"
-    if r["ratio"] >= 0.6:
-        return f"erosen {irany}, meg {hiany} hianyzik a jelzeshez"
-    if r["ratio"] >= 0.3:
-        return f"{irany}, de meg messze van a jelzestol"
-    return "alig mozdul"
