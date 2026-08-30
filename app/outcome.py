@@ -75,9 +75,14 @@ async def _track(db, signal_id, signal, cfg):
 
 
 async def summary_loop(db, cfg, interval=600):
-    """Idonkent osszesitest ir a logba: tenylegesen mennyi jott be."""
+    """Idonkent osszesitest ir a logba: tenylegesen mennyi jott be.
+
+    Alapbol kikapcsolva (outcomeEnabled): elso korben csak zajt csinalna.
+    """
     while True:
         await asyncio.sleep(interval)
+        if not cfg.get("outcomeEnabled"):
+            continue
         try:
             await log_summary(db, cfg)
         except Exception as e:

@@ -24,7 +24,9 @@ DETECTOR_DEFAULTS = {
 
     # ---- realtime kereskedhetoseg (a detektorok ELOTT szur) ----
     "maxSpreadPct": 0.05,              # ennel szelesebb spreadnel a scalp nem eri meg
-    "minTopDepthUSDT": 20_000,         # a legjobb szinten ennyi penz legyen
+    "minTopDepthUSDT": 5_000,          # a legjobb szinten ennyi penz legyen.
+                                       # Ez EGYETLEN arszint, nem a teljes konyv:
+                                       # BTC ~150e, SOL ~30e, egy 50M-os alt ~2e USDT
     "minTradesPerMinute": 30,          # ritka kereskedesnel nincs mit megfogni
 
     # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
@@ -54,7 +56,9 @@ DETECTOR_DEFAULTS = {
     "emaSlow": 21,
     "emaInterval": "1m",
 
-    # ---- eredmenymeres (nem kapuz semmit, csak visszajelzes) ----
+    # ---- eredmenymeres: alapbol KI. Nem backteszt (a jelzes UTAN meri az arat),
+    #      de elso korben csak zajt csinal. Bekapcsolva 10 percenkent osszesit.
+    "outcomeEnabled": False,
     "outcomeMinutes": 5,
     "outcomeTargetPct": 0.3,
     "outcomeStopPct": 0.3,

@@ -62,6 +62,7 @@ def startup_summary(cfg):
         f"nincs fal {d['wallBlockDistancePct']:.2f}%-on belul, "
         f"hozam/kockazat >= {d['minRewardRisk']:.1f}:1",
         f"Telegram: {'BE -- minden SIGNAL azonnal megy' if d['telegramEnabled'] else 'KI'}"
+        f"   |   Eredmenymeres: {'BE' if d['outcomeEnabled'] else 'KI'}"
         f"   |   Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} "
         f"({t['marginMode']}, {t['leverage']}x)",
     ]

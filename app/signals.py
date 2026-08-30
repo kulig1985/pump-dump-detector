@@ -160,8 +160,9 @@ class SignalService:
     async def _save(self, signal, raw, ob, ta_result):
         symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
-        asyncio.create_task(outcome.track(self.db, result.inserted_id, signal,
-                                          self.cfg.detector))
+        if self.cfg.detector.get("outcomeEnabled"):
+            asyncio.create_task(outcome.track(self.db, result.inserted_id, signal,
+                                              self.cfg.detector))
         try:
             snap = await self.db.snapshots.insert_one({
                 "timestamp": signal["timestamp"],

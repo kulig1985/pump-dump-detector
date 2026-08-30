@@ -57,11 +57,14 @@ class PumpDumpDetector(Detector):
         if m is None:
             return None
 
-        # a baseline MINDEN merheto ablakbol epul, nem csak a jelzesekbol
-        self.baseline.add(trade.symbol, trade.ts, abs(m["movePct"]))
+        # Eloszor a KORABBI normalhoz hasonlitunk, csak utana frissitunk -- kulonben
+        # az eppen vizsgalt mozgas resze lenne annak, amihez merjuk. (300 mintas
+        # mediannal a torzitas elhanyagolhato, de a sorrend igy elvileg tiszta.)
         arany = self.baseline.ratio(trade.symbol, m["movePct"])
         m["baseline"] = self.baseline.value(trade.symbol)
         m["baselineRatio"] = arany
+        # a baseline MINDEN merheto ablakbol epul, nem csak a jelzesekbol
+        self.baseline.add(trade.symbol, trade.ts, abs(m["movePct"]))
 
         kell = c["minMovePct"]
         if arany is not None:
@@ -163,6 +166,27 @@ class PumpDumpDetector(Detector):
         }
 
     # ------------------------------------------------------------------ DEBUG tabla
+
+    def readiness(self):
+        """(hany parnak van mar baseline-ja, hany merheto, a legkozelebbi jelolt)."""
+        c = self.cfg.detector
+        kesz = legjobb = None
+        keszek = 0
+        for symbol, m in self.latest.items():
+            if m is None:
+                continue
+            alap = self.baseline.value(symbol)
+            if alap is None:
+                continue
+            keszek += 1
+            arany = abs(m["movePct"]) / alap if alap > 0 else 0
+            if legjobb is None or arany > legjobb[1]:
+                legjobb = (symbol, arany)
+        kesz = f"baseline kesz: {keszek}/{len(self.latest)} par"
+        if legjobb:
+            kesz += (f" | legkozelebbi jelolt: {legjobb[0]} {legjobb[1]:.1f}x normal "
+                     f"(kell {c['baselineRatio']:.1f}x)")
+        return kesz
 
     def status_lines(self, top=10):
         """Reszletes paronkenti allapot -- csak DEBUG szinten kerul kiirasra."""

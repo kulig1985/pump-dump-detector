@@ -28,16 +28,22 @@ MAX_FLOW_RATIO = 99.0    # az egyoldalu flow aranyanak felso korlatja
 class Setup:
     """Egy symbol eppen fejlodo fordulo-alakzata."""
 
-    __slots__ = ("side", "extreme", "extreme_ts", "move_pct", "origin", "peak", "micro")
+    __slots__ = ("side", "extreme", "extreme_ts", "move_pct", "origin", "origin_ts",
+                 "peak", "micro")
 
-    def __init__(self, side, extreme, extreme_ts, move_pct, origin):
+    def __init__(self, side, extreme, extreme_ts, move_pct, origin, origin_ts):
         self.side = side               # "LONG" (melypont utan) vagy "SHORT" (csucs utan)
         self.extreme = extreme         # a lokalis minimum / maximum
         self.extreme_ts = extreme_ts
         self.move_pct = move_pct       # az idaig tarto mozgas merteke, szazalekban
         self.origin = origin           # ahonnan a mozgas indult (a masik vegpont)
+        self.origin_ts = origin_ts     # es mikor -- ehhez skalazzuk a normal mozgast
         self.peak = extreme            # a szelsoertek ota elert legjobb ar
         self.micro = None              # a rogzitett micro-high / micro-low
+
+    def duration(self):
+        """Mennyi ido alatt zajlott le a fordulo elotti mozgas."""
+        return max(0.0, self.extreme_ts - self.origin_ts)
 
     def retracement(self, price):
         """A jelzes pillanataban az elozo mozgas hany szazaleka jott mar vissza."""
@@ -178,21 +184,31 @@ class ReversalDetector(Detector):
         """
         lo = min(window, key=lambda t: t.price)
         hi = max(window, key=lambda t: t.price)
-        min_move = c["minMovePct"]
-        alap = self.baseline.value(window[-1].symbol)
-        if alap:
-            min_move = max(min_move, alap * c["baselineRatio"])
+        symbol = window[-1].symbol
+
+        def eleg_nagy(mozgas_pct, hossz_sec):
+            """A normalt a mozgas TENYLEGES hosszara skalazva hasonlitjuk.
+
+            A baseline egy 2 masodperces ablakbol keszul; egy 20 masodperces mozgas
+            termeszetesen nagyobb (bolyongasnal az ido gyokevel no). Skalazas nelkul
+            egy 20 mp-es normal kuszas is "rendkivulinek" latszana.
+            """
+            kell = c["minMovePct"]
+            alap = self.baseline.value_for(symbol, hossz_sec)
+            if alap:
+                kell = max(kell, alap * c["baselineRatio"])
+            return mozgas_pct >= kell
 
         # LONG jelolt: a minimum a maximum UTAN keletkezett -> lefele mozgas
         if lo.ts > hi.ts and lo.price > 0:
             drop = (hi.price - lo.price) / hi.price * 100.0
-            if drop >= min_move:
-                return Setup("LONG", lo.price, lo.ts, drop, hi.price)
+            if eleg_nagy(drop, lo.ts - hi.ts):
+                return Setup("LONG", lo.price, lo.ts, drop, hi.price, hi.ts)
         # SHORT jelolt: a maximum a minimum UTAN keletkezett -> felfele mozgas
         if hi.ts > lo.ts and lo.price > 0:
             rise = (hi.price - lo.price) / lo.price * 100.0
-            if rise >= min_move:
-                return Setup("SHORT", hi.price, hi.ts, rise, lo.price)
+            if eleg_nagy(rise, hi.ts - lo.ts):
+                return Setup("SHORT", hi.price, hi.ts, rise, lo.price, lo.ts)
         return None
 
     @staticmethod
@@ -205,6 +221,7 @@ class ReversalDetector(Detector):
         """
         start = now - c["flowWindowSeconds"]
         buy = sell = 0.0
+        buy_db = sell_db = 0
         count = 0
         for t in window:
             if t.ts < start:
@@ -212,19 +229,26 @@ class ReversalDetector(Detector):
             count += 1
             if t.buy_taker:
                 buy += t.price * t.qty
+                buy_db += 1
             else:
                 sell += t.price * t.qty
+                sell_db += 1
         if count < c["minTradesInFlowWindow"] or (buy == 0 and sell == 0):
             return None
 
         total = buy + sell
         buy_dominant = buy >= sell
+        # Egyetlen nagy kotes onmagaban ne hozzon letre "fordulast": a domináns
+        # oldalnak KOTESSZAMBAN is vezetnie kell, ne csak notionalban.
+        if (buy_db > sell_db) != buy_dominant and buy_db != sell_db:
+            return None
         strong, weak = (buy, sell) if buy_dominant else (sell, buy)
         # a masik oldal lehet pontosan nulla -- a vegtelen aranyt korlatozzuk,
         # kulonben inf kerulne a Mongo-ba es a score szamitasba
         ratio = min(strong / weak, MAX_FLOW_RATIO) if weak > 0 else MAX_FLOW_RATIO
-        return {"buy": buy, "sell": sell, "total": total,
-                "ratio": ratio, "buyDominant": buy_dominant, "trades": count}
+        return {"buy": buy, "sell": sell, "total": total, "ratio": ratio,
+                "buyDominant": buy_dominant, "trades": count,
+                "buyTrades": buy_db, "sellTrades": sell_db}
 
     # ------------------------------------------------------------------ signal
 

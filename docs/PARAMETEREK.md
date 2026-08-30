@@ -95,7 +95,7 @@ kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 | kulcs | alap | mit csinál | ha növeled |
 |---|---|---|---|
 | `maxSpreadPct` | 0.05 | ennél szélesebb spreadnél a be- és kiszállás felemészti a mozgást | több pár fér be |
-| `minTopDepthUSDT` | 20 000 | a legjobb szinten ennyi pénz legyen | csak a vastag könyvű párok |
+| `minTopDepthUSDT` | 5 000 | a legjobb szinten ennyi pénz legyen. **Ez egyetlen árszint, nem a teljes könyv:** BTC ~150e, SOL ~31e, egy 50M-os alt ~2e USDT | csak a vastag könyvű párok |
 | `minTradesPerMinute` | 30 | ritka kereskedésnél nincs mit megfogni | csak az aktív párok |
 
 ### Pump/dump
@@ -135,14 +135,20 @@ detektáláshoz. `emaFast`/`emaSlow`/`emaInterval` (9/21/1m) — az EMA **csak a
 
 | kulcs | alap | mit csinál |
 |---|---|---|
-| `outcomeMinutes` | 5 | ennyi ideig méri az árat a jelzés után |
+| `outcomeEnabled` | `false` | **alapból kikapcsolva** — első körben nem mérünk |
+| `outcomeMinutes` | 5 | ennyi ideig méri az árat a jelzés után (ha bekapcsolod) |
 | `outcomeTargetPct` / `outcomeStopPct` | 0.3 / 0.3 | mikor számít jónak, illetve rossznak |
 | `statusIntervalSec` | 60 | ilyen sűrűn egy rövid `STATUS` sor |
 | `signalWindowMinutes` | 10 | ekkora visszatekintéssel számolja, hányadik a jelzés |
 | `telegramEnabled` | `true` | **minden `SIGNAL` azonnal megy** — nincs más kapu előtte |
 
-Az eredménymérés semmit nem kapuz, csak visszajelzést ad: 10 percenként egy `EREDMENYEK`
-tábla mutatja, hogy a jelzések után merre ment az ár.
+Az eredménymérés **alapból ki van kapcsolva**. Nem backteszt (a jelzés *után* nézi az
+árat), de első körben csak zajt tenne a logba. Bekapcsolva 10 percenként egy `EREDMENYEK`
+tábla mutatja, merre ment az ár a jelzések után — de akkor sem kapuz semmit:
+
+```js
+db.config.updateOne({_id:"detector"}, {$set:{outcomeEnabled:true}})
+```
 
 ---
 
@@ -166,7 +172,7 @@ méretei pedig **a mozgás arányában** (0–100%) értendők:
 
 | kulcs | alap | mit csinál |
 |---|---|---|
-| `baselineRatio` / `minMovePct` | 4.0 / 0.30 | mekkora előzetes mozgás után keresünk fordulót |
+| `baselineRatio` / `minMovePct` | 4.0 / 0.30 | mekkora előzetes mozgás után keresünk fordulót. A normál a mozgás **tényleges hosszára** skálázódik (bolyongásnál az elmozdulás az idő gyökével nő), így egy 20 mp-es kúszás nem számít rendkívülinek |
 | `bounceOfMovePct` | 12 | ennyit kell visszapattannia a mozgásból |
 | `pullbackOfBouncePct` | 30 | a visszapattanásból ennyi visszahúzás rögzíti a micro szintet |
 | `breakOfMovePct` | 5 | az áttörés mérete |
@@ -216,6 +222,20 @@ db.config.updateOne({_id:"telegram"},
 > égettem be — próbáld ki a telefonodon, és ha találsz működőt, ez a mező várja.
 
 ---
+
+## Mit mutat a STATUS sor
+
+```
+STATUS  39 par | 14,113 tick/60s | konyv: 752 par | 0 candidate, 0 jelzes, 0 elutasitva | Telegram: BE
+   kizarva 35: insufficient_depth 30, spread_too_wide 5
+   melyseg  p10        900  p50      3,200  p90     48,000 USDT   kuszob 5,000  -> 12 par alatta
+   spread   p10      0.004%  p50      0.011%  p90      0.048%   kuszob 0.050%  -> 2 par felette
+   baseline kesz: 31/39 par | legkozelebbi jelolt: SOLUSDT 1.8x normal (kell 4.0x)
+```
+
+A percentilis sorokból **adatból** állítható a küszöb, nem vaktában: látod az eloszlást,
+a jelenlegi küszöböt, és hogy hány pár esik kívül. Az utolsó sor megmondja, hogy a
+detektor egyáltalán mennyire van közel jelzéshez.
 
 ## Hangolási sorrend
 

@@ -309,6 +309,116 @@ def test_absolute_floor_applies_until_baseline_is_ready():
                 [100.0 * (1 + 0.0005 * i / 40) for i in range(40)]) == []
 
 
+def test_baseline_is_compared_before_it_is_updated():
+    """Eloszor a KORABBI normalhoz hasonlitunk, csak utana frissitunk -- kulonben
+    az eppen vizsgalt mozgas resze lenne annak, amihez merjuk."""
+    det = PumpDumpDetector(cfg_obj)
+    t = _tanit(det, "ZUSDT", 0.02)
+
+    sorrend = []
+    ratio_eredeti, add_eredeti = det.baseline.ratio, det.baseline.add
+    det.baseline.ratio = lambda *a, **k: (sorrend.append("hasonlit"),
+                                          ratio_eredeti(*a, **k))[1]
+    det.baseline.add = lambda *a, **k: (sorrend.append("frissit"),
+                                        add_eredeti(*a, **k))[1]
+
+    for i in range(10):
+        det.on_trade(Trade("ZUSDT", 100.0 * (1 + 0.001 * i), 30.0, t + i * 0.07, True))
+
+    assert sorrend, "egyik hivas sem tortent meg"
+    # minden korben eloszor hasonlitunk, aztan frissitunk
+    assert sorrend[0] == "hasonlit", sorrend[:4]
+    for i in range(0, len(sorrend) - 1, 2):
+        assert sorrend[i:i + 2] == ["hasonlit", "frissit"], sorrend[i:i + 4]
+
+
+def test_baseline_scales_with_the_measured_window():
+    """Bolyongasnal az elmozdulas az ido gyokevel no: egy 4x hosszabb ablakban a
+    NORMAL mozgas ~2x akkora. Skalazas nelkul egy hosszabb kuszas rendkivulinek tunne."""
+    det = PumpDumpDetector(cfg_obj)
+    _tanit(det, "WUSDT", 0.02)
+    alap = det.baseline.value("WUSDT")
+    ablak = CFG["moveWindowSec"]
+    assert det.baseline.value_for("WUSDT", ablak) == alap
+    negyszer = det.baseline.value_for("WUSDT", ablak * 4)
+    assert abs(negyszer / alap - 2.0) < 0.01, negyszer / alap
+    assert det.baseline.value_for("ISMERETLEN", ablak) is None
+
+
+def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
+    """Idoskala-javitas: ugyanaz a 0.25%-os mozgas 3 masodperc alatt rendkivuli,
+    20 masodperc alatt viszont a normal bolyongas resze."""
+    def probal(hossz_sec):
+        base = Baseline(cfg_obj)
+        det = ReversalDetector(rev_cfg, base)
+        # normal: 2 mp-es ablakban 0.05%
+        for i in range(400):
+            base.add("QUSDT", 1000.0 + i, 0.05)
+        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0025 * (i + 1) / 40), 30.0,
+                       2000.0 + i * hossz_sec / 40, False) for i in range(40)]
+        return det._find_setup(ablak, {**REV, "minMovePct": 0.0})
+
+    assert probal(3.0) is not None, "3 mp alatt 0.25% rendkivuli"
+    assert probal(20.0) is None, "20 mp alatt ugyanez a normal bolyongas"
+
+
+def test_single_whale_print_cannot_create_flow():
+    """Egyetlen nagy kotes ne csinaljon 'fordulast': a domináns oldalnak
+    kotesszamban is vezetnie kell."""
+    det = ReversalDetector(rev_cfg)
+    balna = ([Trade("X", 100.0, 500.0, 1000.0, True)]
+             + [Trade("X", 100.0, 10.0, 1000.1 + i * 0.1, False) for i in range(8)])
+    assert det._flow(balna, 1001.0, REV, None) is None
+
+    valodi = ([Trade("X", 100.0, 50.0, 1000.0 + i * 0.1, True) for i in range(6)]
+              + [Trade("X", 100.0, 20.0, 1000.7 + i * 0.1, False) for i in range(3)])
+    f = det._flow(valodi, 1001.0, REV, None)
+    assert f and f["buyDominant"] and f["buyTrades"] > f["sellTrades"]
+
+
+def test_wall_is_measured_against_the_median_not_the_mean():
+    """Az atlagba a fal maga is beleszamit, es felhigitja a sajat aranyat."""
+    import statistics
+    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
+    asks[8] = (100.08, 10.0)
+    n = [p * q for p, q in asks]
+    atlaghoz = n[8] / (sum(n) / len(n))
+    w = orderbook._find_wall(asks, 100.0, 3.0, 1.5)
+    assert abs(w["ratio"] - n[8] / statistics.median(n)) < 0.01
+    assert w["ratio"] > atlaghoz + 2, (atlaghoz, w["ratio"])
+
+
+def test_depth_threshold_admits_a_realistic_altcoin():
+    """A 20,000 USDT-s kuszob 39 parbol 33-at zart ki: a top-of-book EGY szint."""
+    e = Eligibility(cfg_obj)
+    _book(e, "ALTUSDT", 0.3500, 0.35007, qty=8_000.0)       # ~8,000 USDT a szinten
+    _aktivitas(e, "ALTUSDT")
+    assert e.check("ALTUSDT")[0] is True, e.check("ALTUSDT")
+
+    _book(e, "TINYUSDT", 0.3500, 0.35007, qty=300.0)
+    _aktivitas(e, "TINYUSDT")
+    assert e.check("TINYUSDT")[1] == "insufficient_depth"
+
+
+def test_distribution_block_is_safe_and_informative():
+    e = Eligibility(cfg_obj)
+    assert e.distribution([]) == [], "ures adaton se hibazzon"
+    for nev, ar, melyseg in (("A", 100.0, 150_000.0), ("B", 100.0, 9_000.0),
+                             ("C", 100.0, 400.0)):
+        _book(e, nev, ar, ar * 1.0001, qty=melyseg)
+        _aktivitas(e, nev)
+        e.check(nev)
+    sorok = e.distribution(["A", "B", "C"])
+    assert len(sorok) == 2
+    assert "melyseg" in sorok[0] and "kuszob" in sorok[0] and "par alatta" in sorok[0]
+    assert "spread" in sorok[1]
+
+
+def test_outcome_is_off_by_default():
+    """Elso korben nem merunk: se task, se EREDMENYEK sor."""
+    assert C_CFG.DETECTOR_DEFAULTS["outcomeEnabled"] is False
+
+
 # ---------------------------------------------------------------- eligibility
 
 def _book(e, symbol, bid, ask, qty=100000.0):
@@ -413,7 +523,7 @@ def test_eligibility_summary_aggregates_by_reason():
     _aktivitas(e, "C_USDT")
     e.check("C_USDT")
     osszegzes = e.summary()[0]
-    assert "3 par" in osszegzes and "spread_too_wide: 2" in osszegzes, osszegzes
+    assert "kizarva 3" in osszegzes and "spread_too_wide 2" in osszegzes, osszegzes
 
 
 def test_manager_blocks_ineligible_symbols_before_detectors():

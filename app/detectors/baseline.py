@@ -8,6 +8,7 @@ Nem historikus adatbazis: futas kozben, memoriaban gyujtjuk. Symbolonkent
 masodpercenkent egy mintat veszunk az aktualis rovid ablak |elmozdulasabol|,
 es a MEDIANT tekintjuk normalnak -- a median nem viheto el egy kiugro ertekkel.
 """
+import math
 import statistics
 from collections import deque, defaultdict
 
@@ -40,6 +41,22 @@ class Baseline:
     def min_samples(self):
         # legalabb egy percnyi minta kell, mielott barmit allitanank a parrol
         return min(60, int(self.cfg.detector["baselineMinutes"] * 60 / 2))
+
+    def value_for(self, symbol, seconds):
+        """A normal mozgas EGY MASIK idotavra atskalazva.
+
+        A baseline egy moveWindowSec (2 mp) hosszu ablakbol keszul, de a reversal
+        akar 20 masodperces mozgast is mer. Egy 20 mp-es mozgas termeszetesen
+        nagyobb: bolyongasnal az elmozdulas az ido gyokevel no. Skalazas nelkul
+        egy 20 mp-es normal kuszas "rendkivulinek" latszana.
+        """
+        alap = self.value(symbol)
+        if alap is None:
+            return None
+        ablak = self.cfg.detector["moveWindowSec"]
+        if not seconds or seconds <= 0 or ablak <= 0:
+            return alap
+        return alap * math.sqrt(seconds / ablak)
 
     def ratio(self, symbol, move_pct):
         """Hanyszorosa az aktualis mozgas a par normaljanak. None, ha meg nem tudjuk."""

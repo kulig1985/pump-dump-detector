@@ -230,16 +230,22 @@ class MarketDataService:
             svc = self.signal_service
             kizart = self.eligibility.summary()
 
+            sorok = [
+                f"STATUS     {len(self.symbols)} par | {ticks:,} tick/{interval}s | "
+                f"{self.eligibility.book_status()} | "
+                f"{self.detectors.total_candidates} candidate, "
+                f"{svc.signals_today if svc else 0} jelzes, "
+                f"{svc.rejected_today if svc else 0} elutasitva | "
+                f"Telegram: {'BE' if self.cfg.detector['telegramEnabled'] else 'KI'}",
+            ]
+            sorok += [f"   {x}" for x in kizart]
+            sorok += [f"   {x}" for x in
+                      self.eligibility.distribution(self.symbols)]
+            for d in self.detectors.detectors:
+                if hasattr(d, "readiness"):
+                    sorok.append(f"   {d.readiness()}")
             log.log(logging.ERROR if ticks == 0 else logging.INFO,
-                    "STATUS     %d par | %s tick | %s | %d candidate, %d jelzes, "
-                    "%d elutasitva | Telegram: %s%s",
-                    len(self.symbols), f"{ticks:,}",
-                    self.eligibility.book_status(),
-                    self.detectors.total_candidates,
-                    svc.signals_today if svc else 0,
-                    svc.rejected_today if svc else 0,
-                    "BE" if self.cfg.detector["telegramEnabled"] else "KI",
-                    f"\n           {kizart[0]}" if kizart else "")
+                    "%s", "\n".join(sorok))
 
             if ticks == 0:
                 log.error("Nem erkezik arfolyam! %s",

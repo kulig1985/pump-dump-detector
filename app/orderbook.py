@@ -9,6 +9,7 @@ A wall relativ: egy arszint akkor wall, ha a rajta levo notional legalabb
 """
 import os
 import json
+import statistics
 import asyncio
 import logging
 
@@ -94,18 +95,23 @@ async def analyze(symbol, price, direction, cfg):
 
 
 def _find_wall(side, price, sensitivity, max_dist_pct):
-    """A legkozelebbi arszint, ami kiugroan nagy az oldal atlagahoz kepest."""
+    """A legkozelebbi arszint, ami kiugroan nagy a tobbi szinthez kepest.
+
+    A viszonyitasi alap a MEDIAN, nem az atlag: az atlagba a fal maga is beleszamit,
+    es 20 szint mellett egy 10x akkora fal ~45%-kal emeli az atlagot -- vagyis a sajat
+    aranyat hígitja fel, es alabecsult erteket kapnank.
+    """
     notionals = [p * q for p, q in side]
-    avg = sum(notionals) / len(notionals)
-    if avg <= 0:
+    alap = statistics.median(notionals)
+    if alap <= 0:
         return None
     for (p, q), notional in zip(side, notionals):    # a lista mar ar szerint rendezett
         dist = abs(p - price) / price * 100.0
         if dist > max_dist_pct:
             break
-        if notional >= sensitivity * avg:
+        if notional >= sensitivity * alap:
             return {"price": p, "distancePct": round(dist, 3),
-                    "notional": round(notional, 2), "ratio": round(notional / avg, 2)}
+                    "notional": round(notional, 2), "ratio": round(notional / alap, 2)}
     return None
 
 

@@ -11,6 +11,7 @@ Ha egy symbol nem felel meg, mar a detektorok ELOTT kiesik.
 """
 import time
 import logging
+import statistics
 from collections import deque, defaultdict
 
 log = logging.getLogger("eligibility")
@@ -106,6 +107,38 @@ class Eligibility:
         szamlalo = defaultdict(int)
         for ok in self.rejected.values():
             szamlalo[ok] += 1
-        reszek = "  ".join(f"{ok}: {n}" for ok, n in sorted(szamlalo.items(),
-                                                            key=lambda x: -x[1]))
-        return [f"kizarva {len(self.rejected)} par ({reszek})"]
+        reszek = ", ".join(f"{ok} {n}" for ok, n in sorted(szamlalo.items(),
+                                                           key=lambda x: -x[1]))
+        return [f"kizarva {len(self.rejected)}: {reszek}"]
+
+    def distribution(self, symbols):
+        """Spread es melyseg eloszlas a FIGYELT parokra, a kuszobokkel egyutt.
+
+        Enelkul a kuszoboket vaktaban kellene allitgatni: ebbol egy pillantassal
+        latszik, hol huznak, es hany par esik alattuk.
+        """
+        c = self.cfg.detector
+        spreadek, melysegek = [], []
+        for sym in symbols:
+            m = self.metrics(sym)
+            if "spreadPct" in m:
+                spreadek.append(m["spreadPct"])
+                melysegek.append(m["topDepthUSDT"])
+        if not spreadek:
+            return []
+
+        def p(ertekek, szazalek):
+            rendezett = sorted(ertekek)
+            i = min(len(rendezett) - 1, int(len(rendezett) * szazalek / 100))
+            return rendezett[i]
+
+        alatta = sum(1 for x in melysegek if x < c["minTopDepthUSDT"])
+        felette = sum(1 for x in spreadek if x > c["maxSpreadPct"])
+        return [
+            f"melyseg  p10 {p(melysegek, 10):>10,.0f}  p50 {p(melysegek, 50):>10,.0f}  "
+            f"p90 {p(melysegek, 90):>10,.0f} USDT   kuszob {c['minTopDepthUSDT']:,.0f}"
+            f"  -> {alatta} par alatta",
+            f"spread   p10 {p(spreadek, 10):>10.3f}%  p50 {p(spreadek, 50):>10.3f}%  "
+            f"p90 {p(spreadek, 90):>10.3f}%   kuszob {c['maxSpreadPct']:.3f}%"
+            f"  -> {felette} par felette",
+        ]
