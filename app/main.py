@@ -5,7 +5,9 @@ Binance WebSocket -> MarketDataService -> MovementDetector -> (trigger)
   -> TelegramNotifier -> opcionalisan TradingService
 """
 import asyncio
+import hashlib
 import logging
+import pathlib
 
 from .db import Database
 from .config import ConfigStore
@@ -25,7 +27,20 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 log = logging.getLogger("main")
 
 
+def code_fingerprint():
+    """A futo kod ujjlenyomata.
+
+    Enelkul nem lehet biztosra tudni, hogy a konteneben tenyleg az uj kod van-e.
+    Ugyanez a szam kiszamolhato a gazdagepen is (lasd README).
+    """
+    h = hashlib.sha256()
+    for f in sorted(pathlib.Path(__file__).parent.rglob("*.py")):
+        h.update(f.read_bytes())
+    return h.hexdigest()[:10]
+
+
 async def main():
+    log.info("Kod ujjlenyomat: %s", code_fingerprint())
     db = Database()
     await db.init()
 

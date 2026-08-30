@@ -169,6 +169,37 @@ Ha van mozgás:
 12:05:23 INFO  trading   [PEPEUSDT] auto trading KI -- nincs megbizas
 ```
 
+### Tényleg az új kód fut?
+
+Induláskor az első sor a kód ujjlenyomata:
+
+```
+INFO  main      Kod ujjlenyomat: af176a05d9
+```
+
+Ugyanez kiszámolható a gazdagépen — ha a kettő egyezik, a konténerben az van, ami a
+munkakönyvtáradban:
+
+```bash
+git pull
+python3 -c "import hashlib,pathlib;h=hashlib.sha256()
+[h.update(f.read_bytes()) for f in sorted(pathlib.Path('app').rglob('*.py'))]
+print(h.hexdigest()[:10])"
+
+docker compose logs detector | grep "Kod ujjlenyomat" | tail -1
+```
+
+Ha nem egyezik, tiszta újraépítés:
+
+```bash
+docker compose down
+docker compose build --no-cache detector
+docker compose up -d
+```
+
+A `git pull` sikerét is érdemes ellenőrizni (`git log --oneline -3`) — ha helyi
+módosításod van, a pull elhasalhat, és akkor a régi forrásból épül az image.
+
 ### Futtatás a háttérben (detached)
 
 ```bash
