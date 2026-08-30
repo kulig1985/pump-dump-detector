@@ -26,15 +26,21 @@ MAX_FLOW_RATIO = 99.0    # az egyoldalu flow aranyanak felso korlatja
 class Setup:
     """Egy symbol eppen fejlodo fordulo-alakzata."""
 
-    __slots__ = ("side", "extreme", "extreme_ts", "move_pct", "peak", "micro")
+    __slots__ = ("side", "extreme", "extreme_ts", "move_pct", "origin", "peak", "micro")
 
-    def __init__(self, side, extreme, extreme_ts, move_pct):
+    def __init__(self, side, extreme, extreme_ts, move_pct, origin):
         self.side = side               # "LONG" (melypont utan) vagy "SHORT" (csucs utan)
         self.extreme = extreme         # a lokalis minimum / maximum
         self.extreme_ts = extreme_ts
         self.move_pct = move_pct       # az idaig tarto mozgas merteke, szazalekban
+        self.origin = origin           # ahonnan a mozgas indult (a masik vegpont)
         self.peak = extreme            # a szelsoertek ota elert legjobb ar
         self.micro = None              # a rogzitett micro-high / micro-low
+
+    def retracement(self, price):
+        """A jelzes pillanataban az elozo mozgas hany szazaleka jott mar vissza."""
+        teljes = abs(self.origin - self.extreme)
+        return abs(price - self.extreme) / teljes * 100.0 if teljes else 100.0
 
 
 class ReversalDetector(Detector):
@@ -63,18 +69,29 @@ class ReversalDetector(Detector):
         if setup is None or setup.micro is None:
             return None
 
-        # 6. attores a rogzitett micro szinten
-        tol = c["breakTolerancePct"] / 100.0
+        # A szelsoertek legyen friss: egy 15 masodperces melypontra mar nincs ertelme
+        # beszallni, a mozgas nagy resze lefutott.
+        kor = trade.ts - setup.extreme_ts
+        if kor > c["maxExtremeAgeSec"]:
+            return None
+
+        # EZ A LENYEG: ha az ar mar visszatette az elozo mozgas nagy reszet, akkor a
+        # kereskedheto resz elfogyott. Enelkul a rendszer a dead-cat bounce tetejen
+        # szallt be, es utana rendszeresen visszaesett az ar.
+        retrace = setup.retracement(trade.price)
+        if retrace > c["maxRetracementPct"]:
+            return None
+
+        # 6. attores a rogzitett micro szinten, a mozgas aranyaban mert merettel.
+        # Egy 0.02%-os "attores" egy 1.3%-os mozgas utan nem informacio, csak zaj.
+        tav = abs(setup.origin - setup.extreme)
+        kell_break = tav * c["breakOfMovePct"] / 100.0
         if setup.side == "LONG":
-            level = setup.micro * (1 + tol)
-            if trade.price <= level:
+            if trade.price <= setup.micro + kell_break:
                 return None
-            break_pct = (trade.price - setup.micro) / setup.micro * 100.0
-        else:
-            level = setup.micro * (1 - tol)
-            if trade.price >= level:
-                return None
-            break_pct = (setup.micro - trade.price) / setup.micro * 100.0
+        elif trade.price >= setup.micro - kell_break:
+            return None
+        break_pct = abs(trade.price - setup.micro) / setup.micro * 100.0
 
         # 5. a trade flow a megfelelo oldal fele fordult
         flow = self._flow(w, trade.ts, c, trade.symbol)
@@ -91,7 +108,7 @@ class ReversalDetector(Detector):
         self.total_signals += 1
         self.setups.pop(trade.symbol, None)
 
-        return self._signal(trade, setup, flow, break_pct, c, w)
+        return self._signal(trade, setup, flow, break_pct, retrace, kor, c, w)
 
     # ------------------------------------------------------------------ allapotgep
 
@@ -105,13 +122,14 @@ class ReversalDetector(Detector):
             setup = None
             self.setups.pop(symbol, None)
 
-        new_extreme_tol = c["newExtremeTolerancePct"] / 100.0
-
-        # uj, erdemben melyebb minimum (vagy magasabb maximum) -> az alakzat ujraindul
+        # Uj, erdemben melyebb minimum (vagy magasabb maximum) -> az alakzat ujraindul.
+        # A turest a mozgas aranyaban merjuk: egy abszolut szazalek egy kis mozgasnal
+        # tul nagy lenne, es a valodi szelsoertek sosem frissulne.
         if setup:
-            if setup.side == "LONG" and trade.price < setup.extreme * (1 - new_extreme_tol):
+            tures = abs(setup.origin - setup.extreme) * c["newExtremeOfMovePct"] / 100.0
+            if setup.side == "LONG" and trade.price < setup.extreme - tures:
                 setup = None
-            elif setup.side == "SHORT" and trade.price > setup.extreme * (1 + new_extreme_tol):
+            elif setup.side == "SHORT" and trade.price > setup.extreme + tures:
                 setup = None
 
         if setup is None:
@@ -121,21 +139,28 @@ class ReversalDetector(Detector):
                 return None
             self.setups[symbol] = setup
 
-        # 3. visszapattanas: enelkul nem kezdunk micro szintet kovetni
-        bounce = c["bouncePct"] / 100.0
-        pullback = c["pullbackPct"] / 100.0
-        if setup.side == "LONG":
-            if trade.price < setup.extreme * (1 + bounce):
-                return setup
-            setup.peak = max(setup.peak, trade.price)
-            # 4. a csucs akkor rogzul micro-high-kent, ha onnan visszahuzott
-            if setup.micro is None and trade.price <= setup.peak * (1 - pullback):
-                setup.micro = setup.peak
-        else:
-            if trade.price > setup.extreme * (1 - bounce):
-                return setup
-            setup.peak = min(setup.peak, trade.price)
-            if setup.micro is None and trade.price >= setup.peak * (1 + pullback):
+        # 3-4. visszapattanas, majd a csucs rogzitese micro szintkent.
+        #
+        # Minden meret a MOZGAS ARANYABAN ertendo, nem abszolut szazalekban -- igy
+        # egy 0.5%-os es egy 3%-os mozgasnal ugyanaz a logika mukodik.
+        #
+        # A visszapattanast a MAR ELERT csucshoz merjuk, nem a pillanatnyi arhoz:
+        # kulonben a visszahuzas (ami eppen a micro szint rogzitesehez kell) kilokne
+        # az alakzatot, es a micro szint csak NAGY visszapattanasoknal rogzulne --
+        # ez okozta, hogy a rendszer szisztematikusan keson jelzett.
+        tav = abs(setup.origin - setup.extreme)          # a mozgas teljes hossza arban
+        kell_bounce = tav * c["bounceOfMovePct"] / 100.0
+        hosszu = setup.side == "LONG"
+
+        setup.peak = max(setup.peak, trade.price) if hosszu else min(setup.peak, trade.price)
+        visszapattant = abs(setup.peak - setup.extreme)
+        if visszapattant < kell_bounce:
+            return setup                                 # meg nem pattant vissza eleget
+
+        if setup.micro is None:
+            kell_pullback = visszapattant * c["pullbackOfBouncePct"] / 100.0
+            huzott = abs(setup.peak - trade.price)
+            if huzott >= kell_pullback:
                 setup.micro = setup.peak
         return setup
 
@@ -150,12 +175,12 @@ class ReversalDetector(Detector):
         if lo.ts > hi.ts and lo.price > 0:
             drop = (hi.price - lo.price) / hi.price * 100.0
             if drop >= min_move:
-                return Setup("LONG", lo.price, lo.ts, drop)
+                return Setup("LONG", lo.price, lo.ts, drop, hi.price)
         # SHORT jelolt: a maximum a minimum UTAN keletkezett -> felfele mozgas
         if hi.ts > lo.ts and lo.price > 0:
             rise = (hi.price - lo.price) / lo.price * 100.0
             if rise >= min_move:
-                return Setup("SHORT", hi.price, hi.ts, rise)
+                return Setup("SHORT", hi.price, hi.ts, rise, lo.price)
         return None
 
     @staticmethod
@@ -196,7 +221,7 @@ class ReversalDetector(Detector):
 
     # ------------------------------------------------------------------ signal
 
-    def _signal(self, trade, setup, flow, break_pct, c, window):
+    def _signal(self, trade, setup, flow, break_pct, retrace, kor, c, window):
         direction = setup.side
         bounce_pct = abs(trade.price - setup.extreme) / setup.extreme * 100.0
         szint = "melypont" if direction == "LONG" else "csucs"
@@ -218,15 +243,25 @@ class ReversalDetector(Detector):
             self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
             strength=min(setup.move_pct / c["minMovePct"],
                          flow["ratio"] / c["minFlowRatio"]),
-            accelerating=break_pct >= 2 * c["breakTolerancePct"],
+            # eros attores: a mozgas kettoszeres attores-kuszobet is meghaladja
+            accelerating=(abs(trade.price - setup.micro)
+                          >= 2 * abs(setup.origin - setup.extreme)
+                          * c["breakOfMovePct"] / 100.0),
             context_mode="reversal",
             move_pct=bounce_pct + break_pct,
+            # a stop a szelsoertek tuloldalara kerul, a cel az elozo mozgas
+            # targetRetracementPct szazalekanal van
+            stop_anchor=setup.extreme,
+            target_anchor=(setup.extreme + (setup.origin - setup.extreme)
+                           * c["targetRetracementPct"] / 100.0),
             detail={
                 "extreme": setup.extreme,
                 "extremeAt": setup.extreme_ts,
-                "extremeAgeSec": round(trade.ts - setup.extreme_ts, 2),
                 "movePct": round(setup.move_pct, 4),
                 "bouncePct": round(bounce_pct, 4),
+                "retracementPct": round(retrace, 2),
+                "extremeAgeSec": round(kor, 2),
+                "origin": setup.origin,
                 "movePct2": round(bounce_pct + break_pct, 4),
                 "microLevel": setup.micro,
                 "breakPct": round(break_pct, 4),
@@ -240,9 +275,10 @@ class ReversalDetector(Detector):
             lines=[
                 ("elotte" if direction == "LONG" else "elotte",
                  f"{'eses' if direction == 'LONG' else 'emelkedes'} {setup.move_pct:.2f}%"),
-                (szint, f"{fprice(setup.extreme)}   "
-                        f"({trade.ts - setup.extreme_ts:.1f} mp-e)"),
-                ("visszafordulas", f"{bounce_pct:.2f}%"),
+                (szint, f"{fprice(setup.extreme)}   ({kor:.1f} mp-e)"),
+                ("visszafordulas", f"{bounce_pct:.2f}%   "
+                                   f"(a mozgas {retrace:.0f}%-a, max "
+                                   f"{c['maxRetracementPct']:.0f}%)"),
                 (f"{micro_nev} attores",
                  f"{fprice(setup.micro)}   "
                  f"({'+' if direction == 'LONG' else '-'}{break_pct:.2f}%)"),

@@ -74,6 +74,21 @@ async def _track(db, signal_id, signal, cfg):
              symbol, signal["detector"], perc, jel, zaras, mfe, mae)
 
 
+async def hit_rates(db):
+    """{(detektor, score sav also hatara): (darab, talalati arany)}"""
+    sorok = await db.signals.aggregate([
+        {"$match": {"outcome": {"$exists": True}}},
+        {"$group": {
+            "_id": {"detector": "$detector",
+                    "sav": {"$multiply": [{"$floor": {"$divide": ["$score", 10]}}, 10]}},
+            "db": {"$sum": 1},
+            "jo": {"$sum": {"$cond": ["$outcome.good", 1, 0]}},
+        }},
+    ]).to_list(length=100)
+    return {(r["_id"]["detector"], int(r["_id"]["sav"])): (r["db"], r["jo"] / r["db"])
+            for r in sorok if r["db"]}
+
+
 async def summary_loop(db, cfg, interval=600):
     """Idonkent osszesitest ir a logba: tenylegesen mennyi jott be."""
     while True:

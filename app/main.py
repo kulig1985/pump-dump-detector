@@ -53,6 +53,7 @@ async def main():
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run(),
+                             signals.refresh_hit_rates(),
                              outcome.summary_loop(db, cfg.detector))
     finally:
         await notifier.close()

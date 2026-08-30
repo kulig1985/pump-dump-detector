@@ -48,6 +48,10 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/scoring.py` | 0–100 score + indoklás, `contextMode` szerint momentum/reversal ág |
 | `app/outcome.py` | mi történt a jelzés után (MFE/MAE, találati arány score sávonként) |
 | `app/prices.py` | utolsó ismert ár symbolonként, az eredményméréshez |
+| `app/plan.py` | belépő / cél / stop / hozam-kockázat minden jelzéshez |
+| `app/quality.py` | symbolonkénti mozgásminőség — a szaggatott párok kizárása |
+
+Paraméterek részletes leírása: `docs/PARAMETEREK.md`
 | `app/fmt.py` | közös formázók a státusz táblához |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
 | `app/telegram.py` | Bot API sendMessage + üzenetformázás |

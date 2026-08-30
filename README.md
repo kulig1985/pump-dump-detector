@@ -348,6 +348,24 @@ trend természetesen még a régi irányba mutat — ezért nem az EMA iránya s
 módban (pump/dump) marad a régi értelmezés: a trend támogassa az irányt, és ne legyen wall
 előttünk.
 
+## Árnyék mód: előbb mérünk, aztán küldünk
+
+Alapból **egyetlen jelzés sem megy Telegramra**, amíg nincs mért bizonyíték rá. Minden
+jelzés mentődik és logolódik, az eredménymérés fut, és amikor egy detektor adott score
+sávja eléri az `shadowMinSamples` (50) mintát és az `shadowMinHitRate` (55%) találati
+arányt, a küldés magától bekapcsol arra a sávra.
+
+```
+SHADOW  reversal 70-79: 18 jelzes, 33% talalat -> meg nem kuldunk (kell 50 / 55%)
+ELO     pump_dump 80-89: 64 jelzes, 61% talalat -> Telegram BE
+```
+
+Ha azonnal látni akarod a jelzéseket a mérés bevárása nélkül:
+
+```js
+db.config.updateOne({_id:"reversal"}, {$set:{telegramMode:"always"}})
+```
+
 ## Túl sok a jelzés? — mérd, ne tippelj
 
 Minden mentett jelzés után a rendszer `outcomeMinutes` (alap 5) percig figyeli az árat, és
@@ -453,6 +471,11 @@ látod, hol érdemes meghúzni a határt.
 A `SignalService`, a `scoring`, a `telegram`, a Mongo-mentés és a trading nem igényel
 módosítást — a detektor-specifikus rész a jelzés `detail` (Mongo) és `lines` (Telegram)
 mezőjében utazik.
+
+## Paraméterek
+
+Minden beállítás részletes leírása, az összes küszöb hatásával és a fordulós alakzat
+anatómia-rajzával: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
 ## Hangolás
 

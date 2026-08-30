@@ -101,6 +101,11 @@ class PumpDumpDetector(Detector):
             accelerating=trend["accelerating"],
             context_mode="momentum",
             move_pct=abs(trend["totalPct"]),
+            # a lendulet kiindulopontja alatt/felett mar nem all a tezis;
+            # a cel egy azonos nagysagu folytatas (mert mozgas)
+            stop_anchor=trend["origin"],
+            target_anchor=price * (1 + (1 if direction == "LONG" else -1)
+                                   * abs(trend["totalPct"]) / 100.0),
             detail={
                 "slopePctPerSec": round(trend["pctPerSec"], 5),
                 "slopeThreshold": round(threshold, 5),
@@ -173,6 +178,7 @@ class PumpDumpDetector(Detector):
         second = (ys[-1] - ys[half]) / max(xs[-1] - xs[half], 1e-9)
 
         return {"pctPerSec": pct_per_sec, "spanSec": span, "consistency": consistency,
+                "origin": ys[0],
                 "volume": volume, "expectedVolume": elvart,
                 "totalPct": (ys[-1] - ys[0]) / ys[0] * 100.0,
                 "accelerating": abs(second) > abs(first) and second * first > 0}

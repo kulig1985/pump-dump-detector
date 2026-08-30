@@ -17,7 +17,7 @@ Trade = namedtuple("Trade", "symbol price qty ts buy_taker")
 
 def make_signal(detector, config_key, symbol, direction, price, ts, *,
                 strength, accelerating, context_mode, detail, lines, history,
-                move_pct=None):
+                move_pct=None, stop_anchor=None, target_anchor=None):
     """A detektorok egysegesen ilyen dictet adnak vissza.
 
     strength      1.0 = pont a sajat kuszoben; ebbol jon a score mozgas-resze
@@ -27,6 +27,10 @@ def make_signal(detector, config_key, symbol, direction, price, ts, *,
     move_pct      a detektor altal latott armozgas nagysaga szazalekban -- ehhez
                   merjuk a spreadet (ha kisebb a mozgas, mint a be- es kiszallas
                   koltsege, az nem kereskedheto jelzes)
+    stop_anchor   az az arszint, ami alatt/felett a jelzes ervenyet veszti
+    target_anchor ameddig a mozgas tarthat
+                  A kettobol az app/plan.py szamol belepot / celt / stopot es
+                  hozam-kockazat aranyt, minden detektornal egyformán.
     detail        detektor-specifikus adat, valtozatlanul Mongo-ba kerul
     lines         [(cimke, ertek), ...] -- a Telegram uzenet reszletezo blokkja,
                   igy a formazo egymas ala tudja igazitani az ertekeket
@@ -41,6 +45,8 @@ def make_signal(detector, config_key, symbol, direction, price, ts, *,
         "timestamp": ts,
         "strength": strength,
         "movePct": move_pct,
+        "stopAnchor": stop_anchor,
+        "targetAnchor": target_anchor,
         "accelerating": accelerating,
         "contextMode": context_mode,
         "detail": detail,

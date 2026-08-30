@@ -13,6 +13,7 @@ DETECTOR_DEFAULTS = {
     "_id": "detector",
     "enabled": True,
     "telegramEnabled": True,
+    "telegramMode": "auto",            # auto | always | never  (lasd arnyek mod)
     # --- symbol szures ---
     "quoteAssets": ["USDT", "USDC"],   # melyik elszamolo devizas perpetualokat nezzuk
     "minQuoteVolume24h": 50_000_000,   # 24h forgalom minimum (az elszamolo devizaban)
@@ -39,10 +40,19 @@ DETECTOR_DEFAULTS = {
     "symbolCooldownSec": 60,
     "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
     "signalWindowMinutes": 10,        # ennyi idore visszamenoleg szamoljuk a jelzeseket
+    # --- mozgasminoseg: a szaggatott parokra nem lehet jelezni ---
+    "qualityWindow": 50,              # ennyi trade-bol szamoljuk a hatekonysagi aranyt
+    "minEfficiency": 0.25,            # ez alatt kizarjuk a part (0 = kikapcsolva)
+    # --- kereskedelmi terv ---
+    "stopBufferPct": 0.05,            # a stop ennyivel kerul a horgony tuloldalara
+    "minRewardRisk": 1.5,             # ez alatt "gyenge aranyu"-nak jeloljuk a jelzest
     # --- eredmenymeres: mi tortent a jelzes utan ---
     "outcomeMinutes": 5,              # ennyi ideig kovetjuk az arat a jelzes utan
     "outcomeTargetPct": 0.3,          # ezt elerve szamit jonak a jelzes
     "outcomeStopPct": 0.3,            # ezt elerve szamit rossznak
+    # --- arnyek mod: Telegram csak bizonyitott score savokra ---
+    "shadowMinSamples": 50,           # ennyi lemert jelzes kell egy savhoz
+    "shadowMinHitRate": 0.55,         # es ekkora talalati arany
     # --- order book ---
     "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
     "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall
@@ -56,18 +66,32 @@ DETECTOR_DEFAULTS = {
 REVERSAL_DEFAULTS = {
     "_id": "reversal",
     "enabled": True,
+    "telegramMode": "auto",            # auto | always | never
     "minSignalScore": 60,              # sajat kuszob, fuggetlen a pump/dump-etol
     "cooldownSec": 120,
     # --- rolling trade ablak ---
     "windowSeconds": 20,
     "minTradesInFlowWindow": 5,
-    "maxSetupAgeSec": 30,              # ennyi ido utan elavul egy alakzat
+    "maxSetupAgeSec": 20,              # ennyi ido utan elavul egy alakzat
     # --- alakzat ---
-    "minMovePct": 0.40,                # a fordulo elotti mozgas merteke
-    "bouncePct": 0.15,                 # ennyit kell eltavolodni a szelsoertektol
-    "pullbackPct": 0.08,               # a micro szint rogzitesehez szukseges visszahuzas
-    "newExtremeTolerancePct": 0.05,    # ennel melyebb minimum = uj alakzat
-    "breakTolerancePct": 0.02,         # ennyivel kell atutni a micro szintet
+    "minMovePct": 0.40,                # a fordulo elotti mozgas merteke, szazalekban
+    # Az alakzat tobbi merete a MOZGAS ARANYABAN ertendo (0-100%), nem abszolut
+    # szazalekban -- igy egy 0.5%-os es egy 3%-os mozgasnal ugyanaz a logika mukodik.
+    #
+    #   csucs  ─────────────────────────────  100%
+    #                                          61.8%  <- cel (targetRetracementPct)
+    #                                          25%    <- max belepo (maxRetracementPct)
+    #                                          12%    <- ide kell visszapattannia
+    #   melypont ───────────────────────────  0%      <- stop ez ala
+    #
+    "bounceOfMovePct": 12,             # ennyit kell visszapattannia a mozgasbol
+    "pullbackOfBouncePct": 30,         # a visszapattanas ennyit huzzon vissza -> micro szint
+    "breakOfMovePct": 5,               # az attores legyen a mozgas ennyi %-a
+    "maxRetracementPct": 25,           # EZ A LENYEG: ennel tobb mar ne jojjon vissza,
+                                       # kulonben a kereskedheto resz elfogyott
+    "targetRetracementPct": 61.8,      # a cel a mozgas ennyi %-anal van
+    "maxExtremeAgeSec": 8,             # a szelsoertek ennel frissebb legyen
+    "newExtremeOfMovePct": 2,          # ennyivel melyebb minimum mar uj alakzatot indit
     # --- trade flow ---
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,               # buy/sell (vagy sell/buy) arany

@@ -12,7 +12,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from . import orderbook, ta, scoring, telegram, events, binance_rest, outcome
+from . import orderbook, ta, scoring, telegram, events, binance_rest, outcome, plan
 
 log = logging.getLogger("signal")
 
@@ -24,6 +24,7 @@ class SignalService:
         self.notifier = notifier
         self.trader = trader
         self.recent = deque()      # (ts, symbol, direction) a friss jelzesekrol
+        self.hit_rates = {}        # (detektor, score sav) -> (darab, talalati arany)
 
     async def handle_trigger(self, raw):
         """Egy detektor jelzese. Sose dob kivetelt tovabb a stream fele."""
@@ -56,6 +57,7 @@ class SignalService:
         score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared)
         recent = self._count_recent(detector, symbol, direction,
                                     shared["signalWindowMinutes"])
+        terv = plan.build(raw, shared)
 
         signal = {
             "timestamp": datetime.now(timezone.utc),
@@ -65,6 +67,7 @@ class SignalService:
             "price": raw["price"],
             "quoteVolume24h": binance_rest.SYMBOL_VOLUME.get(symbol),
             "strength": round(raw["strength"], 3),
+            "plan": terv,
             "detail": raw["detail"],          # detektor-specifikus bizonyitek
             "lines": raw["lines"],
             "ema": ta_result,
@@ -84,11 +87,24 @@ class SignalService:
             await self._save(signal, raw, ob, ta_result, parts)
             return
 
-        log.warning("[%s] %s SCORE %d/100 | %s", symbol, detector, score, reason)
+        if terv:
+            log.warning("[%s] %s SCORE %d/100 | belepo %.8g  cel %.8g (+%.2f%%)  "
+                        "stop %.8g (-%.2f%%)  hozam/kockazat %.1f:1%s | %s",
+                        symbol, detector, score, terv["entry"], terv["target"],
+                        terv["targetPct"], terv["stop"], terv["stopPct"],
+                        terv["rewardRisk"], "  GYENGE" if terv["weak"] else "", reason)
+        else:
+            log.warning("[%s] %s SCORE %d/100 | %s", symbol, detector, score, reason)
 
+        kuldjuk, ok = self._telegram_gate(detector, score, own)
+        signal["shadow"] = None if kuldjuk else ok
         signal["trade"] = await self.trader.maybe_open(signal)
-        signal["telegram"] = await self.notifier.send(
-            symbol, telegram.format_signal(signal), detector)
+        if kuldjuk:
+            signal["telegram"] = await self.notifier.send(
+                symbol, telegram.format_signal(signal), detector)
+        else:
+            log.info("[%s] SHADOW: %s", symbol, ok)
+            signal["telegram"] = {"sent": False, "error": "shadow"}
         await self._save(signal, raw, ob, ta_result, parts)
 
         kimenet = "TELEGRAM ELKULDVE" if signal["telegram"]["sent"] else \
@@ -127,6 +143,40 @@ class SignalService:
                       symbol, type(e).__name__, e)
             events.add(f"{symbol:<14} market_snapshots mentes HIBA: {e}")
 
+
+    def _telegram_gate(self, detector, score, own):
+        """Arnyek mod: csak bizonyitott score savokra kuldunk.
+
+        Amig egy detektor adott score savjahoz nincs eleg lemert eredmeny, vagy a
+        merteknek nem eleg jo a talalati aranya, a jelzes mentodik es logolodik,
+        de nem megy Telegramra.
+        """
+        mod = own.get("telegramMode", "auto")
+        if mod == "always":
+            return True, None
+        if mod == "never":
+            return False, "telegramMode: never"
+
+        c = self.cfg.detector
+        sav = int(score // 10 * 10)
+        darab, arany = self.hit_rates.get((detector, sav), (0, 0.0))
+        kell_db, kell_arany = c["shadowMinSamples"], c["shadowMinHitRate"]
+        if darab < kell_db:
+            return False, (f"{detector} {sav}-{sav + 9}: meg csak {darab} lemert jelzes "
+                           f"(kell {kell_db}) -- eloszor merunk, aztan kuldunk")
+        if arany < kell_arany:
+            return False, (f"{detector} {sav}-{sav + 9}: {darab} jelzes, "
+                           f"{arany:.0%} talalat (kell {kell_arany:.0%}) -- nem kuldjuk")
+        return True, None
+
+    async def refresh_hit_rates(self, interval=300):
+        """Idonkent frissiti az arnyek mod donteshez hasznalt merteket."""
+        while True:
+            try:
+                self.hit_rates = await outcome.hit_rates(self.db)
+            except Exception as e:
+                log.warning("talalati aranyok frissitese sikertelen: %s", e)
+            await asyncio.sleep(interval)
 
     @staticmethod
     def _spread_check(raw, ob, cfg):

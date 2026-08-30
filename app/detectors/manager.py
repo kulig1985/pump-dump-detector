@@ -5,6 +5,8 @@ a jelzeseket, nem ment, nem ertesit.
 """
 import logging
 
+from ..quality import SymbolQuality
+
 log = logging.getLogger("detectors")
 
 
@@ -12,6 +14,8 @@ class DetectorManager:
     def __init__(self, cfg, detectors):
         self.cfg = cfg
         self.detectors = detectors
+        self.quality = SymbolQuality(cfg)
+        self.skipped = 0
         self.ticks = 0
         self.total_signals = 0
         self._broken = set()      # amelyik detektor mar dobott hibat (ne spammeljunk)
@@ -22,6 +26,16 @@ class DetectorManager:
     def on_trade(self, trade):
         """Visszaadja az osszes detektor jelzeset erre a trade-re (altalaban ures lista)."""
         self.ticks += 1
+        self.quality.on_trade(trade)
+
+        # A szaggatott, ossze-vissza ugralo parokra egyik detektor sem jelez:
+        # ott nincs mit megfogni, csak zajra jonne a jelzes.
+        if self.cfg.detector["minEfficiency"]:
+            mehet, _ = self.quality.tradeable(trade.symbol)
+            if not mehet:
+                self.skipped += 1
+                return []
+
         signals = []
         for d in self.detectors:
             if not self.enabled(d):
@@ -43,7 +57,9 @@ class DetectorManager:
 
     def status_lines(self):
         """A detektorok sajat blokkjai a statusz tablahoz, egymas ala fuzve."""
-        out = []
+        out = list(self.quality.blocked_summary())
+        if out:
+            out.append("")
         for d in self.detectors:
             if not self.enabled(d):
                 out.append(f"  {d.name.upper()}  kikapcsolva "

@@ -13,6 +13,8 @@ from app.detectors.base import Trade
 from app.fmt import pad as _pad
 from app import orderbook, scoring
 from app.ta import ema
+from app.plan import build as build_plan
+import app.config as C_CFG
 
 CFG = {
     "tradeWindow": 30,
@@ -23,6 +25,14 @@ CFG = {
     "minTicksInWindow": 3,
     "maxRefAgeFactor": 1.5,
     "volatilityMultiplier": 0.0,       # a legtobb teszt fix kuszobbel szamol
+    "stopBufferPct": 0.05,
+    "minRewardRisk": 1.5,
+    "qualityWindow": 50,
+    "minEfficiency": 0.25,
+    "shadowMinSamples": 50,
+    "shadowMinHitRate": 0.55,
+    "minMoveToSpreadRatio": 3.0,
+    "minVolumeFactor": 1.0,
     "wallSensitivity": 3.0,
     "wallMaxDistancePct": 1.5,
 }
@@ -121,13 +131,7 @@ def test_volatility_raises_threshold_for_noisy_symbol():
 
 # ---------------------------------------------------------------- ReversalDetector
 
-REV = {
-    "enabled": True, "minSignalScore": 60, "cooldownSec": 120,
-    "windowSeconds": 20, "minTradesInFlowWindow": 5, "maxSetupAgeSec": 30,
-    "minMovePct": 0.40, "bouncePct": 0.15, "pullbackPct": 0.08,
-    "newExtremeTolerancePct": 0.05, "breakTolerancePct": 0.02,
-    "flowWindowSeconds": 3, "minFlowRatio": 1.6, "minFlowVolumeFactor": 1.0,
-}
+REV = dict(C_CFG.REVERSAL_DEFAULTS)
 rev_cfg = types.SimpleNamespace(detector=CFG, reversal=REV)
 
 
@@ -152,84 +156,233 @@ class Tape:
         return [s for s in (det.on_trade(tr) for tr in self.trades) if s]
 
 
-def _long_setup(tape):
-    """Kozos elotag: 100.0 -> 99.4 eses (-0.6%), majd visszapattanas 99.65-ig,
-    aztan visszahuzas 99.55-re (itt rogzul a 99.65-os micro-high)."""
-    tape.ramp(100.0, 100.0, 6, buy=False)      # kiindulasi szint
-    tape.ramp(99.95, 99.40, 12, buy=False)     # LEMOZGAS: -0.6%
-    tape.ramp(99.45, 99.65, 6, buy=True)       # VISSZAPATTANAS: +0.25%
-    tape.ramp(99.62, 99.55, 4, buy=True)       # visszahuzas -> micro-high rogzul
-    return tape
+# ---- a valos CYSUSDT eset, ami a rendszer atdolgozasat kivaltotta -----------
+#
+# A jelzes, ami elesben kiment: melypont 12.9 masodperce, a mozgas 48%-a mar
+# visszajott, es egy 0.03%-os "attoresre" hivatkozott. A felhasznalo a Binance-on
+# rendszeresen az ellenkezojet latta. Ezek a tesztek ezt orzik.
+
+CSUCS, MELY = 0.79246, 0.78240          # a valodi jelzesbol visszaszamolva
 
 
-def test_long_reversal_happy_path():
+def rev_tape(micro, visszahuzas, belepo, tetlen_mp=0.0, csucs=CSUCS, mely=MELY):
+    """Fordulo szekvencia. A lemozgas lassabb (0.3 mp/trade), hogy a 3 masodperces
+    flow ablakba mar csak a visszapattanas essen bele -- ahogy elesben is.
+
+    tetlen_mp: ennyi ideig all az ar a visszahuzas szintjen az attores elott
+               (ezzel oregitheto a szelsoertek)
+    """
+    from app import binance_rest
+    binance_rest.SYMBOL_VOLUME["CYSUSDT"] = 52e6
+    t, out = [1000.0], []
+    # a szelsoertek utani oldal a fordulo iranyaval egyezik: lefele mozgas utan
+    # veteli flow (LONG fordulo), felfele mozgas utan eladoi (SHORT fordulo)
+    utana = mely < csucs
+
+    def add(ar, buy, usd, dt):
+        t[0] += dt
+        out.append(Trade("CYSUSDT", ar, usd / ar, t[0], buy))
+
+    for _ in range(8):
+        add(csucs, not utana, 3000, 0.3)
+    for i in range(12):
+        add(csucs + (mely - csucs) * (i + 1) / 12, not utana, 3000, 0.3)
+    for i in range(6):
+        add(mely + (micro - mely) * (i + 1) / 6, utana, 3000, 0.1)
+    for _ in range(4):
+        add(visszahuzas, utana, 3000, 0.1)
+    if tetlen_mp:                       # varakozas: az alakzat oregszik
+        for _ in range(6):
+            add(visszahuzas, utana, 3000, tetlen_mp / 6)
+    for _ in range(8):
+        add(belepo, utana, 4000, 0.15)
+    return out
+
+
+def rev_run(det, tape):
+    return [s for s in (det.on_trade(t) for t in tape) if s]
+
+
+def test_late_entry_is_rejected():
+    """A valodi jelzes: a mozgas 48%-a mar visszajott. Nem szabad jelezni."""
     det = ReversalDetector(rev_cfg)
-    tape = _long_setup(Tape())
-    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)   # veteli flow + attores
-    signals = tape.run(det)
-    assert len(signals) == 1, [s["detail"] for s in signals]
-    sig = signals[0]
-    assert sig["detector"] == "reversal"
-    assert sig["direction"] == "LONG"
-    assert sig["contextMode"] == "reversal"
-    d = sig["detail"]
-    assert d["movePct"] >= REV["minMovePct"]
-    assert d["flowRatio"] >= REV["minFlowRatio"]
-    assert d["microLevel"] is not None and sig["price"] > d["microLevel"]
-    assert d["extreme"] <= 99.41
+    assert rev_run(det, rev_tape(0.78600, 0.78520, 0.78720)) == []
+
+
+def test_early_entry_is_accepted_with_a_usable_plan():
+    """Ugyanaz a mozgas, a visszapattanas 21%-anal elkapva -> van meg hely."""
+    det = ReversalDetector(rev_cfg)
+    sigs = rev_run(det, rev_tape(0.78380, 0.78330, 0.78450))
+    assert len(sigs) == 1, sigs
+    d = sigs[0]["detail"]
+    assert d["retracementPct"] <= REV["maxRetracementPct"]
+    assert d["extremeAgeSec"] <= REV["maxExtremeAgeSec"]
+    assert sigs[0]["stopAnchor"] == MELY
+    assert MELY < sigs[0]["targetAnchor"] < CSUCS
+
+    terv = build_plan(sigs[0], CFG)
+    assert terv["stop"] < MELY < terv["entry"] < terv["target"]
+    assert terv["rewardRisk"] > 1.0
+
+
+def test_stale_extreme_is_rejected():
+    """Helyes alakzat, de a melypont mar 12 masodperces -- a mozgas lefutott."""
+    det = ReversalDetector(rev_cfg)
+    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78450, tetlen_mp=12.0)) == []
+
+
+def test_tiny_break_is_rejected():
+    """Az attores a mozgas 5%-a alatt marad -- az nem informacio, csak zaj."""
+    det = ReversalDetector(rev_cfg)
+    # a mozgas 1.006 arpont, 5%-a 0.000503; itt csak 0.0002-t torunk at
+    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78400)) == []
+
+
+def test_pullback_below_bounce_still_locks_the_micro_level():
+    """Regresszio: a visszapattanast a MAR ELERT csucshoz merjuk, nem a pillanatnyi
+    arhoz. Kulonben a visszahuzas kilokne az alakzatot, es a micro szint csak NAGY
+    visszapattanasoknal rogzulne -- pontosan ez okozta a kesoi jelzeseket."""
+    det = ReversalDetector(rev_cfg)
+    for t in rev_tape(0.78380, 0.78330, 0.78450):
+        det.on_trade(t)
+        st = det.setups.get("CYSUSDT")
+        if st and st.micro:
+            assert st.micro == 0.78380
+            return
+    raise AssertionError("a micro szint sosem rogzult")
+
+
+def test_relative_sizing_works_on_a_small_move():
+    """Minden meret a mozgas aranyaban van, igy egy 0.6%-os mozgason is mukodik."""
+    det = ReversalDetector(rev_cfg)
+    sigs = rev_run(det, rev_tape(99.48, 99.455, 99.52, csucs=100.0, mely=99.40))
+    assert len(sigs) == 1, sigs
+    assert sigs[0]["detail"]["retracementPct"] <= REV["maxRetracementPct"]
+
+
+def rev_tape_sell_flow(micro, visszahuzas, belepo):
+    """Ugyanaz az alakzat, de az attorest ELADOI oldal viszi -> LONG-hoz rossz."""
+    tape = rev_tape(micro, visszahuzas, belepo)
+    return [t._replace(buy_taker=False) if t.price == belepo else t for t in tape]
 
 
 def test_no_reversal_without_buy_flow():
-    """Minden alakzat megvan, de az elado oldal marad a domináns."""
     det = ReversalDetector(rev_cfg)
-    tape = _long_setup(Tape())
-    tape.ramp(99.60, 99.80, 8, buy=False, qty=500.0)   # attores, de eladoi flow
-    assert tape.run(det) == []
+    assert rev_run(det, rev_tape_sell_flow(0.78380, 0.78330, 0.78450)) == []
 
 
 def test_no_reversal_without_micro_break():
-    """Visszapattan, a micro-high rogzul, de nem tori at."""
+    """Visszapattan, a micro szint rogzul, de nem tori at."""
     det = ReversalDetector(rev_cfg)
-    tape = _long_setup(Tape())
-    tape.ramp(99.56, 99.62, 8, buy=True, qty=500.0)    # a 99.65 ala marad
-    assert tape.run(det) == []
+    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78370)) == []
 
 
 def test_new_lower_low_resets_the_setup():
-    """Uj, melyebb minimum -> az alakzat ujraindul, nincs jelzes a regi micro-szintre."""
+    """Uj, melyebb minimum -> az alakzat ujraindul a regi micro szint nelkul."""
     det = ReversalDetector(rev_cfg)
-    tape = _long_setup(Tape())
-    tape.ramp(99.50, 99.10, 6, buy=False)              # UJ MELYPONT
-    tape.ramp(99.15, 99.66, 10, buy=True, qty=500.0)   # a regi micro-high fole megy
-    signals = tape.run(det)
-    # ha lenne jelzes, az mar az uj melypontra epulne, nem a regire
-    for s in signals:
-        assert s["detail"]["extreme"] <= 99.11, s["detail"]
+    tape = rev_tape(0.78380, 0.78330, 0.78450)
+    # az attores ele beszurunk egy uj melypontot
+    uj_mely = [t._replace(price=0.78100) for t in tape[22:26]]
+    for sig in rev_run(det, tape[:22] + uj_mely + tape[26:]):
+        assert sig["detail"]["extreme"] <= 0.78101, sig["detail"]
 
 
 def test_short_reversal_mirror():
+    """Tukorkep: emelkedes utan tetozott, majd lefordult."""
     det = ReversalDetector(rev_cfg)
-    tape = Tape("SSSUSDT")
-    tape.ramp(100.0, 100.0, 6, buy=True)
-    tape.ramp(100.05, 100.60, 12, buy=True)            # FELMOZGAS: +0.6%
-    tape.ramp(100.55, 100.35, 6, buy=False)            # visszafordulas
-    tape.ramp(100.38, 100.45, 4, buy=False)            # micro-low rogzul
-    tape.ramp(100.40, 100.20, 8, buy=False, qty=500.0) # eladoi flow + attores
-    signals = tape.run(det)
-    assert len(signals) == 1, [s["detail"] for s in signals]
-    assert signals[0]["direction"] == "SHORT"
-    assert signals[0]["detail"]["extreme"] >= 100.59
+    # csucs 100.60, melypont 100.00 -> a mozgas felfele ment, a fordulo lefele
+    tape = rev_tape(100.52, 100.545, 100.48, csucs=100.00, mely=100.60)
+    sigs = rev_run(det, tape)
+    assert len(sigs) == 1, sigs
+    assert sigs[0]["direction"] == "SHORT"
+    terv = build_plan(sigs[0], CFG)
+    assert terv["target"] < terv["entry"] < terv["stop"]
 
 
 def test_reversal_cooldown():
     det = ReversalDetector(rev_cfg)
-    tape = _long_setup(Tape())
-    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
-    assert len(tape.run(det)) == 1
-    # ugyanaz az alakzat ujra, a cooldown ablakon belul
-    tape2 = _long_setup(Tape(t0=tape.t))
-    tape2.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
-    assert tape2.run(det) == []
+    assert len(rev_run(det, rev_tape(0.78380, 0.78330, 0.78450))) == 1
+    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78450)) == []
+
+
+# ---------------------------------------------------------------- mozgasminoseg
+
+def test_choppy_symbol_is_excluded():
+    """Ossze-vissza ugralo par: a hatekonysagi arany alacsony -> nem jelzunk ra."""
+    from app.quality import SymbolQuality
+    q = SymbolQuality(cfg_obj)
+    for i in range(120):                       # fureszfog: nagy ut, nulla nettó
+        q.on_trade(Trade("CHOPUSDT", 100.0 + (i % 2) * 0.5, 1.0, 1000.0 + i * 0.1, True))
+    for i in range(120):                       # egyenletes emelkedes
+        q.on_trade(Trade("CLEANUSDT", 100.0 + i * 0.01, 1.0, 1000.0 + i * 0.1, True))
+
+    chop, clean = q.efficiency("CHOPUSDT"), q.efficiency("CLEANUSDT")
+    assert chop < 0.15, chop
+    assert clean > 0.85, clean
+    assert q.tradeable("CHOPUSDT")[0] is False
+    assert q.tradeable("CLEANUSDT")[0] is True
+    assert "CHOPUSDT" in q.blocked_summary()[1]
+
+
+def test_manager_blocks_choppy_symbols():
+    det = ReversalDetector(rev_cfg)
+    mgr = DetectorManager(rev_cfg, [det])
+    for i in range(120):                       # eloszor szaggatottra tanitjuk
+        mgr.on_trade(Trade("CYSUSDT", 0.78 + (i % 2) * 0.004, 1.0, 900.0 + i * 0.1, True))
+    assert mgr.quality.tradeable("CYSUSDT")[0] is False
+    assert [s for t in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(t)] == []
+    assert mgr.skipped > 0
+
+
+# ---------------------------------------------------------------- kereskedelmi terv
+
+def test_plan_levels_and_reward_risk():
+    long_sig = {"price": 100.0, "direction": "LONG",
+                "stopAnchor": 99.0, "targetAnchor": 102.0}
+    t = build_plan(long_sig, CFG)
+    assert t["stop"] < 99.0 < t["entry"] < t["target"]
+    assert t["rewardRisk"] == round(2.0 / (100.0 - t["stop"]), 2)
+    assert t["weak"] is False
+
+    short_sig = {"price": 100.0, "direction": "SHORT",
+                 "stopAnchor": 101.0, "targetAnchor": 98.0}
+    t = build_plan(short_sig, CFG)
+    assert t["target"] < t["entry"] < 101.0 < t["stop"]
+
+    # rossz irany -> nincs ertelmes terv
+    assert build_plan({"price": 100.0, "direction": "LONG",
+                       "stopAnchor": 101.0, "targetAnchor": 102.0}, CFG) is None
+    assert build_plan({"price": 100.0, "direction": "LONG"}, CFG) is None
+
+
+def test_weak_reward_risk_is_flagged_not_dropped():
+    sig = {"price": 100.0, "direction": "LONG",
+           "stopAnchor": 99.0, "targetAnchor": 100.5}
+    t = build_plan(sig, CFG)
+    assert t is not None, "a gyenge aranyu jelzest jelolni kell, nem eldobni"
+    assert t["weak"] is True
+    assert t["rewardRisk"] < CFG["minRewardRisk"]
+
+
+# ---------------------------------------------------------------- arnyek mod
+
+def test_shadow_mode_gate():
+    from app.signals import SignalService
+    svc = SignalService.__new__(SignalService)
+    svc.cfg = types.SimpleNamespace(detector=CFG)
+    own = {"telegramMode": "auto"}
+
+    svc.hit_rates = {}
+    assert svc._telegram_gate("reversal", 72, own)[0] is False       # nincs meres
+    svc.hit_rates = {("reversal", 70): (18, 0.90)}
+    assert svc._telegram_gate("reversal", 72, own)[0] is False       # keves minta
+    svc.hit_rates = {("reversal", 70): (64, 0.33)}
+    assert svc._telegram_gate("reversal", 72, own)[0] is False       # gyenge arany
+    svc.hit_rates = {("reversal", 70): (64, 0.61)}
+    assert svc._telegram_gate("reversal", 72, own)[0] is True        # bizonyitott
+
+    assert svc._telegram_gate("reversal", 72, {"telegramMode": "always"})[0] is True
+    assert svc._telegram_gate("reversal", 72, {"telegramMode": "never"})[0] is False
 
 
 def test_flow_needs_real_volume():
@@ -300,22 +453,18 @@ class BoomDetector:
 
 
 def test_manager_fans_out_and_survives_a_broken_detector():
-    rev = ReversalDetector(rev_cfg)
-    mgr = DetectorManager(rev_cfg, [BoomDetector(), rev])
-    tape = _long_setup(Tape())
-    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
-    signals = [s for tr in tape.trades for s in mgr.on_trade(tr)]
+    mgr = DetectorManager(rev_cfg, [BoomDetector(), ReversalDetector(rev_cfg)])
+    tape = rev_tape(0.78380, 0.78330, 0.78450)
+    signals = [s for tr in tape for s in mgr.on_trade(tr)]
     assert len(signals) == 1, "a hibas detektor nem nyelheti el a masik jelzeset"
-    assert mgr.ticks == len(tape.trades)
+    assert mgr.ticks == len(tape)
     assert mgr.total_signals == 1
 
 
 def test_manager_skips_disabled_detector():
     cfg = types.SimpleNamespace(detector=CFG, reversal={**REV, "enabled": False})
     mgr = DetectorManager(cfg, [ReversalDetector(cfg)])
-    tape = _long_setup(Tape())
-    tape.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
-    assert [s for tr in tape.trades for s in mgr.on_trade(tr)] == []
+    assert [s for tr in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(tr)] == []
 
 
 def test_wall_detection():

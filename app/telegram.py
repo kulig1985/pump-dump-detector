@@ -110,12 +110,28 @@ def format_signal(sig):
         kontextus.append((f"{detector} / {r['windowMinutes']} perc",
                           f"{r['marketLong']} LONG / {r['marketShort']} SHORT"))
 
+    terv_sorok = []
+    t = sig.get("plan")
+    if t:
+        terv_sorok = [
+            ("belepo", f"{t['entry']:.8g}"),
+            ("cel", f"{t['target']:.8g}   (+{t['targetPct']:.2f}%)"),
+            ("stop", f"{t['stop']:.8g}   (-{t['stopPct']:.2f}%)"),
+            ("hozam/kockazat", f"{t['rewardRisk']} : 1"
+                               + ("   GYENGE" if t["weak"] else "")),
+        ]
+
     blokkok = [("", alap),
+               ("TERV", terv_sorok),
                ("MIERT", [tuple(x) for x in sig.get("lines", [])]),
                ("KONTEXTUS", kontextus)]
 
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
-    veg = f"\n\n<i>{esc(sig['reason'])}</i>"
+    veg = ""
+    if t and t["weak"]:
+        veg += (f"\n\n⚠️ <b>Gyenge hozam/kockazat</b> ({t['rewardRisk']}:1, "
+                f"ajanlott {t['minRewardRisk']}:1 felett)")
+    veg += f"\n\n<i>{esc(sig['reason'])}</i>"
     if sig.get("trade", {}).get("executed"):
         veg += f"\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
     return f"{fej}\n\n<pre>{torzs}</pre>{veg}"
