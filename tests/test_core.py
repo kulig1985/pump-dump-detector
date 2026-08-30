@@ -528,6 +528,21 @@ def test_ineligible_pair_builds_state_but_emits_nothing():
 
 # ---------------------------------------------------------------- egyeb
 
+def test_status_line_only_uses_existing_attributes():
+    """Regresszio: a STATUS sor egy mar nem letezo mezore hivatkozott
+    (svc.rejected_today), es a status task elesben elszallt AttributeError-ral.
+    A statusz csak percenkent fut, ezert a teszt sose latta."""
+    import re
+    from app.signals import SignalService
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
+    for attr in set(re.findall(r"\bsvc\.([a-zA-Z_]+)", forras)):
+        assert hasattr(SignalService, attr) or attr in SignalService.__init__.__code__.co_names, \
+            f"SignalService.{attr} nem letezik"
+    for attr in set(re.findall(r"self\.detectors\.([a-zA-Z_]+)", forras)):
+        assert hasattr(DetectorManager, attr) or attr in DetectorManager.__init__.__code__.co_names, \
+            f"DetectorManager.{attr} nem letezik"
+
+
 def test_every_config_key_read_by_the_code_exists():
     """Ha atnevezunk egy beallitast, ne maradjon regi hivatkozas a kodban.
 

@@ -234,7 +234,7 @@ class MarketDataService:
                 f"{self.eligibility.book_status()} | "
                 f"{self.detectors.total_candidates} candidate, "
                 f"{svc.signals_today if svc else 0} jelzes, "
-                f"{svc.rejected_today if svc else 0} elutasitva | "
+                f"{self.detectors.skipped} kihagyva (nem kereskedheto) | "
                 f"Telegram: {'BE' if self.cfg.detector['telegramEnabled'] else 'KI'}",
             ]
             sorok += [f"   {x}" for x in kizart]
