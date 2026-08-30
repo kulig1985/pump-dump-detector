@@ -65,7 +65,7 @@ async def _signed_post(path, params):
         return body
 
 
-async def load_symbols(min_quote_volume, max_symbols):
+async def load_symbols(min_quote_volume, max_symbols, exclude=()):
     """Perpetual USDT parok, forgalom szerint szurve es rendezve.
 
     Mellekhatas: feltolti a SYMBOL_FILTERS cache-t (kerekiteshez kell a tradinghez).
@@ -83,16 +83,19 @@ async def load_symbols(min_quote_volume, max_symbols):
                 "minQty": float(f["LOT_SIZE"]["minQty"]),
             }
 
+    kizart = {s.upper() for s in exclude}
     tickers = await _get("/fapi/v1/ticker/24hr")
     liquid = [(t["symbol"], float(t["quoteVolume"])) for t in tickers
-              if t["symbol"] in tradable and float(t["quoteVolume"]) >= min_quote_volume]
+              if t["symbol"] in tradable and t["symbol"] not in kizart
+              and float(t["quoteVolume"]) >= min_quote_volume]
     liquid.sort(key=lambda x: x[1], reverse=True)
     symbols = [s for s, _ in liquid[:max_symbols]]
     SYMBOL_VOLUME.clear()
     SYMBOL_VOLUME.update(dict(liquid))
 
-    log.info("Perpetual USDT parok: %d | forgalom >= %s USDT: %d | figyelunk: %d",
-             len(tradable), f"{min_quote_volume:,.0f}", len(liquid), len(symbols))
+    log.info("Perpetual USDT parok: %d | forgalom >= %s USDT: %d | figyelunk: %d%s",
+             len(tradable), f"{min_quote_volume:,.0f}", len(liquid), len(symbols),
+             f" | kizarva: {', '.join(sorted(kizart))}" if kizart else "")
     if liquid:
         # latszodjon, hol huz a szuro -- ha keves symbol jon at, itt derul ki, hogy miert
         log.info("Figyelt parok forgalom szerint csokkeno sorrendben:")

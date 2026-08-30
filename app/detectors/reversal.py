@@ -223,15 +223,15 @@ class ReversalDetector(Detector):
                 "tradesInFlow": flow["trades"],
             },
             lines=[
-                f"{'Esés' if direction == 'LONG' else 'Emelkedés'} előtte: "
-                f"{setup.move_pct:.2f}%",
-                f"{szint.capitalize()}: {fprice(setup.extreme)} "
-                f"({trade.ts - setup.extreme_ts:.1f} mp-e)",
-                f"Visszafordulás: {bounce_pct:.2f}%",
-                f"{micro_nev} áttörés: {fprice(setup.micro)} ({break_pct:+.2f}%)",
-                f"Trade flow: {flow['ratio']:.1f}x {oldal} "
-                f"(buy {money(flow['buy'])} / sell {money(flow['sell'])} USDT, "
-                f"{c['flowWindowSeconds']} mp)",
+                ("elotte" if direction == "LONG" else "elotte",
+                 f"{'eses' if direction == 'LONG' else 'emelkedes'} {setup.move_pct:.2f}%"),
+                (szint, f"{fprice(setup.extreme)}   "
+                        f"({trade.ts - setup.extreme_ts:.1f} mp-e)"),
+                ("visszafordulas", f"{bounce_pct:.2f}%"),
+                (f"{micro_nev} attores", f"{fprice(setup.micro)}   ({break_pct:+.2f}%)"),
+                ("trade flow", f"{flow['ratio']:.1f}x {oldal}   "
+                               f"(buy {money(flow['buy'])} / sell {money(flow['sell'])} "
+                               f"USDT, {c['flowWindowSeconds']} mp)"),
             ],
             history=[(t.ts, t.price) for t in window],
         )
@@ -239,33 +239,59 @@ class ReversalDetector(Detector):
     # ------------------------------------------------------------------ statusz
 
     def status_lines(self, top=6):
-        """Csak azok a parok, ahol mar all egy alakzat -- es hogy min mulik meg."""
+        """Mindig megmondja, mit csinal eppen: hany paron van adat, hany alakzat
+        all, es azok melyik fazisban vannak."""
         c = self.cfg.reversal
         now = time.time()
-        rows = []
-        for symbol, s in self.setups.items():
-            if now - s.extreme_ts > c["maxSetupAgeSec"]:
-                continue
-            rows.append((s.move_pct, symbol, s))
-        if not rows:
-            return [f"  REVERSAL FIGYELO  nincs eppen fejlodo fordulo-alakzat "
-                    f"(kell hozza {c['minMovePct']:.2f}% mozgas)"]
+        eleg_adat = sum(1 for w in self.trades.values()
+                        if len(w) >= c["minTradesInFlowWindow"])
 
-        rows.sort(reverse=True, key=lambda r: r[0])
-        out = [f"  REVERSAL FIGYELO  ({len(rows)} par alakzatban, jelzes indulas ota: "
-               f"{self.total_signals})"]
-        for _, symbol, s in rows[:top]:
-            szint = "LOW " if s.side == "LONG" else "HIGH"
-            flow = self._flow(self.trades[symbol], now, c)
-            flow_txt = f"flow {flow['ratio']:.1f}x" if flow else "flow n/a"
-            if s.micro is None:
-                kell = f"kell: micro-{'high' if s.side == 'LONG' else 'low'} rogzulese"
+        fazisok = {"visszapattanasra var": 0, "micro szintre var": 0, "attoresre var": 0}
+        rows = []
+        for symbol, st in self.setups.items():
+            if now - st.extreme_ts > c["maxSetupAgeSec"]:
+                continue
+            if st.micro is not None:
+                fazis = "attoresre var"
+            elif st.peak != st.extreme:
+                fazis = "micro szintre var"
             else:
-                irany = ">" if s.side == "LONG" else "<"
-                kell = (f"kell: flow {c['minFlowRatio']:.1f}x + attores "
-                        f"{irany} {fprice(s.micro)}")
-            out.append(f"    {pad(symbol, 14)}{szint} {fprice(s.extreme):>13}  "
-                       f"mozgas {s.move_pct:5.2f}%  "
-                       f"micro {fprice(s.micro) if s.micro else '-':>12}  "
-                       f"{flow_txt:<11} {kell}")
+                fazis = "visszapattanasra var"
+            fazisok[fazis] += 1
+            rows.append((st.move_pct, symbol, st, fazis))
+
+        fej = (f"  REVERSAL FIGYELO   {eleg_adat} paron van eleg adat   "
+               f"{len(rows)} alakzat all   jelzes indulas ota: {self.total_signals}")
+        felt = (f"    kell hozza: {c['minMovePct']:.2f}% elozetes mozgas, "
+                f"{c['bouncePct']:.2f}% visszapattanas, {c['pullbackPct']:.2f}% visszahuzas, "
+                f"majd {c['minFlowRatio']:.1f}x flow + attores")
+        if not rows:
+            return [fej, felt, "    -- eppen egyetlen par sem all fordulo-alakzatban --"]
+
+        allapot = "    ".join(f"{n}: {db}" for n, db in fazisok.items() if db)
+        out = [fej, felt, f"    fazisok:  {allapot}"]
+        rows.sort(reverse=True, key=lambda r: r[0])
+        for _, symbol, st, fazis in rows[:top]:
+            szint = "LOW " if st.side == "LONG" else "HIGH"
+            flow = self._flow(self.trades[symbol], now, c)
+            kell_vetel = st.side == "LONG"
+            if flow is None:
+                flow_txt, flow_jo = "n/a", False
+            else:
+                oldal = "vetel" if flow["buyDominant"] else "elado"
+                flow_txt = f"{flow['ratio']:.1f}x {oldal}"
+                flow_jo = (flow["buyDominant"] == kell_vetel
+                           and flow["ratio"] >= c["minFlowRatio"])
+            if st.micro is None:
+                kell = f"kell: {fazis}"
+            elif not flow_jo:
+                kell = (f"kell: {c['minFlowRatio']:.1f}x "
+                        f"{'veteli' if kell_vetel else 'eladoi'} flow, majd attores")
+            else:
+                irany = ">" if st.side == "LONG" else "<"
+                kell = f"kell: attores, ar {irany} {fprice(st.micro)}"
+            out.append(f"    {pad(symbol, 14)}{szint} {fprice(st.extreme):>13}  "
+                       f"mozgas {st.move_pct:5.2f}%  "
+                       f"micro {(fprice(st.micro) if st.micro else '-'):>12}  "
+                       f"flow {flow_txt:<13} {kell}")
         return out

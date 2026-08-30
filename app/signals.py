@@ -79,7 +79,8 @@ class SignalService:
         log.warning("[%s] %s SCORE %d/100 | %s", symbol, detector, score, reason)
 
         signal["trade"] = await self.trader.maybe_open(signal)
-        signal["telegram"] = await self.notifier.send(symbol, telegram.format_signal(signal))
+        signal["telegram"] = await self.notifier.send(
+            symbol, telegram.format_signal(signal), detector)
         await self._save(signal, raw, ob, ta_result, parts)
 
         kimenet = "TELEGRAM ELKULDVE" if signal["telegram"]["sent"] else \

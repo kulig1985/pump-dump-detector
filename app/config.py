@@ -16,6 +16,7 @@ DETECTOR_DEFAULTS = {
     # --- symbol szures ---
     "minQuoteVolume24h": 50_000_000,   # USDT, 24h forgalom minimum
     "maxSymbols": 200,                 # top N forgalom szerint
+    "excludeSymbols": [],              # pl. ["1000PEPEUSDT", "TRUMPUSDT"] -- ezeket kihagyjuk
     "symbolRefreshMinutes": 60,
     # --- trigger: az utolso N trade-re illesztett egyenes meredeksege ---
     "tradeWindow": 30,                 # ennyi trade-bol szamolunk meredekseget
@@ -81,6 +82,9 @@ TELEGRAM_DEFAULTS = {
     "_id": "telegram",
     "botToken": os.getenv("TELEGRAM_BOT_TOKEN", ""),
     "chatId": os.getenv("TELEGRAM_CHAT_ID", ""),
+    # Ha kulon csatornara akarod a ket detektort, ide irj chat ID-t.
+    # Ures ertek eseten a fenti kozos chatId-re megy.
+    "chatIds": {"pump_dump": "", "reversal": ""},
 }
 
 
@@ -92,44 +96,56 @@ class ConfigStore:
         self.trading = dict(TRADING_DEFAULTS)
         self.telegram = dict(TELEGRAM_DEFAULTS)
 
+    DOCS = (
+        (DETECTOR_DEFAULTS, "detector"),
+        (REVERSAL_DEFAULTS, "reversal"),
+        (TRADING_DEFAULTS, "trading"),
+        (TELEGRAM_DEFAULTS, "telegram"),
+    )
+
     async def load(self):
-        for defaults, attr in (
-            (DETECTOR_DEFAULTS, "detector"),
-            (REVERSAL_DEFAULTS, "reversal"),
-            (TRADING_DEFAULTS, "trading"),
-            (TELEGRAM_DEFAULTS, "telegram"),
-        ):
+        for defaults, attr in self.DOCS:
             doc = await self.db.config.find_one({"_id": defaults["_id"]})
             if doc is None:
                 await self.db.config.insert_one(dict(defaults))
                 doc = dict(defaults)
                 log.info("Config letrehozva defaultokkal: %s", defaults["_id"])
-            # hianyzo kulcsok kiegeszitese, hogy uj mezo ne torje el a futast
+            else:
+                doc = await self._sync(defaults, doc)
+
             merged = {**defaults, **doc}
             # ures ertekre az env meg mindig ervenyes -- kulonben a kesobb kitoltott
             # .env sose jutna ervenyre, mert a seed mar berakta az ures stringet
             merged = {k: (defaults[k] if v == "" and defaults.get(k) else v)
                       for k, v in merged.items()}
             setattr(self, attr, merged)
-            self._warn_legacy(defaults, doc)
 
-    _warned = set()
-    LEGACY = {
-        "priceChangeThreshold1s": "minSlopePctPerSec",
-        "priceChangeThreshold3s": "minSlopePctPerSec",
-        "priceChangeThreshold5s": "minSlopePctPerSec",
-    }
+    async def _sync(self, defaults, doc):
+        """A DB dokumentum tukrozze a jelenlegi beallitas-keszletet.
 
-    def _warn_legacy(self, defaults, doc):
-        """Szoljunk, ha a DB-ben olyan kulcs van, amit mar senki nem olvas.
+        Enelkul egy uj beallitas sosem jelenne meg a DB-ben (csak a memoriaban
+        letezne), a mar nem hasznalt regiek pedig bent maradnanak, es ugy nezne ki,
+        mintha hatnanak valamire. A meglevo ERTEKEKHEZ nem nyulunk.
+        """
+        hianyzo = {k: v for k, v in defaults.items() if k not in doc}
+        felesleges = [k for k in doc if k not in defaults and k != "_id"]
+        if not hianyzo and not felesleges:
+            return doc
 
-        Kulonben csendben lehet allitgatni egy erteket, aminek semmi hatasa."""
-        for key, helyette in self.LEGACY.items():
-            if key in doc and key not in defaults and key not in self._warned:
-                self._warned.add(key)
-                log.warning("A config.%s mar NEM hasznalt (regi ido-ablakos trigger). "
-                            "Helyette: %s. Nyugodtan torolheto a DB-bol.",
-                            key, helyette)
+        update = {}
+        if hianyzo:
+            update["$set"] = hianyzo
+            log.info("Config '%s': %d uj beallitas felveve -> %s",
+                     defaults["_id"], len(hianyzo), ", ".join(sorted(hianyzo)))
+        if felesleges:
+            update["$unset"] = {k: "" for k in felesleges}
+            log.warning("Config '%s': %d mar nem hasznalt beallitas torolve -> %s",
+                        defaults["_id"], len(felesleges), ", ".join(sorted(felesleges)))
+        await self.db.config.update_one({"_id": defaults["_id"]}, update)
+
+        doc = {k: v for k, v in doc.items() if k not in felesleges}
+        doc.update(hianyzo)
+        return doc
 
     async def refresh_loop(self, interval=30):
         while True:

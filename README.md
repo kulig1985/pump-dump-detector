@@ -255,6 +255,16 @@ A státusz táblában külön blokk mutatja, hol tart minden alakzat, és mi hi�
     SKRUSDT    LOW  0.01292000  mozgas 0.62%  micro          -  flow 1.8x   kell: micro-high rogzulese
 ```
 
+A státusz táblában mindig látod, mit csinál — akkor is, ha épp nincs alakzat:
+
+```
+  REVERSAL FIGYELO   35 paron van eleg adat   3 alakzat all   jelzes indulas ota: 0
+    kell hozza: 0.40% elozetes mozgas, 0.15% visszapattanas, 0.08% visszahuzas, majd 1.6x flow + attores
+    fazisok:  visszapattanasra var: 1    attoresre var: 2
+    ENAUSDT     LOW  0.16106786  mozgas 0.58%  micro 0.16145000  flow 1.7x elado   kell: 1.6x veteli flow, majd attores
+    SKRUSDT     LOW  0.01291531  mozgas 0.65%  micro          -  flow 99.0x elado  kell: visszapattanasra var
+```
+
 ### `reversal` config
 
 | kulcs | default | mit csinál |
@@ -281,6 +291,25 @@ trend természetesen még a régi irányba mutat — ezért nem az EMA iránya s
 módban (pump/dump) marad a régi értelmezés: a trend támogassa az irányt, és ne legyen wall
 előttünk.
 
+## Meme coinok kiszűrése
+
+A forgalmi küszöb önmagában nem elég: a `4USDT`-nek is 62M a 24 órás forgalma. Három fogó:
+
+```js
+// 1. magasabb forgalmi küszöb -- ez a leghatásosabb
+db.config.updateOne({_id:"detector"}, {$set:{minQuoteVolume24h: 300000000}})
+
+// 2. névre szólóan kizárás
+db.config.updateOne({_id:"detector"}, {$set:{excludeSymbols:["4USDT","TRUMPUSDT"]}})
+
+// 3. a volatilitás-adaptáció (alapból be van kapcsolva) automatikusan feljebb tolja
+//    a zajos párok küszöbét -- a táblázat "kuszob" oszlopa mutatja
+db.config.updateOne({_id:"detector"}, {$set:{volatilityMultiplier: 6}})
+```
+
+Induláskor a log kiírja a teljes figyelt listát forgalom szerint csökkenő sorrendben, így
+látod, hol érdemes meghúzni a határt.
+
 ## Új detektor hozzáadása
 
 1. Új fájl az `app/detectors/` alá egy osztállyal, ami tud `name`-et, `config_key`-t és
@@ -294,8 +323,18 @@ mezőjében utazik.
 
 ## Hangolás
 
-Minden beállítás a MongoDB `config` collectionjében van, három dokumentumban.
-**A DB az igazság** — módosítás után 30 másodpercen belül él, újraindítás nélkül.
+Minden beállítás a MongoDB `config` collectionjében van, négy dokumentumban:
+`detector`, `reversal`, `trading`, `telegram`. **A DB az igazság** — módosítás után 30
+másodpercen belül él, újraindítás nélkül.
+
+A dokumentumok **magukat karbantartják**: induláskor a hiányzó beállítások bekerülnek a
+defaultjukkal, a már nem használt kulcsok pedig törlődnek. A meglévő értékekhez nem
+nyúlunk. A logban látod:
+
+```
+INFO  config Config 'detector': 9 uj beallitas felveve -> maxSpanSec, minConsistency, ...
+WARN  config Config 'detector': 3 mar nem hasznalt beallitas torolve -> priceChangeThreshold1s, ...
+```
 
 ```bash
 docker compose exec mongo mongosh pumpdump
@@ -319,6 +358,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `telegramEnabled` | `true` | értesítés küldése |
 | `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | `200` | top N pár forgalom szerint |
+| `excludeSymbols` | `[]` | névre kizárt párok, pl. `["4USDT","TRUMPUSDT"]` |
 | `tradeWindow` | `30` | ennyi trade-ből számolunk meredekséget |
 | `maxSpanSec` | `5.0` | ha az N trade ennél tovább tartott, nem hirtelen mozgás |
 | `minSlopePctPerSec` | `0.15` | ennyi %/másodperc kell a jelzéshez (ez a **padló**) |

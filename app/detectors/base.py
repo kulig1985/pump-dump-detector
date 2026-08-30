@@ -24,7 +24,8 @@ def make_signal(detector, config_key, symbol, direction, price, ts, *,
     context_mode  "momentum" vagy "reversal" -- hogyan kell olvasni az EMA-t
                   es az order bookot (lasd scoring.py)
     detail        detektor-specifikus adat, valtozatlanul Mongo-ba kerul
-    lines         a Telegram uzenet reszletezo blokkja
+    lines         [(cimke, ertek), ...] -- a Telegram uzenet reszletezo blokkja,
+                  igy a formazo egymas ala tudja igazitani az ertekeket
     history       [(ts, ar), ...] a market_snapshots-hoz
     """
     return {

@@ -108,12 +108,14 @@ class PumpDumpDetector(Detector):
                 "tradeWindow": c["tradeWindow"],
                 "priceChange": {f"s{w}": v for w, v in changes.items()},
             },
-            lines=[f"Meredekség: {trend['pctPerSec']:+.3f}%/mp "
-                   f"(küszöb {threshold:.3f})",
-                   f"Egyirányúság: {trend['consistency']:.0%} "
-                   f"({c['tradeWindow']} trade / {trend['spanSec']:.2f} mp)",
-                   f"Teljes mozgás az ablakban: {trend['totalPct']:+.2f}%",
-                   f"1s: {_pct(changes[1])}   3s: {_pct(changes[3])}   5s: {_pct(changes[5])}"],
+            lines=[
+                ("meredekseg", f"{trend['pctPerSec']:+.3f} %/mp   (kuszob {threshold:.3f})"),
+                ("egyiranyusag", f"{trend['consistency']:.0%}   "
+                                 f"({c['tradeWindow']} trade / {trend['spanSec']:.2f} mp)"),
+                ("ablakban", f"{trend['totalPct']:+.2f}%"),
+                ("1s / 3s / 5s", f"{_pct(changes[1])}   {_pct(changes[3])}   "
+                                 f"{_pct(changes[5])}"),
+            ],
             history=list(h),
         )
 
