@@ -99,6 +99,9 @@ kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 | `baselineMinutes` | 5 | ennyi perc visszatekintéssel épül a „normál" | stabilabb, lassabban alkalmazkodó normál |
 | `baselineRatio` | 4.0 | **a fő kapcsoló:** a mozgás a normál ennyiszerese legyen | kevesebb, de rendkívülibb jelzés |
 | `minMovePct` | 0.15 | abszolút padló, hogy halott páron se jelezzünk | |
+| `maxSingleStepPct` | 50 | ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés: egy nagy kötés átsöpörte a könyvet, a többi kötés már az új áron nyomtat, és az ablak szép egyenletes mozgásnak látszik | több egy-kötéses ugrás fér be |
+| `confirmSec` | 3.0 | a jelzés nem a mozgás pillanatában megy ki: ennyivel később megnézzük, megvan-e még | később, de biztosabban jelez |
+| `confirmHoldPct` | 60 | és a látott mozgás ennyi százaléka legyen még meg. Ez választja el a valódi elindulást a pillanatnyi korrekciótól | szigorúbb: csak az marad, ami tényleg ottmarad |
 | `symbolCooldownSec` | 60 | páronként ennyi szünet | |
 
 A mozgást nem az első és utolsó ár különbsége adja, hanem az ablakra **illesztett egyenes
@@ -129,6 +132,7 @@ méretei pedig **a mozgás arányában** (0–100%) értendők:
 | kulcs | alap | mit csinál |
 |---|---|---|
 | `baselineRatio` / `minMovePct` | 4.0 / 0.30 | mekkora előzetes mozgás után keresünk fordulót. A normál a mozgás **tényleges hosszára** skálázódik (bolyongásnál az elmozdulás az idő gyökével nő), így egy 20 mp-es kúszás nem számít rendkívülinek |
+| `wickSliceSec` | 0.5 | a szélsőértéket **nem** a nyers min/max adja, hanem ekkora szeletek középára. Enélkül egyetlen pillanat alatt beérkező pár print (egy nagy kötés, ami átsöpri a könyvet, majd az ár azonnal visszaáll) lett a „mozgás" kezdőpontja |
 | `bounceOfMovePct` | 12 | ennyit kell visszapattannia a mozgásból |
 | `pullbackOfBouncePct` | 30 | a visszapattanásból ennyi visszahúzás rögzíti a micro szintet |
 | `breakOfMovePct` | 5 | az áttörés mérete |

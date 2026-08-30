@@ -4,9 +4,14 @@ A kerdes nem az, hogy "mozdult-e 0.3%-ot", hanem hogy "SZOKATLAN-e ez a mozgas
 EZEN a paron". Egy meme coinon 0.3% masodpercenkent tortenik, a BTC-n hetente.
 Ezert a mercet a par sajat, futas kozben mert normalja adja (lasd baseline.py).
 
-EGY feltetel:
+Harom feltetel:
 
-    a mozgas a par normaljanak baselineRatio-szorosa (es legalabb minMovePct)
+    1. a mozgas a par normaljanak baselineRatio-szorosa (es legalabb minMovePct)
+    2. NEM egyetlen nagy kotes vitte el az arat: a legnagyobb egyetlen arlepes a
+       mozgasnak legfeljebb maxSingleStepPct szazaleka
+    3. MEGTARTJA: confirmSec masodperccel kesobb is megvan a mozgas
+       confirmHoldPct szazaleka -- egy pillanatnyi korrekcio visszaesik, egy
+       valodi elindulas nem
 
 A likviditas (spread, melyseg, aktivitas) mar a detektor ELOTT elintezodik az
 eligibility szuroben. A mozgast az ablakra ILLESZTETT EGYENES adja, nem a vegpontok
@@ -35,6 +40,7 @@ class PumpDumpDetector(Detector):
         self.baseline = baseline or Baseline(cfg)
         self.history = defaultdict(deque)   # symbol -> deque[(ts, ar, quote mennyiseg)]
         self.last_trigger = {}
+        self.pending = {}                   # symbol -> megerositesre varo jelzes
         self.latest = {}                    # symbol -> mert allapot (a DEBUG tablahoz)
         self.last_ts = 0.0
         self.ticks = 0
@@ -51,6 +57,10 @@ class PumpDumpDetector(Detector):
 
         self.ticks += 1
         self.last_ts = trade.ts
+
+        # Van megerositesre varo jelzes? Amig le nem jart az ideje, nem keresunk ujat.
+        if trade.symbol in self.pending:
+            return self._resolve_pending(trade, h)
 
         m = self._measure(h, trade.ts, c, trade.symbol)
         self.latest[trade.symbol] = m
@@ -77,27 +87,87 @@ class PumpDumpDetector(Detector):
         if trade.ts - self.last_trigger.get(trade.symbol, 0) < c["symbolCooldownSec"]:
             return None
 
+        # Egyetlen nagy kotes is elviheti az arat: atsopri a konyv par szintjet, a
+        # tobbi kotes mar az uj aron nyomtat, es az ablak szep egyenletes mozgasnak
+        # latszik. Az ilyen ar rendszerint visszaesik. Ha a mozgast egyetlen arlepes
+        # adja, ez nem elindulas.
+        if (c["maxSingleStepPct"]
+                and m["singleStepPct"] > c["maxSingleStepPct"]):
+            log.info("KIHAGYVA   %-14s ar %.8g  a mozgas %.0f%%-at EGYETLEN arlepes "
+                     "adta (max %.0f%%)", trade.symbol, trade.price,
+                     m["singleStepPct"], c["maxSingleStepPct"])
+            return None
+
         self.last_trigger[trade.symbol] = trade.ts
-        self.total_candidates += 1
         direction = "LONG" if m["movePct"] > 0 else "SHORT"
 
+        log.info("MOZGAS     %-14s %-5s ar %.8g  %+.2f%% / %.1fs  normal %.3f%% "
+                 "(%.1fx)  -- %.0f mp megerositesre var",
+                 trade.symbol, direction, trade.price, m["movePct"], m["spanSec"],
+                 m["baseline"], arany, c["confirmSec"])
+
+        self.pending[trade.symbol] = {
+            "direction": direction,
+            "startPrice": m["startPrice"],
+            "triggerPrice": trade.price,
+            "deadline": trade.ts + c["confirmSec"],
+            "metrics": dict(m),
+            "arany": arany,
+        }
+        return None
+
+    # -------------------------------------------------------------- megerosites
+
+    def _resolve_pending(self, trade, h):
+        """Megtartotta-e az ar a mozgast? Ez valasztja el az elindulast a korrekciotol."""
+        c = self.cfg.detector
+        p = self.pending[trade.symbol]
+        if trade.ts < p["deadline"]:
+            return None
+        del self.pending[trade.symbol]
+
+        m = p["metrics"]
+        # A mozgas, amit a jelzes pillanataban LATTUNK: az ablak elejetol a
+        # trigger araig. Ebbol mennyi van meg most? 100% = az ar ott maradt,
+        # 0% = teljesen visszajott oda, ahonnan indult.
+        teljes = p["triggerPrice"] - p["startPrice"]
+        maradt = trade.price - p["startPrice"]
+        hanyad = (maradt / teljes * 100.0) if teljes else 0.0
+        tartott = maradt / p["startPrice"] * 100.0 if p["startPrice"] else 0.0
+
+        if hanyad < c["confirmHoldPct"]:
+            log.info("VISSZAESETT %-13s %-5s ar %.8g  a %+.2f%%-bol %+.2f%% maradt "
+                     "(%.0f%%, kell %.0f%%) -- pillanatnyi korrekcio volt",
+                     trade.symbol, p["direction"], trade.price, m["movePct"],
+                     tartott, hanyad, c["confirmHoldPct"])
+            events.add(f"{trade.symbol:<14} visszaesett: a {m['movePct']:+.2f}%-bol "
+                       f"{tartott:+.2f}% maradt")
+            return None
+
+        self.total_candidates += 1
+        m = dict(m, heldPct=round(tartott, 4), heldOfMovePct=round(hanyad, 1),
+                 confirmSec=c["confirmSec"])
         reasons = [
             f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s",
-            f"{arany:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
-            f"{m['trades']} kotes az ablakban",
+            f"{p['arany']:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
+            f"{m['trades']} kotes az ablakban, a legnagyobb egyetlen arlepes "
+            f"a mozgas {m['singleStepPct']:.0f}%-a",
+            f"{c['confirmSec']:.0f} mp-el kesobb is megvan a mozgas {hanyad:.0f}%-a "
+            f"({tartott:+.2f}%)",
         ]
         log.info("CANDIDATE  %-14s %-5s ar %.8g  mozgas %+.2f%% / %.1fs  "
-                 "normal %.3f%% (%.1fx)",
-                 trade.symbol, direction, trade.price, m["movePct"], m["spanSec"],
-                 m["baseline"], arany)
-        events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} "
-                   f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s")
+                 "normal %.3f%% (%.1fx)  megtartott %.0f%%",
+                 trade.symbol, p["direction"], trade.price, m["movePct"], m["spanSec"],
+                 m["baseline"], p["arany"], hanyad)
+        events.add(f"{trade.symbol:<14} CANDIDATE {p['direction']:<5} "
+                   f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s, megtartva {hanyad:.0f}%")
 
         return make_signal(
-            self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
+            self.name, self.config_key, trade.symbol, p["direction"], trade.price,
+            trade.ts,
             reasons=reasons,
-            metrics=dict(m),
-            history=[(t, p) for t, p, _ in h],
+            metrics=m,
+            history=[(t, pr) for t, pr, _ in h],
         )
 
     # ------------------------------------------------------------------ meres
@@ -133,10 +203,18 @@ class PumpDumpDetector(Detector):
         sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
         move_pct = (sxy / sxx) * span / mean_y * 100.0
 
+        # A legnagyobb egyetlen arlepes a mozgas hany szazaleka? (Egy kotes, ami
+        # atsopri a konyvet, ITT latszik: egy lepcso, nem sok kis lepes.)
+        elmozdulas = abs(sxy / sxx) * span
+        legnagyobb = max((abs(b - a) for a, b in zip(ys, ys[1:])), default=0.0)
+        egy_lepes = (legnagyobb / elmozdulas * 100.0) if elmozdulas > 0 else 100.0
+
         return {
             "movePct": round(move_pct, 4),
             "spanSec": round(span, 2),
             "trades": n,
+            "singleStepPct": round(min(egy_lepes, 100.0), 1),
+            "startPrice": ys[0],
         }
 
     # ------------------------------------------------------------------ DEBUG tabla

@@ -31,6 +31,9 @@ DETECTOR_DEFAULTS = {
     "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
     "baselineRatio": 4.0,              # a mozgas a par normaljanak ennyiszerese legyen
     "minMovePct": 0.15,                # abszolut padlo
+    "maxSingleStepPct": 50,            # ennel nagyobb reszt egyetlen arlepes ne adjon
+    "confirmSec": 3.0,                 # ennyivel kesobb megnezzuk, megvan-e meg
+    "confirmHoldPct": 60,              # es a mozgas ennyi szazaleka legyen meg
     "symbolCooldownSec": 60,
 
     # ---- order book es EMA: CSAK INFORMACIO a jelzesben, semmit nem kapuznak ----
@@ -54,6 +57,7 @@ REVERSAL_DEFAULTS = {
     # ---- mekkora elozetes mozgas utan keresunk fordulot ----
     "baselineRatio": 4.0,              # a par normaljanak ennyiszerese
     "minMovePct": 0.30,                # abszolut padlo
+    "wickSliceSec": 0.5,               # ekkora szeletek kozeparan keressuk a szelsoerteket
 
     # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
     #

@@ -182,8 +182,15 @@ class ReversalDetector(Detector):
         legalabb minMovePct. Fix kuszob itt is felrevinne: egy meme coinon a
         0.4%-os mozgas semmi, a BTC-n sok.
         """
-        lo = min(window, key=lambda t: t.price)
-        hi = max(window, key=lambda t: t.price)
+        # NEM a nyers min/max: egyetlen pillanat alatt beerkezo par print (egy
+        # nagy kotes, ami atsopri a konyvet, aztan azonnal visszaall az ar) igy
+        # "0.6%-os mozgas" kezdopontja lett. Fel masodperces szeletek kozeparaval
+        # dolgozunk -- egy kanoc eltunik, egy valodi lemozgas megmarad.
+        pontok = self._szeletek(window, c["wickSliceSec"])
+        if len(pontok) < 2:
+            return None
+        lo = min(pontok, key=lambda x: x[1])
+        hi = max(pontok, key=lambda x: x[1])
         symbol = window[-1].symbol
 
         def eleg_nagy(mozgas_pct, hossz_sec):
@@ -199,17 +206,38 @@ class ReversalDetector(Detector):
                 return False
             return mozgas_pct >= max(c["minMovePct"], alap * c["baselineRatio"])
 
+        (lo_ts, lo_ar), (hi_ts, hi_ar) = lo, hi
         # LONG jelolt: a minimum a maximum UTAN keletkezett -> lefele mozgas
-        if lo.ts > hi.ts and lo.price > 0:
-            drop = (hi.price - lo.price) / hi.price * 100.0
-            if eleg_nagy(drop, lo.ts - hi.ts):
-                return Setup("LONG", lo.price, lo.ts, drop, hi.price, hi.ts)
+        if lo_ts > hi_ts and lo_ar > 0:
+            drop = (hi_ar - lo_ar) / hi_ar * 100.0
+            if eleg_nagy(drop, lo_ts - hi_ts):
+                return Setup("LONG", lo_ar, lo_ts, drop, hi_ar, hi_ts)
         # SHORT jelolt: a maximum a minimum UTAN keletkezett -> felfele mozgas
-        if hi.ts > lo.ts and lo.price > 0:
-            rise = (hi.price - lo.price) / lo.price * 100.0
-            if eleg_nagy(rise, hi.ts - lo.ts):
-                return Setup("SHORT", hi.price, hi.ts, rise, lo.price, lo.ts)
+        if hi_ts > lo_ts and lo_ar > 0:
+            rise = (hi_ar - lo_ar) / lo_ar * 100.0
+            if eleg_nagy(rise, hi_ts - lo_ts):
+                return Setup("SHORT", hi_ar, hi_ts, rise, lo_ar, lo_ts)
         return None
+
+    @staticmethod
+    def _szeletek(window, slice_sec):
+        """Az ablak fel masodperces szeleteinek KOZEPARA, (ido, ar) parokent.
+
+        Szeletenkent a median arhoz tartozo VALODI kotest adjuk vissza, hogy az
+        idobelyeg is igazi legyen (ehhez merjuk a szelsoertek korat).
+        """
+        if slice_sec <= 0:
+            return [(t.ts, t.price) for t in window]
+        t0 = window[0].ts
+        vodrok = {}
+        for t in window:
+            vodrok.setdefault(int((t.ts - t0) / slice_sec), []).append(t)
+        out = []
+        for k in sorted(vodrok):
+            rendezett = sorted(vodrok[k], key=lambda t: t.price)
+            kozep = rendezett[len(rendezett) // 2]
+            out.append((kozep.ts, kozep.price))
+        return out
 
     @staticmethod
     def _flow(window, now, c, symbol=None):

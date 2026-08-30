@@ -43,6 +43,11 @@ def kesz_baseline(det, symbol, normal_pct=0.02, t0=900.0, db=70):
     return det
 
 
+def tart(prices, mp=4.0, step=0.05):
+    """A mozgas utan az ar ott marad: a megerositeshez kellenek tovabbi tickek."""
+    return list(prices) + [prices[-1]] * int(mp / step)
+
+
 def feed(det, symbol, start_ts, prices, step=0.05, usd=3000.0):
     """Tick sorozat betoltese, visszaadja az osszes candidate-et."""
     out = []
@@ -84,7 +89,7 @@ def test_trigger_on_steady_fast_move():
     """Valodi pump: 2 masodperc alatt egyenletes +0.4%."""
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "BBBUSDT")
-    prices = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    prices = tart([100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
     d = triggers[0]["metrics"]
@@ -96,7 +101,7 @@ def test_trigger_on_steady_fast_move():
 def test_dump_direction():
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "CCCUSDT")
-    prices = [100.0] * 40 + [100.0 * (1 - 0.004 * (i + 1) / 40) for i in range(40)]
+    prices = tart([100.0] * 40 + [100.0 * (1 - 0.004 * (i + 1) / 40) for i in range(40)])
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
     assert triggers[0]["direction"] == "SHORT"
@@ -105,9 +110,9 @@ def test_dump_direction():
 def test_cooldown_suppresses_repeat():
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "FFF2USDT")
-    prices = ([100.0] * 40
-              + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
-              + [100.4 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
+    prices = tart([100.0] * 40
+                  + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+                  + [100.4 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
     assert len(feed(det, "FFF2USDT", 1000.0, prices)) == 1
 
 
@@ -256,9 +261,9 @@ def test_same_move_signals_on_a_calm_pair_but_not_on_a_wild_one():
         t = _tanit(det, "XUSDT", amplitudo)
         alap = det.baseline.value("XUSDT")
         jelzesek = []
-        for i in range(30):
-            c = det.on_trade(Trade("XUSDT", 100.0 * (1 + 0.003 * (i + 1) / 30),
-                                   30.0, t + i * 0.07, True))
+        arak = tart([100.0 * (1 + 0.003 * (i + 1) / 30) for i in range(30)], step=0.07)
+        for i, ar in enumerate(arak):
+            c = det.on_trade(Trade("XUSDT", ar, 30.0, t + i * 0.07, True))
             if c:
                 jelzesek.append(c)
         return alap, jelzesek
@@ -315,7 +320,7 @@ def test_baseline_scales_with_the_measured_window():
 
 
 def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
-    """Idoskala-javitas: ugyanaz a 0.25%-os mozgas 3 masodperc alatt rendkivuli,
+    """Idoskala-javitas: ugyanaz a 0.40%-os mozgas 3 masodperc alatt rendkivuli,
     20 masodperc alatt viszont a normal bolyongas resze."""
     def probal(hossz_sec):
         base = Baseline(cfg_obj)
@@ -323,12 +328,53 @@ def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
         # normal: 2 mp-es ablakban 0.05%
         for i in range(400):
             base.add("QUSDT", 1000.0 + i, 0.05)
-        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0025 * (i + 1) / 40), 30.0,
+        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0040 * (i + 1) / 40), 30.0,
                        2000.0 + i * hossz_sec / 40, False) for i in range(40)]
         return det._find_setup(ablak, {**REV, "minMovePct": 0.0})
 
-    assert probal(3.0) is not None, "3 mp alatt 0.25% rendkivuli"
+    assert probal(3.0) is not None, "3 mp alatt 0.40% rendkivuli"
     assert probal(20.0) is None, "20 mp alatt ugyanez a normal bolyongas"
+
+
+def test_instant_wick_is_not_the_start_of_a_move():
+    """VALODI eset (SKRUSDT, 2026-08-30 13:50:41 UTC): egyetlen pillanatban negy
+    print 0.015642-ig, aztan azonnal vissza. A detektor ezt vette a mozgas
+    kezdopontjanak, es "0.61% emelkedest" jelentett -- a valosagban az ar
+    0.01570 es 0.015738 kozott mozgott, azaz 0.24%-ot.
+    """
+    base = Baseline(cfg_obj)
+    det = ReversalDetector(rev_cfg, base)
+    for i in range(400):
+        base.add("SKRUSDT", 1000.0 + i, 0.049)
+
+    ablak = []
+    t = 2000.0
+    for i in range(120):                       # ~0.01570 korul rezeg
+        ablak.append(Trade("SKRUSDT", 0.015700 + (i % 5) * 0.000002, 30.0, t, False))
+        t += 0.05
+    kanoc_ts = t
+    for ar in (0.015689, 0.015650, 0.015642, 0.015670):   # egyetlen pillanat
+        ablak.append(Trade("SKRUSDT", ar, 30.0, kanoc_ts, False))
+    t += 0.05
+    for i in range(120):                       # majd fel 0.015738-ig
+        ablak.append(Trade("SKRUSDT", 0.015700 + 0.000038 * (i + 1) / 120, 30.0, t, True))
+        t += 0.05
+
+    setup = det._find_setup(ablak, REV)
+    assert setup is None or setup.move_pct < 0.4, (
+        setup and (setup.move_pct, setup.origin))
+
+    # ugyanez a lemozgas SOK kotessel, 2 masodperc alatt -> ez valodi, meg kell latni
+    valodi = []
+    t = 2000.0
+    for i in range(40):
+        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0065 * (i + 1) / 40), 30.0, t, False))
+        t += 0.05
+    for i in range(10):
+        valodi.append(Trade("SKRUSDT", 0.015737, 30.0, t, True))
+        t += 0.05
+    s2 = det._find_setup(valodi, REV)
+    assert s2 is not None and s2.side == "LONG", s2
 
 
 def test_single_whale_print_cannot_create_flow():
@@ -666,12 +712,70 @@ def test_cjk_symbol_column_alignment():
     assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
+def test_momentary_spike_that_falls_back_is_not_a_signal():
+    """Pillanatnyi korrekcio: az ar felugrik, majd visszaesik oda, ahonnan indult.
+
+    Ez a leggyakoribb hamis jelzes. A jelzes nem a mozgas pillanataban megy ki,
+    hanem confirmSec masodperccel kesobb -- addigra ez visszaesett.
+    """
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "SPIKEUSDT")
+    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    vissza = [100.4 * (1 - 0.004 * (i + 1) / 40) for i in range(40)] + [100.0] * 40
+    assert feed(det, "SPIKEUSDT", 1000.0, fel + vissza) == []
+    assert "SPIKEUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
+
+
+def test_real_move_that_holds_is_a_signal():
+    """Ugyanaz a mozgas, de az ar OTT MARAD: ez valodi elindulas."""
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "REALUSDT")
+    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    jelzesek = feed(det, "REALUSDT", 1000.0, tart(fel))
+    assert len(jelzesek) == 1, jelzesek
+    m = jelzesek[0]["metrics"]
+    assert m["heldOfMovePct"] >= CFG["confirmHoldPct"], m
+    assert any("megvan a mozgas" in r for r in jelzesek[0]["reasons"]), jelzesek[0]
+
+
+def test_half_retracement_is_not_enough():
+    """A latott mozgas felet visszaadja -> a confirmHoldPct (60%) alatt, nincs jelzes."""
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "HALFUSDT")
+    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    assert feed(det, "HALFUSDT", 1000.0, fel) == [], "meg csak megerositesre var"
+    p = det.pending["HALFUSDT"]
+    fele = p["startPrice"] + (p["triggerPrice"] - p["startPrice"]) * 0.5
+    kesobb = [Trade("HALFUSDT", fele, 30.0, 1000.0 + (len(fel) + i) * 0.05, True)
+              for i in range(80)]
+    assert [c for c in (det.on_trade(t) for t in kesobb) if c] == []
+
+
+def test_one_big_trade_that_sweeps_the_book_is_not_a_signal():
+    """Egy nagy kotes atsopri a konyvet, a tobbi kotes mar az uj aron nyomtat.
+
+    Az ablak igy szep egyenletes mozgasnak latszik, pedig egyetlen lepcso az egesz.
+    """
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "SWEEPUSDT")
+    # 40 tick 100.0-n, egyetlen ugras 100.4-re, majd ott marad
+    arak = [100.0] * 40 + [100.4] * 40
+    assert feed(det, "SWEEPUSDT", 1000.0, tart(arak)) == []
+
+    # ugyanaz az elmozdulas sok kis lepesben mar atmegy
+    det2 = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det2, "STEPSUSDT")
+    lepcsos = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    assert feed(det2, "STEPSUSDT", 1000.0, tart(lepcsos))
+
+
 def test_signal_detail_is_mongo_safe():
     """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "FFFUSDT")
     sig = feed(det, "FFFUSDT", 1000.0,
-               [100.0] * 40 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
+               tart([100.0] * 40
+                    + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]))[0]
 
     def check(o, path="doc"):
         if isinstance(o, dict):
@@ -684,7 +788,8 @@ def test_signal_detail_is_mongo_safe():
 
     check(sig["metrics"])
     assert set(sig["metrics"]) == {"movePct", "spanSec", "trades", "baseline",
-                                   "baselineRatio"}, sig["metrics"]
+                                   "baselineRatio", "singleStepPct", "startPrice",
+                                   "heldPct", "heldOfMovePct", "confirmSec"}, sig["metrics"]
 
 
 def test_wall_behind_price_is_not_an_obstacle():
