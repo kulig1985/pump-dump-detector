@@ -76,7 +76,7 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ## Collectionök
 
 - `config` — a fenti öt dokumentum
-- `signals` — minden detektált signal (az `outcome` mezőben a jelzés utáni ár) (score, EMA, order book összefoglaló, Telegram és trade státusz)
+- `signals` — minden detektált signal (indoklás, mért számok, EMA, order book összefoglaló, Telegram és trade státusz, plusz az `outcome` mezőben a jelzés utáni ár +1/+5/+15 percnél)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
 - `status` — 5 mp-enként frissülő élő állapot (uptime, tick/s, WS kapcsolatok, top 10 mozgó pár)
