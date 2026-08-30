@@ -7,8 +7,9 @@ Binance USDⓈ-M Futures perpetual piac valós idejű pump/dump detektora. Teleg
 
 ```bash
 cp .env.example .env      # MONGO_URL, Telegram token + chat ID
-docker compose up --build                        # saját, már futó MongoDB-vel
-docker compose --profile local-mongo up --build  # ha nincs saját MongoDB-d
+docker compose up -d --build                     # saját, már futó MongoDB-vel, háttérben
+docker compose logs -f detector                  # élő log
+docker compose --profile local-mongo up -d --build  # ha nincs saját MongoDB-d
 ```
 
 Vagy Docker nélkül: `pip install -r requirements.txt && python -m app.main`.

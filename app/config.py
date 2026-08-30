@@ -14,7 +14,8 @@ DETECTOR_DEFAULTS = {
     "enabled": True,
     "telegramEnabled": True,
     # --- symbol szures ---
-    "minQuoteVolume24h": 50_000_000,   # USDT, 24h forgalom minimum
+    "quoteAssets": ["USDT", "USDC"],   # melyik elszamolo devizas perpetualokat nezzuk
+    "minQuoteVolume24h": 50_000_000,   # 24h forgalom minimum (az elszamolo devizaban)
     "maxSymbols": 200,                 # top N forgalom szerint
     "excludeSymbols": [],              # pl. ["1000PEPEUSDT", "TRUMPUSDT"] -- ezeket kihagyjuk
     "symbolRefreshMinutes": 60,

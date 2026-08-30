@@ -64,7 +64,8 @@ class MarketDataService:
         while True:
             c = self.cfg.detector
             self.symbols = await binance_rest.load_symbols(
-                c["minQuoteVolume24h"], c["maxSymbols"], c["excludeSymbols"])
+                c["minQuoteVolume24h"], c["maxSymbols"], c["excludeSymbols"],
+                c["quoteAssets"])
             chunks = [self.symbols[i:i + STREAMS_PER_CONNECTION]
                       for i in range(0, len(self.symbols), STREAMS_PER_CONNECTION)]
             log.info("Indul %d WebSocket kapcsolat, osszesen %d symbol",

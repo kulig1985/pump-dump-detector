@@ -169,8 +169,37 @@ Ha van mozgás:
 12:05:23 INFO  trading   [PEPEUSDT] auto trading KI -- nincs megbizas
 ```
 
-Háttérben: `docker compose up -d --build`, log: `docker compose logs -f detector`,
-leállítás: `docker compose down`.
+### Futtatás a háttérben (detached)
+
+```bash
+docker compose up -d --build          # indítás, a terminál visszaadja a promptot
+docker compose logs -f detector       # élő log, Ctrl+C csak a nézést állítja le
+docker compose ps                     # fut-e
+docker compose restart detector       # újraindítás (config változáshoz NEM kell)
+docker compose down                   # leállítás
+```
+
+A `logs -f` **nem** állítja le a konténert, csak a kiírást. Ha kilépsz az SSH-ból, a
+detector fut tovább (`restart: unless-stopped`).
+
+Hasznos log-parancsok:
+
+```bash
+docker compose logs -f --tail 100 detector          # az utolsó 100 sortól élőben
+docker compose logs --since 10m detector            # az elmúlt 10 perc
+docker compose logs -f detector | grep -E "TRIGGER|FORDULO|SCORE"   # csak a jelzések
+docker compose logs -f detector | grep "EREDMENYEK" -A 8            # csak az összesítő
+docker compose logs detector > detector.log         # mentés fájlba
+```
+
+A log a Docker journalba megy. Ha sokáig fut, korlátozd a méretét — a `detector`
+szolgáltatás alá a `docker-compose.yml`-ben:
+
+```yaml
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+```
 
 > A lenti `docker compose exec mongo ...` parancsok a `local-mongo` profilra vonatkoznak.
 > Saját Mongo esetén simán `mongosh pumpdump` a gazdagépen.
@@ -376,6 +405,25 @@ ezt dobja el, és a logban meg is mondja:
 INFO signal [XYZUSDT] pump_dump eldobva: a mozgas (0.250%) nem eri el a spread 3-szereset (0.360%)
 ```
 
+## USDT és USDC párok
+
+Alapból mindkettőt figyeli. Induláskor kiírja a bontást:
+
+```
+INFO rest Perpetual USDC/USDT parok: 531 | forgalom >= 50,000,000: 42 | figyelunk: 42
+INFO rest Elszamolo deviza szerint: USDC: 7  USDT: 35
+```
+
+Csak az egyikre szűkíteni:
+
+```js
+db.config.updateOne({_id:"detector"}, {$set:{quoteAssets:["USDT"]}})
+```
+
+> Ugyanaz az eszköz két párban is szerepelhet (`BTCUSDT` és `BTCUSDC`), így egy nagy
+> mozgásra két jelzés is jöhet. Ha ez zavar, vedd ki az egyik devizát, vagy tedd a
+> párt az `excludeSymbols` listába.
+
 ## Meme coinok kiszűrése
 
 A forgalmi küszöb önmagában nem elég: a `4USDT`-nek is 62M a 24 órás forgalma. Három fogó:
@@ -441,6 +489,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 |---|---|---|
 | `enabled` | `true` | fő kapcsoló |
 | `telegramEnabled` | `true` | értesítés küldése |
+| `quoteAssets` | `["USDT","USDC"]` | melyik elszámoló devizás perpetualokat figyeljük |
 | `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | `200` | top N pár forgalom szerint |
 | `excludeSymbols` | `[]` | névre kizárt párok, pl. `["4USDT","TRUMPUSDT"]` |

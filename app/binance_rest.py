@@ -65,15 +65,16 @@ async def _signed_post(path, params):
         return body
 
 
-async def load_symbols(min_quote_volume, max_symbols, exclude=()):
-    """Perpetual USDT parok, forgalom szerint szurve es rendezve.
+async def load_symbols(min_quote_volume, max_symbols, exclude=(), quotes=("USDT",)):
+    """Perpetual parok a megadott elszamolo devizakban, forgalom szerint szurve.
 
     Mellekhatas: feltolti a SYMBOL_FILTERS cache-t (kerekiteshez kell a tradinghez).
     """
+    quotes = {q.upper() for q in quotes}
     info = await _get("/fapi/v1/exchangeInfo")
     tradable = set()
     for s in info["symbols"]:
-        if (s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT"
+        if (s["contractType"] == "PERPETUAL" and s["quoteAsset"] in quotes
                 and s["status"] == "TRADING"):
             tradable.add(s["symbol"])
             f = {x["filterType"]: x for x in s["filters"]}
@@ -93,9 +94,18 @@ async def load_symbols(min_quote_volume, max_symbols, exclude=()):
     SYMBOL_VOLUME.clear()
     SYMBOL_VOLUME.update(dict(liquid))
 
-    log.info("Perpetual USDT parok: %d | forgalom >= %s USDT: %d | figyelunk: %d%s",
-             len(tradable), f"{min_quote_volume:,.0f}", len(liquid), len(symbols),
+    log.info("Perpetual %s parok: %d | forgalom >= %s: %d | figyelunk: %d%s",
+             "/".join(sorted(quotes)), len(tradable), f"{min_quote_volume:,.0f}",
+             len(liquid), len(symbols),
              f" | kizarva: {', '.join(sorted(kizart))}" if kizart else "")
+    if symbols:
+        bontas = {}
+        for sym in symbols:
+            q = next((q for q in sorted(quotes, key=len, reverse=True)
+                      if sym.endswith(q)), "?")
+            bontas[q] = bontas.get(q, 0) + 1
+        log.info("Elszamolo deviza szerint: %s",
+                 "  ".join(f"{q}: {n}" for q, n in sorted(bontas.items())))
     if liquid:
         # latszodjon, hol huz a szuro -- ha keves symbol jon at, itt derul ki, hogy miert
         log.info("Figyelt parok forgalom szerint csokkeno sorrendben:")
