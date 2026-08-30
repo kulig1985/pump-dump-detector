@@ -9,7 +9,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from . import orderbook, ta, scoring, telegram, events
+from . import orderbook, ta, scoring, telegram, events, binance_rest
 
 log = logging.getLogger("signal")
 
@@ -46,7 +46,10 @@ class SignalService:
             "symbol": symbol,
             "direction": trigger["direction"],
             "price": trigger["price"],
+            "quoteVolume24h": binance_rest.SYMBOL_VOLUME.get(symbol),
             "priceChange": {"s1": ch[1], "s3": ch[3], "s5": ch[5]},
+            # a parra ervenyes kuszobok: a config ertek, vagy a sajat zajszinthez igazitva
+            "thresholds": {f"s{w}": v for w, v in trigger["thresholds"].items()},
             "ema": ta_result,
             "orderBook": _without_snapshot(ob),
             "score": score,

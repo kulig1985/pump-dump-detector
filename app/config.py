@@ -21,6 +21,11 @@ DETECTOR_DEFAULTS = {
     "priceChangeThreshold1s": 0.30,
     "priceChangeThreshold3s": 0.60,
     "priceChangeThreshold5s": 0.90,
+    # --- hamis jelzesek szurese ---
+    "minTicksInWindow": 3,             # ennyi trade-nek kell lennie az ablakban
+    "maxRefAgeFactor": 1.5,            # a viszonyitasi pont max ennyiszer regebbi az ablaknal
+    "volatilityMultiplier": 4.0,       # 0 = ki. A kuszob sose megy a fenti ertek ala,
+                                       # de a sajat zajahoz kepest nyugtalan parokon feljebb megy
     # --- signal ---
     "minSignalScore": 60,
     "symbolCooldownSec": 60,

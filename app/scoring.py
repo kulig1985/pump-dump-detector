@@ -12,9 +12,8 @@ def score_signal(trigger, ob, ta, cfg):
     parts = {}
 
     # --- mozgas erossege: a legjobban tullott ablak aranya a kuszobehez ---
-    thresholds = {1: cfg["priceChangeThreshold1s"],
-                  3: cfg["priceChangeThreshold3s"],
-                  5: cfg["priceChangeThreshold5s"]}
+    # a parra ervenyes (volatilitashoz igazitott) kuszobot hasznaljuk, nem a globalist
+    thresholds = trigger["thresholds"]
     ratios = [abs(ch) / thresholds[w]
               for w, ch in trigger["changes"].items() if ch is not None]
     best = max(ratios) if ratios else 0.0

@@ -26,6 +26,8 @@ API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
 # symbol -> {"stepSize": float, "tickSize": float}
 SYMBOL_FILTERS = {}
+# symbol -> 24 oras forgalom USDT-ben
+SYMBOL_VOLUME = {}
 
 _session = None
 
@@ -86,14 +88,17 @@ async def load_symbols(min_quote_volume, max_symbols):
               if t["symbol"] in tradable and float(t["quoteVolume"]) >= min_quote_volume]
     liquid.sort(key=lambda x: x[1], reverse=True)
     symbols = [s for s, _ in liquid[:max_symbols]]
+    SYMBOL_VOLUME.clear()
+    SYMBOL_VOLUME.update(dict(liquid))
 
     log.info("Perpetual USDT parok: %d | forgalom >= %s USDT: %d | figyelunk: %d",
              len(tradable), f"{min_quote_volume:,.0f}", len(liquid), len(symbols))
     if liquid:
         # latszodjon, hol huz a szuro -- ha keves symbol jon at, itt derul ki, hogy miert
-        log.info("Legnagyobb: %s (%s USDT) | legkisebb bevalasztott: %s (%s USDT)",
-                 liquid[0][0], f"{liquid[0][1]:,.0f}",
-                 liquid[len(symbols) - 1][0], f"{liquid[len(symbols) - 1][1]:,.0f}")
+        log.info("Figyelt parok forgalom szerint csokkeno sorrendben:")
+        for i in range(0, len(symbols), 5):
+            log.info("  %s", "  ".join(f"{s} ({SYMBOL_VOLUME[s] / 1e6:,.0f}M)"
+                                       for s in symbols[i:i + 5]))
     else:
         log.error("EGY symbol sem felel meg a %s USDT forgalmi kuszobnek -- "
                   "vedd lejjebb a minQuoteVolume24h erteket!", f"{min_quote_volume:,.0f}")

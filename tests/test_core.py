@@ -1,5 +1,6 @@
 """Halozat nelkuli onteszt a detektor magjara: python tests/test_core.py"""
 import sys
+import math
 import types
 import pathlib
 
@@ -15,6 +16,9 @@ CFG = {
     "priceChangeThreshold3s": 0.60,
     "priceChangeThreshold5s": 0.90,
     "symbolCooldownSec": 60,
+    "minTicksInWindow": 3,
+    "maxRefAgeFactor": 1.5,
+    "volatilityMultiplier": 0.0,       # a legtobb teszt fix kuszobbel szamol
     "wallSensitivity": 3.0,
     "wallMaxDistancePct": 1.5,
 }
@@ -66,6 +70,48 @@ def test_no_trigger_without_enough_history():
     det = MovementDetector(cfg_obj)
     # rogton egy nagy ugras, elozmeny nelkul -> nincs mihez viszonyitani
     assert feed(det, "EEEUSDT", 1000.0, [100.0, 105.0]) == []
+
+
+def test_stale_reference_is_rejected():
+    """Ritka par: egyetlen trade a spreaden at nem szamit 1 masodperces mozgasnak."""
+    det = MovementDetector(cfg_obj)
+    # sok tick, majd 2.5 mp szunet, majd egy nagy ugras
+    ticks = [(1000.0 + i * 0.1, 100.0) for i in range(30)]      # 0.0 - 2.9
+    ticks.append((1005.4, 100.5))                                # 2.5 mp szunet utan +0.5%
+    out = [det.on_price("GGGUSDT", p, t) for t, p in ticks]
+    assert not any(out), "a tul regi viszonyitasi pont miatt nem lehet trigger"
+
+
+def test_too_few_ticks_in_window_is_rejected():
+    """Ket trade nem mozgas, csak zaj -- minTicksInWindow = 3."""
+    det = MovementDetector(cfg_obj)
+    base = [(1000.0 + i * 0.1, 100.0) for i in range(30)]
+    out = [det.on_price("HHHUSDT", p, t) for t, p in base]
+    assert not any(out)
+    # a sorozat 1002.9-nel ert veget; az 1 mp-es ablakba (1002.9 - 1003.9] most
+    # csak ket tick esik, tehat nem merheto, hiaba +0.5% az ugras
+    assert det.on_price("HHHUSDT", 100.2, 1003.6) is None
+    assert det.on_price("HHHUSDT", 100.5, 1003.9) is None
+    # egy harmadik tick mar eleg a mereshez -- es akkor trigger is lesz
+    assert det.on_price("HHHUSDT", 100.5, 1003.95) is not None
+
+
+def test_volatility_raises_threshold_for_noisy_symbol():
+    """A nyugtalan parnak tobbet kell mozdulnia; a config ertek a padlo."""
+    cfg = types.SimpleNamespace(detector={**CFG, "volatilityMultiplier": 4.0})
+    det = MovementDetector(cfg)
+
+    # nyugodt par: gyakorlatilag all
+    for i in range(300):
+        det.on_price("CALMUSDT", 100.0 + i * 1e-6, 1000.0 + i * 0.1)
+    # zajos par: masodpercenkent tobb tizedszazalekot hullamzik
+    for i in range(300):
+        det.on_price("NOISYUSDT", 100.0 * (1 + 0.004 * math.sin(i * 0.37)), 1000.0 + i * 0.1)
+
+    calm = det.thresholds("CALMUSDT")[1]
+    noisy = det.thresholds("NOISYUSDT")[1]
+    assert calm == CFG["priceChangeThreshold1s"], calm
+    assert noisy > calm, (calm, noisy)
 
 
 def test_wall_detection():

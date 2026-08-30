@@ -191,6 +191,24 @@ Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
 
 ---
 
+## Miért nincs / miért van jelzés
+
+Három szűrő védi a hamis jelzésektől, mindhárom kikapcsolható:
+
+1. **`minTicksInWindow`** — egyetlen trade, ami átüti a spreadet, nem mozgás.
+   Az ablakban legalább ennyi kereskedésnek kell lennie, különben `--` az érték.
+2. **`maxRefAgeFactor`** — ritkán kereskedett páron az „1 másodperces" változás
+   viszonyítási pontja lehet 3 másodperces is. Ha a referencia ennél régebbi,
+   inkább nem mérünk, mint hogy félrevezető számot adjunk.
+3. **`volatilityMultiplier`** — minden pár a **saját zajszintjéhez** mérve triggerel.
+   A configban megadott érték a padló, ez alá sosem megy. Egy nyugodt párnál marad
+   0.30%, egy folyamatosan ugráló meme coinnál felmehet 1.5–2%-ra. A státusz tábla
+   `sajat kuszob` oszlopa és a Telegram üzenet `Trigger threshold (1s)` sora
+   mutatja, mi az érvényes érték.
+
+Ha kevés a jelzés, ezek a lazítás fogói (`volatilityMultiplier: 2`, `minTicksInWindow: 2`).
+Ha sok a hamis jelzés, szigoríts (`volatilityMultiplier: 6`).
+
 ## Hangolás
 
 Minden beállítás a MongoDB `config` collectionjében van, három dokumentumban.
@@ -218,7 +236,10 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `telegramEnabled` | `true` | értesítés küldése |
 | `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | `200` | top N pár forgalom szerint |
-| `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban |
+| `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban (ez a **padló**) |
+| `minTicksInWindow` | `3` | ennyi trade-nek kell lennie az ablakban, különben nem mérhető |
+| `maxRefAgeFactor` | `1.5` | a viszonyítási pont legfeljebb ennyiszer régebbi az ablaknál |
+| `volatilityMultiplier` | `4.0` | a küszöb a pár saját zajszintjéhez igazodik; `0` = kikapcsolva |
 | `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
 | `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |

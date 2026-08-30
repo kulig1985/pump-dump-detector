@@ -13,6 +13,7 @@ log = logging.getLogger("detector")
 
 WINDOWS = (1, 3, 5)          # masodperc
 HISTORY_SEC = max(WINDOWS) + 1
+VOL_ALPHA = 0.01             # a volatilitas EWMA tanulasi rata (~40 masodperc emlekezet)
 
 
 class MovementDetector:
@@ -24,6 +25,7 @@ class MovementDetector:
         self.ticks = 0
         self.total_triggers = 0
         self.latest = {}                    # symbol -> (ar, valtozasok)
+        self.vol = {}                       # symbol -> {ablak: atlagos abszolut valtozas}
 
     def on_price(self, symbol, price, ts):
         """Uj ar. Visszaad egy trigger dictet, vagy None-t."""
@@ -32,17 +34,15 @@ class MovementDetector:
         while h and h[0][0] < ts - HISTORY_SEC:
             h.popleft()
 
-        changes = {w: self._change(h, ts, w, price) for w in WINDOWS}
+        c = self.cfg.detector
+        changes = {w: self._change(h, ts, w, price,
+                                   c["maxRefAgeFactor"], c["minTicksInWindow"])
+                   for w in WINDOWS}
 
         self.ticks += 1
         self.latest[symbol] = (price, changes)
-
-        c = self.cfg.detector
-        thresholds = {
-            1: c["priceChangeThreshold1s"],
-            3: c["priceChangeThreshold3s"],
-            5: c["priceChangeThreshold5s"],
-        }
+        self._update_volatility(symbol, changes)
+        thresholds = self.thresholds(symbol)
         direction = None
         for w in WINDOWS:
             ch = changes[w]
@@ -62,8 +62,9 @@ class MovementDetector:
         self.last_trigger[symbol] = ts
         self.total_triggers += 1
 
-        log.warning("[%s] TRIGGER %s | 1s %s | 3s %s | 5s %s", symbol, direction,
-                    _pct(changes[1]), _pct(changes[3]), _pct(changes[5]))
+        log.warning("[%s] TRIGGER %s | 1s %s | 3s %s | 5s %s | sajat kuszob 1mp %.2f%%",
+                    symbol, direction, _pct(changes[1]), _pct(changes[3]), _pct(changes[5]),
+                    thresholds[1])
         events.add(f"{symbol:<14} TRIGGER {direction:<5} "
                    f"1s {_pct(changes[1])}  3s {_pct(changes[3])}  5s {_pct(changes[5])}")
         return {
@@ -73,40 +74,71 @@ class MovementDetector:
             "timestamp": ts,
             "changes": changes,
             "history": list(h),
+            "thresholds": thresholds,
         }
 
     @staticmethod
-    def _change(history, now, window, price):
+    def _change(history, now, window, price, max_ref_age_factor, min_ticks):
         """Szazalekos valtozas a window masodperccel ezelotti arhoz kepest.
 
-        None, ha meg nincs eleg elozmeny (kulonben az elso tickek hamis jelet adnanak).
+        None-t ad, ha nem merheto megbizhatoan:
+          - nincs eleg elozmeny (az elso tickek hamis jelet adnanak),
+          - a viszonyitasi pont tul regi (ritkan kereskedett par: egyetlen trade
+            a spreaden at ugy nezne ki, mintha 1 masodperc alatt tortent volna),
+          - tul keves trade van az ablakban (egyetlen trade nem mozgas, csak zaj).
         """
         start = now - window
         if not history or history[0][0] > start:
             return None
-        ref = None
+
+        ref = ref_ts = None
+        ticks_inside = 0
         for ts, p in history:          # ponytail: linearis keres, a deque max par szaz elem
             if ts > start:
-                break
-            ref = p
-        if not ref:
+                ticks_inside += 1
+            else:
+                ref, ref_ts = p, ts
+        if ref is None or ref == 0:
+            return None
+        if now - ref_ts > window * max_ref_age_factor:
+            return None
+        if ticks_inside < min_ticks:
             return None
         return (price - ref) / ref * 100.0
 
+    def _update_volatility(self, symbol, changes):
+        """Ablakonkenti EWMA az abszolut valtozasbol -- ez a par sajat "zajszintje"."""
+        v = self.vol.setdefault(symbol, {})
+        for w, ch in changes.items():
+            if ch is None:
+                continue
+            prev = v.get(w)
+            v[w] = abs(ch) if prev is None else prev + VOL_ALPHA * (abs(ch) - prev)
 
-    def thresholds(self):
+
+    def base_thresholds(self):
         c = self.cfg.detector
         return {1: c["priceChangeThreshold1s"],
                 3: c["priceChangeThreshold3s"],
                 5: c["priceChangeThreshold5s"]}
 
+    def thresholds(self, symbol=None):
+        """A par sajat kuszobei. A configban megadott ertek a padlo: egy nyugtalan
+        parnak a sajat zajszintjehez merten tobbet kell mozdulnia a jelzeshez."""
+        base = self.base_thresholds()
+        mult = self.cfg.detector["volatilityMultiplier"]
+        if not symbol or not mult:
+            return base
+        v = self.vol.get(symbol, {})
+        return {w: max(t, mult * v[w]) if v.get(w) else t for w, t in base.items()}
+
     def snapshot(self, top=10):
         """Az aktualis allapot a statusz tablahoz. A tick szamlalot nullazza."""
-        th = self.thresholds()
         now = time.time()
         cooldown = self.cfg.detector["symbolCooldownSec"]
         rows = []
         for symbol, (price, changes) in self.latest.items():
+            th = self.thresholds(symbol)
             measured = [(abs(ch) / th[w], w, ch) for w, ch in changes.items() if ch is not None]
             ratio, window, change = max(measured) if measured else (0.0, None, None)
             rows.append({
@@ -118,6 +150,7 @@ class MovementDetector:
                 "missing": (th[window] - abs(change)) if window else None,
                 "rising": (change or 0) > 0,
                 "cooling": now - self.last_trigger.get(symbol, 0) < cooldown,
+                "ownThreshold": th[1],
             })
         rows.sort(key=lambda r: r["ratio"], reverse=True)
         ticks, self.ticks = self.ticks, 0

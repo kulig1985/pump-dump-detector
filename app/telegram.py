@@ -55,6 +55,8 @@ def format_signal(sig):
         sig["symbol"],
         f"Direction: {sig['direction']}",
         f"Price: {sig['price']:.8g}",
+        f"24h volume: {sig['quoteVolume24h'] / 1e6:,.0f}M USDT"
+        if sig.get("quoteVolume24h") else "24h volume: n/a",
         "",
         f"1s: {_pct(ch['s1'])}",
         f"3s: {_pct(ch['s3'])}",
@@ -69,6 +71,9 @@ def format_signal(sig):
     label = "Nearest sell wall" if pump else "Nearest buy wall"
     lines.append(f"{label}: {wall['distancePct']:.2f}% away" if wall else f"{label}: none nearby")
 
+    th = sig.get("thresholds")
+    if th:
+        lines.append(f"Trigger threshold (1s): {th['s1']:.2f}%")
     lines.append(f"Signal score: {sig['score']}/100")
 
     r = sig.get("recent")

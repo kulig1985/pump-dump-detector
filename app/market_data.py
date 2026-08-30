@@ -168,8 +168,8 @@ class MarketDataService:
             await self._save_status(snap, interval)
 
     def _render(self, snap, interval):
-        th = self.detector.thresholds()
-        line = "  " + "─" * 84
+        th = self.detector.base_thresholds()
+        line = "  " + "─" * 110
         now = time.time()
         head = [
             line,
@@ -191,19 +191,25 @@ class MarketDataService:
         head += [
             f"  {snap['ticks']:,} arvaltozas erkezett {interval} mp alatt   "
             f"({self.connected}/{self._chunk_count()} kapcsolat el)",
-            f"  jelzes kell hozza: 1 mp {th[1]:.2f}%  |  3 mp {th[3]:.2f}%  |  5 mp {th[5]:.2f}%",
+            f"  alap kuszob: 1 mp {th[1]:.2f}%  |  3 mp {th[3]:.2f}%  |  5 mp {th[5]:.2f}%   "
+            f"(paronkent a sajat zajszinthez igazitva, lasd a jobb oldali oszlopot)",
             line,
         ]
 
         head += self._events_section()
         head += [
             line,
-            f"  {_pad('par', 15)}{'arfolyam':>13}{'1 mp':>9}{'3 mp':>9}{'5 mp':>9}   mi van vele",
+            f"  {_pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
+            f"{'1 mp':>8}{'3 mp':>8}{'5 mp':>8}{'sajat kuszob':>14}   mi van vele",
         ]
         for r in snap["rows"]:
             c = r["changes"]
-            head.append(f"  {_pad(r['symbol'], 15)}{_price(r['price']):>13}"
-                        f"{_pct(c[1]):>9}{_pct(c[3]):>9}{_pct(c[5]):>9}   {_verdict(r)}")
+            vol = binance_rest.SYMBOL_VOLUME.get(r["symbol"])
+            head.append(f"  {_pad(r['symbol'], 14)}"
+                        f"{(f'{vol / 1e6:,.0f}M' if vol else '?'):>11}"
+                        f"{_price(r['price']):>13}"
+                        f"{_pct(c[1]):>8}{_pct(c[3]):>8}{_pct(c[5]):>8}"
+                        f"{r['ownThreshold']:>13.2f}%   {_verdict(r)}")
         return "\n".join(head + [line])
 
     @staticmethod
@@ -269,7 +275,7 @@ def _price(p):
 def _verdict(r):
     """Emberi nyelven: mi van ezzel a parral."""
     if r["window"] is None:
-        return "meg gyulik rola az adat"
+        return "keves kereskedes, nem merheto"
     irany = "emelkedik" if r["rising"] else "esik"
     if r["missing"] <= 0:
         # a kuszobot mar atlepte -- vagy most ment el a jelzes, vagy varakozunk
