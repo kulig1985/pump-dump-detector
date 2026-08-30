@@ -70,7 +70,7 @@ class TelegramNotifier:
             await self.session.close()
 
 
-def format_signal(sig):
+def format_signal(sig, app_link_template=""):
     """Kozos boritek + a jelzes indoklas-listaja.
 
     Nincs score: helyette az, hogy MIERT lett jelzes, es milyen mert szamokkal.
@@ -116,7 +116,12 @@ def format_signal(sig):
     veg = f"\n\n<b>MIERT</b>\n{indok}" if indok else ""
     if sig.get("trade", {}).get("executed"):
         veg += f"\n\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
-    return f"{fej}\n\n<pre>{torzs}</pre>{veg}\n{esc(url)}"
+
+    linkek = esc(url)
+    if app_link_template:
+        # sima szovegkent, nem <a href>-ben: a Bot API csak http/https/tg semat fogad el
+        linkek += "\n" + esc(app_link_template.format(symbol=sig["symbol"]))
+    return f"{fej}\n\n<pre>{torzs}</pre>{veg}\n{linkek}"
 
 
 def _blokk(nev, sorok):

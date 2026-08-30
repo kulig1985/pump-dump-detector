@@ -117,6 +117,12 @@ TELEGRAM_DEFAULTS = {
     # Ha kulon csatornara akarod a ket detektort, ide irj chat ID-t.
     # Ures ertek eseten a fenti kozos chatId-re megy.
     "chatIds": {"pump_dump": "", "reversal": ""},
+    # Extra link az uzenet aljara, {symbol} helyettesitessel. Sima szovegkent
+    # kerul bele (nem kattinthato hivatkozaskent), mert a Telegram Bot API csak
+    # http/https/tg semat fogad el <a href>-ben -- egy bnc:// anchor hibaval
+    # elszallna. Sok kliens a sima szoveges semat is felismeri es atadja az appnak.
+    # Pelda: "bnc://app.binance.com/futures/{symbol}"
+    "appLinkTemplate": "",
 }
 
 

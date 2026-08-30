@@ -127,7 +127,9 @@ class SignalService:
         signal["trade"] = await self.trader.maybe_open(signal)
         # minden SIGNAL azonnal megy Telegramra -- nincs kapu elotte
         signal["telegram"] = await self.notifier.send(
-            symbol, telegram.format_signal(signal), detector)
+            symbol,
+            telegram.format_signal(signal, self.cfg.telegram.get("appLinkTemplate", "")),
+            detector)
         await self._save(signal, raw, ob, ta_result)
 
     async def _save_rejected(self, raw, ok, ob, terv, ta_result):

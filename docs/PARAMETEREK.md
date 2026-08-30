@@ -177,8 +177,37 @@ méretei pedig **a mozgás arányában** (0–100%) értendők:
 ## `trading` és `telegram`
 
 Az auto trading **alapból kikapcsolva** (`autoTradingEnabled: false`), lásd a README-t.
-A `telegram` dokumentumban `botToken`, `chatId`, és opcionálisan `chatIds` a
-detektoronként külön csatornához.
+
+A `telegram` dokumentum:
+
+| kulcs | mit csinál |
+|---|---|
+| `botToken` / `chatId` | a bot és a cél chat |
+| `chatIds` | detektoronként külön csatorna, pl. `{"pump_dump":"-100…","reversal":"-100…"}` |
+| `appLinkTemplate` | extra link az üzenet aljára, `{symbol}` helyettesítéssel |
+
+### Megnyitás a Binance appban
+
+A `https://www.binance.com/en/futures/BTCUSDT` **már universal link**: telefonon, ha fent
+van az app, az OS elvileg annak adja át. A tényleges akadály az, hogy **a Telegram a saját
+beépített böngészőjében nyitja meg**, így az OS nem is jut szóhoz.
+
+A megbízható megoldás a Telegramban: **Beállítások → Adatok és tárhely → „Beépített
+böngésző" kikapcsolása** (vagy hosszan nyomni a linket → *Megnyitás böngészőben*).
+
+Ha séma-alapú linket akarsz kipróbálni, az `appLinkTemplate`-be írhatod. **Sima
+szövegként** kerül az üzenetbe, nem kattintható hivatkozásként — a Telegram Bot API csak
+`http`, `https` és `tg` sémát fogad el `<a href>`-ben, egy `bnc://` anchor
+`Bad Request: unsupported URL protocol` hibával elszállna. Sok kliens a szöveges sémát is
+felismeri és átadja az appnak.
+
+```js
+db.config.updateOne({_id:"telegram"},
+                    {$set:{appLinkTemplate:"bnc://app.binance.com/futures/{symbol}"}})
+```
+
+> A pontos Binance séma-formátumot nem tudom hitelesen megerősíteni, ezért nem is
+> égettem be — próbáld ki a telefonodon, és ha találsz működőt, ez a mező várja.
 
 ---
 
