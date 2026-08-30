@@ -41,7 +41,7 @@ class TelegramNotifier:
         """Visszaad {"sent": bool, "error": str|None}. Sose dob kivetelt."""
         tg = self.cfg.telegram
         chat_id = self._chat_id(detector)
-        if not self.cfg.detector["telegramEnabled"]:
+        if not tg["enabled"]:
             log.info("[%s] Telegram kikapcsolva", symbol)
             return {"sent": False, "error": "disabled"}
         if not tg.get("botToken") or not chat_id:

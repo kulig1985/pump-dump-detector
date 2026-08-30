@@ -21,8 +21,15 @@ import app.config as C_CFG
 
 CFG = dict(C_CFG.DETECTOR_DEFAULTS)
 REV = dict(C_CFG.REVERSAL_DEFAULTS)
-cfg_obj = types.SimpleNamespace(detector=CFG, reversal=REV)
-rev_cfg = cfg_obj
+MARKET = dict(C_CFG.MARKET_DEFAULTS)
+TG = dict(C_CFG.TELEGRAM_DEFAULTS)
+cfg_obj = types.SimpleNamespace(detector=CFG, reversal=REV, market=MARKET, telegram=TG)
+
+# A fordulo-fixture egy 1.27%-os mozgas (a valodi CYSUSDT esetbol). Az ALAKZAT
+# tesztjei ne az eles minMovePct padlotol fuggjenek -- arra kulon teszt van
+# (test_slow_drift..., test_instant_wick...), azok a REV eles ertekeit hasznaljak.
+rev_cfg = types.SimpleNamespace(detector=CFG, market=MARKET, telegram=TG,
+                                reversal={**REV, "minMovePct": 0.5})
 
 
 def eligible_stub():
@@ -43,7 +50,7 @@ def kesz_baseline(det, symbol, normal_pct=0.02, t0=900.0, db=70):
     return det
 
 
-def tart(prices, mp=4.0, step=0.05):
+def tart(prices, mp=12.0, step=0.05):
     """A mozgas utan az ar ott marad: a megerositeshez kellenek tovabbi tickek."""
     return list(prices) + [prices[-1]] * int(mp / step)
 
@@ -89,7 +96,7 @@ def test_trigger_on_steady_fast_move():
     """Valodi pump: 2 masodperc alatt egyenletes +0.4%."""
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "BBBUSDT")
-    prices = tart([100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
+    prices = tart([100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)])
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
     d = triggers[0]["metrics"]
@@ -101,7 +108,7 @@ def test_trigger_on_steady_fast_move():
 def test_dump_direction():
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "CCCUSDT")
-    prices = tart([100.0] * 40 + [100.0 * (1 - 0.004 * (i + 1) / 40) for i in range(40)])
+    prices = tart([100.0] * 40 + [100.0 * (1 - 0.010 * (i + 1) / 40) for i in range(40)])
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
     assert triggers[0]["direction"] == "SHORT"
@@ -111,8 +118,8 @@ def test_cooldown_suppresses_repeat():
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "FFF2USDT")
     prices = tart([100.0] * 40
-                  + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
-                  + [100.4 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
+                  + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
+                  + [101.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)])
     assert len(feed(det, "FFF2USDT", 1000.0, prices)) == 1
 
 
@@ -156,7 +163,7 @@ def rev_tape(micro, visszahuzas, belepo, tetlen_mp=0.0, csucs=CSUCS, mely=MELY):
             add(visszahuzas, utana, 3000, tetlen_mp / 6)
     # az attores utan meg legalabb confirmSec masodpercig tart az ar -- a jelzes
     # nem az attores pillanataban megy ki, hanem a megerosites utan
-    for _ in range(30):
+    for _ in range(90):
         add(belepo, utana, 4000, 0.15)
     return out
 
@@ -212,7 +219,7 @@ def test_breakout_that_falls_back_is_not_a_reversal():
     vissza = ([Trade("CYSUSDT", 0.78450, 4000 / 0.78450, t0 + 0.15 * (i + 1), True)
                for i in range(4)]
               + [Trade("CYSUSDT", 0.78350, 4000 / 0.78350, t0 + 0.6 + 0.15 * (i + 1), True)
-                 for i in range(30)])
+                 for i in range(90)])
     assert rev_run(det, attores_elott + vissza) == []
     assert "CYSUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
 
@@ -272,14 +279,14 @@ def _tanit(det, symbol, amplitudo_pct, perc=6, t0=1000.0):
 
 
 def test_same_move_signals_on_a_calm_pair_but_not_on_a_wild_one():
-    """A refaktoralas lenyege: ugyanaz a +0.3%-os mozgas az egyik paron rendkivuli,
+    """A refaktoralas lenyege: ugyanaz a +0.8%-os mozgas az egyik paron rendkivuli,
     a masikon a normalis mukodes resze."""
     def probal(amplitudo):
         det = PumpDumpDetector(cfg_obj)
         t = _tanit(det, "XUSDT", amplitudo)
         alap = det.baseline.value("XUSDT")
         jelzesek = []
-        arak = tart([100.0 * (1 + 0.003 * (i + 1) / 30) for i in range(30)], step=0.07)
+        arak = tart([100.0 * (1 + 0.008 * (i + 1) / 30) for i in range(30)], step=0.07)
         for i, ar in enumerate(arak):
             c = det.on_trade(Trade("XUSDT", ar, 30.0, t + i * 0.07, True))
             if c:
@@ -289,8 +296,8 @@ def test_same_move_signals_on_a_calm_pair_but_not_on_a_wild_one():
     nyugodt_alap, nyugodt = probal(0.01)
     vad_alap, vad = probal(0.60)
     assert vad_alap > nyugodt_alap * 5, (nyugodt_alap, vad_alap)
-    assert nyugodt, "a nyugodt paron a +0.3% rendkivuli -> jelzes"
-    assert not vad, "a vad paron a +0.3% a normalis mukodes resze -> nincs jelzes"
+    assert nyugodt, "a nyugodt paron a +0.8% rendkivuli -> jelzes"
+    assert not vad, "a vad paron a +0.8% a normalis mukodes resze -> nincs jelzes"
 
 
 def test_absolute_floor_applies_until_baseline_is_ready():
@@ -338,7 +345,7 @@ def test_baseline_scales_with_the_measured_window():
 
 
 def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
-    """Idoskala-javitas: ugyanaz a 0.40%-os mozgas 3 masodperc alatt rendkivuli,
+    """Idoskala-javitas: ugyanaz a 0.70%-os mozgas 3 masodperc alatt rendkivuli,
     20 masodperc alatt viszont a normal bolyongas resze."""
     def probal(hossz_sec):
         base = Baseline(cfg_obj)
@@ -346,11 +353,11 @@ def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
         # normal: 2 mp-es ablakban 0.05%
         for i in range(400):
             base.add("QUSDT", 1000.0 + i, 0.05)
-        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0040 * (i + 1) / 40), 30.0,
+        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0070 * (i + 1) / 40), 30.0,
                        2000.0 + i * hossz_sec / 40, False) for i in range(40)]
         return det._find_setup(ablak, {**REV, "minMovePct": 0.0})
 
-    assert probal(3.0) is not None, "3 mp alatt 0.40% rendkivuli"
+    assert probal(3.0) is not None, "3 mp alatt 0.70% rendkivuli"
     assert probal(20.0) is None, "20 mp alatt ugyanez a normal bolyongas"
 
 
@@ -386,10 +393,10 @@ def test_instant_wick_is_not_the_start_of_a_move():
     valodi = []
     t = 2000.0
     for i in range(40):
-        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0120 * (i + 1) / 40), 30.0, t, False))
+        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0250 * (i + 1) / 40), 30.0, t, False))
         t += 0.05
     for i in range(10):
-        valodi.append(Trade("SKRUSDT", 0.015650, 30.0, t, True))
+        valodi.append(Trade("SKRUSDT", 0.015460, 30.0, t, True))
         t += 0.05
     s2 = det._find_setup(valodi, REV)
     assert s2 is not None and s2.side == "LONG", s2
@@ -538,12 +545,12 @@ def test_total_book_outage_fails_open_and_says_so():
 
 
 def test_blacklist_and_whitelist():
-    cfg = types.SimpleNamespace(detector={**CFG, "symbolBlacklist": ["BADUSDT"]})
+    cfg = types.SimpleNamespace(market={**MARKET, "symbolBlacklist": ["BADUSDT"]})
     e = Eligibility(cfg)
     _book(e, "BADUSDT", 1.0000, 1.0001)
     assert e.check("BADUSDT")[1] == "blacklisted"
 
-    cfg = types.SimpleNamespace(detector={**CFG, "symbolWhitelist": ["ONLYUSDT"]})
+    cfg = types.SimpleNamespace(market={**MARKET, "symbolWhitelist": ["ONLYUSDT"]})
     e = Eligibility(cfg)
     for sym in ("ONLYUSDT", "OTHERUSDT"):
         _book(e, sym, 1.0000, 1.0001)
@@ -567,7 +574,7 @@ def test_eligibility_summary_aggregates_by_reason():
     for sym in ("A_USDT", "B_USDT"):
         _book(e, sym, 1.000, 1.002)
         e.check(sym)
-    e.cfg = types.SimpleNamespace(detector={**CFG, "symbolBlacklist": ["C_USDT"]})
+    e.cfg = types.SimpleNamespace(market={**MARKET, "symbolBlacklist": ["C_USDT"]})
     _book(e, "C_USDT", 1.0000, 1.0001)
     e.check("C_USDT")
     osszegzes = e.summary()[0]
@@ -607,11 +614,52 @@ def test_status_line_only_uses_existing_attributes():
             f"DetectorManager.{attr} nem letezik"
 
 
+def test_config_split_moves_your_existing_values():
+    """A kozos beallitasok kikerultek a 'detector'-bol egy uj 'market' dokumentumba.
+
+    A koltoztetesnek a MAR BEALLITOTT ertekeket kell atvinnie -- kulonben a
+    szetvalasztas csendben visszaallitana mindent alapertelmezettre.
+    """
+    import asyncio
+
+    class FakeCollection:
+        def __init__(self, docs):
+            self.docs = {d["_id"]: dict(d) for d in docs}
+
+        async def find_one(self, q):
+            d = self.docs.get(q["_id"])
+            return dict(d) if d else None
+
+        async def insert_one(self, doc):
+            self.docs[doc["_id"]] = dict(doc)
+
+        async def update_one(self, q, update, upsert=False):
+            doc = self.docs.setdefault(q["_id"], {"_id": q["_id"]}) if upsert \
+                else self.docs[q["_id"]]
+            doc.update(update.get("$set", {}))
+            for k in update.get("$unset", {}):
+                doc.pop(k, None)
+
+    # a regi vilag: minden a 'detector' dokumentumban, sajat hangolt ertekekkel
+    coll = FakeCollection([{"_id": "detector", "minQuoteVolume24h": 250_000_000,
+                            "symbolWhitelist": ["BTCUSDT"], "telegramEnabled": False,
+                            "baselineRatio": 9.0}])
+    store = C_CFG.ConfigStore(types.SimpleNamespace(config=coll))
+    asyncio.run(store.load())
+
+    assert store.market["minQuoteVolume24h"] == 250_000_000, store.market
+    assert store.market["symbolWhitelist"] == ["BTCUSDT"]
+    assert store.telegram["enabled"] is False, "a telegramEnabled=false nem veszhet el"
+    assert store.detector["baselineRatio"] == 9.0, "a sajat detector ertek marad"
+    assert "minQuoteVolume24h" not in coll.docs["detector"], "a regi kulcs kikerult"
+
+
 def test_every_config_key_is_documented():
     """A doksi ne csusszon el a kodtol: minden detector/reversal beallitas
     szerepeljen a docs/PARAMETEREK.md-ben."""
     doksi = (pathlib.Path(__file__).parent.parent / "docs" / "PARAMETEREK.md").read_text()
-    for defaults in (C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS):
+    for defaults in (C_CFG.MARKET_DEFAULTS, C_CFG.DETECTOR_DEFAULTS,
+                     C_CFG.REVERSAL_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS):
         for k in defaults:
             if k == "_id":
                 continue
@@ -626,12 +674,12 @@ def test_every_config_key_read_by_the_code_exists():
     """
     import re
     ismert = set().union(*(set(d) for d in (
-        C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS,
+        C_CFG.MARKET_DEFAULTS, C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS,
         C_CFG.TRADING_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS)))
     # barmilyen config-szeru hozzaferes: c[...], cfg[...], own[...], shared[...],
     # es a dokumentumok nev szerint is (cfg.detector[...], self.cfg.reversal[...])
     minta = re.compile(
-        r'(?:\b(?:c|cfg|own|shared|conf)\b|\.(?:detector|reversal|trading|telegram))'
+        r'(?:\b(?:c|cfg|own|shared|conf|tg)\b|\.(?:market|detector|reversal|trading|telegram))'
         r'\s*\[\s*["\'](\w+)["\']\s*\]')
     hibas = []
     for f in sorted((pathlib.Path(__file__).parent.parent / "app").rglob("*.py")):
@@ -648,6 +696,7 @@ def test_startup_summary_renders():
     elhasalt az egesz alkalmazas, mielott barmit csinalt volna."""
     from app.main import startup_summary
     cfg = types.SimpleNamespace(
+        market=dict(C_CFG.MARKET_DEFAULTS),
         detector=dict(C_CFG.DETECTOR_DEFAULTS), reversal=dict(C_CFG.REVERSAL_DEFAULTS),
         trading=dict(C_CFG.TRADING_DEFAULTS), telegram=dict(C_CFG.TELEGRAM_DEFAULTS))
     sorok = startup_summary(cfg)
@@ -659,7 +708,9 @@ def test_detector_status_lines_render():
     for det in (PumpDumpDetector(cfg_obj), ReversalDetector(rev_cfg)):
         assert isinstance(det.status_lines(), list)
     det = ReversalDetector(rev_cfg)
-    rev_run(det, rev_tape(0.78380, 0.78330, 0.78400))     # alakzat, attores nelkul
+    # alakzat, attores nelkul -- a tape vegen levo hosszu varakozas nelkul, kulonben
+    # a szelsoertek elavul (maxExtremeAgeSec), es az alakzatot eldobjuk
+    rev_run(det, rev_tape(0.78380, 0.78330, 0.78400)[:-85])
     sorok = det.status_lines()
     assert any("FORDULOK" in x for x in sorok), sorok
     # a statusz a TOZSDEI idot hasznalja, nem a helyi orat -- kulonben a szintetikus
@@ -749,8 +800,8 @@ def test_momentary_spike_that_falls_back_is_not_a_signal():
     """
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "SPIKEUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
-    vissza = [100.4 * (1 - 0.004 * (i + 1) / 40) for i in range(40)] + [100.0] * 40
+    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
+    vissza = [101.0 * (1 - 0.010 * (i + 1) / 40) for i in range(40)] + [100.0] * 240
     assert feed(det, "SPIKEUSDT", 1000.0, fel + vissza) == []
     assert "SPIKEUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
 
@@ -759,7 +810,7 @@ def test_real_move_that_holds_is_a_signal():
     """Ugyanaz a mozgas, de az ar OTT MARAD: ez valodi elindulas."""
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "REALUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
     jelzesek = feed(det, "REALUSDT", 1000.0, tart(fel))
     assert len(jelzesek) == 1, jelzesek
     m = jelzesek[0]["metrics"]
@@ -771,7 +822,7 @@ def test_half_retracement_is_not_enough():
     """A latott mozgas felet visszaadja -> a confirmHoldPct (60%) alatt, nincs jelzes."""
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "HALFUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
     assert feed(det, "HALFUSDT", 1000.0, fel) == [], "meg csak megerositesre var"
     p = det.pending["HALFUSDT"]
     fele = p["startPrice"] + (p["triggerPrice"] - p["startPrice"]) * 0.5
@@ -788,13 +839,13 @@ def test_one_big_trade_that_sweeps_the_book_is_not_a_signal():
     det = PumpDumpDetector(cfg_obj)
     kesz_baseline(det, "SWEEPUSDT")
     # 40 tick 100.0-n, egyetlen ugras 100.4-re, majd ott marad
-    arak = [100.0] * 40 + [100.4] * 40
+    arak = [100.0] * 40 + [101.0] * 40
     assert feed(det, "SWEEPUSDT", 1000.0, tart(arak)) == []
 
     # ugyanaz az elmozdulas sok kis lepesben mar atmegy
     det2 = PumpDumpDetector(cfg_obj)
     kesz_baseline(det2, "STEPSUSDT")
-    lepcsos = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+    lepcsos = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
     assert feed(det2, "STEPSUSDT", 1000.0, tart(lepcsos))
 
 
@@ -804,7 +855,7 @@ def test_signal_detail_is_mongo_safe():
     kesz_baseline(det, "FFFUSDT")
     sig = feed(det, "FFFUSDT", 1000.0,
                tart([100.0] * 40
-                    + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]))[0]
+                    + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]))[0]
 
     def check(o, path="doc"):
         if isinstance(o, dict):

@@ -47,7 +47,7 @@ class SignalService:
             ta.analyze(symbol, raw["price"], c),
         )
         recent = self._count_recent(detector, symbol, direction,
-                                    c["signalWindowMinutes"])
+                                    self.cfg.telegram["signalWindowMinutes"])
 
         reasons = list(raw["reasons"])
         metrics = dict(raw["metrics"])

@@ -306,7 +306,7 @@ Minden beállítás leírása: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
 Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 
-- `config` — a fenti három dokumentum
+- `config` — a fenti öt dokumentum (`market`, `detector`, `reversal`, `trading`, `telegram`)
 - `signals` — minden detektált jelzés (score, EMA, order book összefoglaló, Telegram/trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái

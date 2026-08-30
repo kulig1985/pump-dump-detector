@@ -69,7 +69,7 @@ class MarketDataService:
         asyncio.create_task(self._status_loop())
         asyncio.create_task(self._book_stream())
         while True:
-            c = self.cfg.detector
+            c = self.cfg.market
             self.symbols = await binance_rest.load_symbols(
                 c["minQuoteVolume24h"], c["maxSymbols"], c["symbolBlacklist"],
                 c["quoteAssets"])
@@ -184,7 +184,7 @@ class MarketDataService:
 
     def _handle(self, raw):
         """True, ha ez egy feldolgozott arfolyam volt."""
-        if not self.cfg.detector["enabled"]:
+        if not self.cfg.market["enabled"]:
             return False
         msg = json.loads(raw)
         if "result" in msg or "error" in msg:
@@ -221,7 +221,7 @@ class MarketDataService:
         """
         elso = True
         while True:
-            interval = self.cfg.detector["statusIntervalSec"]
+            interval = self.cfg.market["statusIntervalSec"]
             await asyncio.sleep(15 if elso else interval)
             elso = False
             ticks = self.detectors.take_ticks()
@@ -235,7 +235,7 @@ class MarketDataService:
                 f"{self.detectors.total_candidates} candidate, "
                 f"{svc.signals_today if svc else 0} jelzes, "
                 f"{self.detectors.skipped} kihagyva (nem kereskedheto) | "
-                f"Telegram: {'BE' if self.cfg.detector['telegramEnabled'] else 'KI'}",
+                f"Telegram: {'BE' if self.cfg.telegram['enabled'] else 'KI'}",
             ]
             sorok += [f"   {x}" for x in kizart]
             sorok += [f"   {x}" for x in

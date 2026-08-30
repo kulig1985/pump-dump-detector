@@ -48,16 +48,17 @@ def startup_summary(cfg):
     Kulon fuggveny, hogy tesztelheto legyen: itt korabban egy atnevezett config
     kulcs miatt indulaskor elhasalt az egesz alkalmazas.
     """
-    d, r, t = cfg.detector, cfg.reversal, cfg.trading
+    m, d, r, t = cfg.market, cfg.detector, cfg.reversal, cfg.trading
     eltero = []
-    for defaults, akt in ((C.DETECTOR_DEFAULTS, d), (C.REVERSAL_DEFAULTS, r),
-                          (C.TRADING_DEFAULTS, t)):
+    for defaults, akt in ((C.MARKET_DEFAULTS, m), (C.DETECTOR_DEFAULTS, d),
+                          (C.REVERSAL_DEFAULTS, r), (C.TRADING_DEFAULTS, t)):
         for k, alap in defaults.items():
             if k != "_id" and akt.get(k) != alap:
                 eltero.append(f"{k}={akt.get(k)} (alap {alap})")
     return ([f"A DB-ben eltero beallitas: {', '.join(eltero)}"] if eltero else []) + [
-        f"Kereskedhetoseg: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
-        f"spread <= {d['maxSpreadPct']:.3f}%",
+        f"Piac: {', '.join(m['quoteAssets'])} parok, forgalom >= "
+        f"{m['minQuoteVolume24h']:,.0f}, max {m['maxSymbols']} par, "
+        f"spread <= {m['maxSpreadPct']:.3f}%",
         f"Pump/dump: a mozgas a par sajat normaljanak {d['baselineRatio']:.1f}x-e "
         f"({d['baselineMinutes']} perc visszatekintes, min {d['minMovePct']:.2f}%, "
         f"{d['moveWindowSec']:.0f} mp-es ablak), cooldown {d['symbolCooldownSec']}s",
@@ -65,7 +66,7 @@ def startup_summary(cfg):
         f"(min {r['minMovePct']:.2f}%), belepes a mozgas {r['maxRetracementPct']:.0f}%-an "
         f"belul, max {r['maxExtremeAgeSec']:.0f} mp regi szelsoertekre",
         f"Order book es EMA: csak informacio a jelzesben, semmit nem kapuznak",
-        f"Telegram: {'BE -- minden SIGNAL azonnal megy' if d['telegramEnabled'] else 'KI'}"
+        f"Telegram: {'BE -- minden SIGNAL azonnal megy' if cfg.telegram['enabled'] else 'KI'}"
         f"   |   Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} "
         f"({t['marginMode']}, {t['leverage']}x)",
     ]

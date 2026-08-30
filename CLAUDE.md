@@ -59,22 +59,22 @@ pumpot, a dumpot és a fordulót, és megmondja, miből gondolja.
 
 ## Konfiguráció
 
-Minden a MongoDB `config` collectionben, négy dokumentumban: `detector`, `reversal`, `trading`,
-`telegram`. Első indulásnál a defaultok bekerülnek, utána **a DB az igazság** — menet
+Minden a MongoDB `config` collectionben, öt dokumentumban: `market` (közös: melyik
+párokat figyeljük egyáltalán), `detector` (pump/dump), `reversal`, `trading`, `telegram`. Első indulásnál a defaultok bekerülnek, utána **a DB az igazság** — menet
 közbeni módosítás 30 mp-en belül életbe lép, újraindítás nélkül.
 
 Az API kulcsok környezeti változóban maradnak, nem a DB-ben.
 
 ```js
-// pl. érzékenyebb detektor, tesztre
-db.config.updateOne({_id: "detector"}, {$set: {priceChangeThreshold1s: 0.1}})
+// pl. érzékenyebb detektor, tesztre (részletek: docs/PARAMETEREK.md)
+db.config.updateOne({_id: "detector"}, {$set: {baselineRatio: 4.0, minMovePct: 0.2}})
 // auto trading bekapcsolása (előbb testneten!)
 db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ```
 
 ## Collectionök
 
-- `config` — a fenti három dokumentum
+- `config` — a fenti öt dokumentum
 - `signals` — minden detektált signal (score, EMA, order book összefoglaló, Telegram és trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái

@@ -59,7 +59,7 @@ class Eligibility:
 
     def check(self, symbol):
         """(mehet-e, ok, mert szamok). Az ok gepi nev, hogy aggregalhato legyen."""
-        c = self.cfg.detector
+        c = self.cfg.market
         m = self.metrics(symbol)
 
         if symbol in set(c["symbolBlacklist"]):
@@ -111,7 +111,7 @@ class Eligibility:
         Enelkul a kuszobot vaktaban kellene allitgatni: ebbol egy pillantassal
         latszik, hol huz, es hany par esik folotte.
         """
-        c = self.cfg.detector
+        c = self.cfg.market
         spreadek = [m["spreadPct"] for m in (self.metrics(s) for s in symbols)
                     if "spreadPct" in m]
         if not spreadek:

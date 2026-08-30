@@ -1,4 +1,11 @@
-"""Konfiguracio MongoDB-bol. Ket dokumentum: 'detector' es 'trading'.
+"""Konfiguracio MongoDB-bol. Ot dokumentum:
+
+    market      KOZOS: melyik parokat figyeljuk egyaltalan (mindket detektorra hat)
+    detector    CSAK a pump/dump detektor parameterei
+    reversal    CSAK a fordulo detektor parameterei
+    trading     a TradingService
+    telegram    a Bot API es az uzenet
+
 
 Elso indulaskor a default ertekek bekerulnek a DB-be, utana onnan olvasunk.
 A configot 30 masodpercenkent ujratoltjuk, igy DB-ben modositva menet kozben hat.
@@ -9,32 +16,42 @@ import logging
 
 log = logging.getLogger("config")
 
-DETECTOR_DEFAULTS = {
-    "_id": "detector",
-    "enabled": True,
-    "telegramEnabled": True,
+# KOZOS beallitasok: ezek dontik el, melyik parokra iratkozunk fel egyaltalan --
+# onnantol MINDKET detektor pontosan ugyanazt a kotesfolyamot kapja. Ezert nincs
+# kulon peldanyuk a detektoroknal: egy helyen allitod, mindenhol hat.
+MARKET_DEFAULTS = {
+    "_id": "market",
+    "enabled": True,                   # az egesz feldolgozas ki-/bekapcsolasa
 
     # ---- melyik parokat nezzuk egyaltalan ----
     "quoteAssets": ["USDT", "USDC"],
-    "minQuoteVolume24h": 50_000_000,
-    "maxSymbols": 200,
+    "minQuoteVolume24h": 100_000_000,
+    "maxSymbols": 120,
     "symbolRefreshMinutes": 60,
     "symbolWhitelist": [],             # ha nem ures, CSAK ezeket figyeljuk
     "symbolBlacklist": [],
 
-    # ---- realtime kereskedhetoseg (a detektorok elott szur) ----
+    # ---- realtime kereskedhetoseg (a jelzes kiadasanal szur) ----
     "maxSpreadPct": 0.05,
+
+    # ---- megjelenites ----
+    "statusIntervalSec": 60,
+}
+
+DETECTOR_DEFAULTS = {
+    "_id": "detector",
+    "enabled": True,                   # CSAK a pump/dump detektor
 
     # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
     "moveWindowSec": 2.0,              # ekkora idoablakban merjuk az elmozdulast
     "minTradesInWindow": 10,           # ennyi kotes kell bele, kulonben nem merheto
     "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
-    "baselineRatio": 4.0,              # a mozgas a par normaljanak ennyiszerese legyen
-    "minMovePct": 0.15,                # abszolut padlo
-    "maxSingleStepPct": 50,            # ennel nagyobb reszt egyetlen arlepes ne adjon
-    "confirmSec": 3.0,                 # ennyivel kesobb megnezzuk, megvan-e meg
-    "confirmHoldPct": 60,              # es a mozgas ennyi szazaleka legyen meg
-    "symbolCooldownSec": 60,
+    "baselineRatio": 6.0,              # a mozgas a par normaljanak ennyiszerese legyen
+    "minMovePct": 0.50,                # abszolut padlo
+    "maxSingleStepPct": 40,            # ennel nagyobb reszt egyetlen arlepes ne adjon
+    "confirmSec": 10.0,                # ennyivel kesobb megnezzuk, megvan-e meg
+    "confirmHoldPct": 70,              # es a mozgas ennyi szazaleka legyen meg
+    "symbolCooldownSec": 300,
 
     # ---- order book es EMA: CSAK INFORMACIO a jelzesben, semmit nem kapuznak ----
     "orderBookLevels": 20,
@@ -43,20 +60,16 @@ DETECTOR_DEFAULTS = {
     "emaFast": 9,
     "emaSlow": 21,
     "emaInterval": "1m",
-
-    # ---- megjelenites ----
-    "statusIntervalSec": 60,
-    "signalWindowMinutes": 10,         # ennyi visszatekintessel: hanyadik jelzes ez
 }
 
 REVERSAL_DEFAULTS = {
     "_id": "reversal",
     "enabled": True,
-    "cooldownSec": 300,
+    "cooldownSec": 600,
 
     # ---- mekkora elozetes mozgas utan keresunk fordulot ----
-    "baselineRatio": 5.0,              # a par normaljanak ennyiszerese
-    "minMovePct": 0.60,                # abszolut padlo
+    "baselineRatio": 6.0,              # a par normaljanak ennyiszerese
+    "minMovePct": 1.20,                # abszolut padlo
     "wickSliceSec": 0.5,               # ekkora szeletek kozeparan keressuk a szelsoerteket
 
     # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
@@ -75,7 +88,7 @@ REVERSAL_DEFAULTS = {
     # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
     "maxExtremeAgeSec": 8,
-    "confirmSec": 3.0,                 # ennyivel kesobb: tartja-e meg az attorest
+    "confirmSec": 10.0,                # ennyivel kesobb: tartja-e meg az attorest
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,
     "minTradesInFlowWindow": 5,
@@ -96,6 +109,8 @@ TRADING_DEFAULTS = {
 
 TELEGRAM_DEFAULTS = {
     "_id": "telegram",
+    "enabled": True,                   # ha false: log + DB igen, Telegram nem
+    "signalWindowMinutes": 10,         # ennyi visszatekintessel: hanyadik jelzes ez
     "botToken": os.getenv("TELEGRAM_BOT_TOKEN", ""),
     "chatId": os.getenv("TELEGRAM_CHAT_ID", ""),
     # Ha kulon csatornara akarod a ket detektort, ide irj chat ID-t.
@@ -113,19 +128,52 @@ TELEGRAM_DEFAULTS = {
 class ConfigStore:
     def __init__(self, db):
         self.db = db
+        self.market = dict(MARKET_DEFAULTS)
         self.detector = dict(DETECTOR_DEFAULTS)
         self.reversal = dict(REVERSAL_DEFAULTS)
         self.trading = dict(TRADING_DEFAULTS)
         self.telegram = dict(TELEGRAM_DEFAULTS)
 
     DOCS = (
+        (MARKET_DEFAULTS, "market"),
         (DETECTOR_DEFAULTS, "detector"),
         (REVERSAL_DEFAULTS, "reversal"),
         (TRADING_DEFAULTS, "trading"),
         (TELEGRAM_DEFAULTS, "telegram"),
     )
 
+    # Regen a 'detector' dokumentum tartalmazta a kozos beallitasokat is. Ezeket
+    # atkoltoztetjuk oda, ahova valok -- a MAR BEALLITOTT ERTEKEIDDEL egyutt,
+    # kulonben a szetvalasztas csendben visszaallitana mindent alapertelmezettre.
+    KOLTOZES = (
+        ("detector", "market", {k: k for k in (
+            "quoteAssets", "minQuoteVolume24h", "maxSymbols", "symbolRefreshMinutes",
+            "symbolWhitelist", "symbolBlacklist", "maxSpreadPct", "statusIntervalSec")}),
+        ("detector", "telegram", {"telegramEnabled": "enabled",
+                                  "signalWindowMinutes": "signalWindowMinutes"}),
+    )
+
+    async def _migrate(self):
+        for honnan, hova, kulcsok in self.KOLTOZES:
+            forras = await self.db.config.find_one({"_id": honnan})
+            if not forras:
+                continue
+            atveendo = {uj: forras[regi] for regi, uj in kulcsok.items()
+                        if regi in forras}
+            if not atveendo:
+                continue
+            cel = await self.db.config.find_one({"_id": hova}) or {}
+            # amit a celdokumentum mar tartalmaz, azt nem irjuk felul
+            atveendo = {k: v for k, v in atveendo.items() if k not in cel}
+            if not atveendo:
+                continue
+            await self.db.config.update_one({"_id": hova}, {"$set": atveendo},
+                                            upsert=True)
+            log.warning("Config koltoztetes '%s' -> '%s': %s (a te ertekeiddel)",
+                        honnan, hova, ", ".join(sorted(atveendo)))
+
     async def load(self):
+        await self._migrate()
         for defaults, attr in self.DOCS:
             doc = await self.db.config.find_one({"_id": defaults["_id"]})
             if doc is None:
