@@ -166,25 +166,31 @@ class MarketDataService:
         return True
 
     async def _status_loop(self):
-        """Percenkent egy rovid allapotsor. A reszletes tabla csak DEBUG szinten."""
+        """Percenkent egy rovid allapotsor. A reszletes tabla csak DEBUG szinten.
+
+        Az elso sor hamarabb jon, hogy indulas utan ne kelljen egy percet varni
+        arra, hogy lassuk: fut a rendszer.
+        """
+        elso = True
         while True:
             interval = self.cfg.detector["statusIntervalSec"]
-            await asyncio.sleep(interval)
+            await asyncio.sleep(15 if elso else interval)
+            elso = False
             ticks = self.detectors.take_ticks()
             self.cycle += 1
             svc = self.signal_service
             kizart = self.eligibility.summary()
 
             log.log(logging.ERROR if ticks == 0 else logging.INFO,
-                    "STATUS     %d par%s | %s tick/%ds | %d candidate, %d jelzes, "
-                    "%d elutasitva | Telegram: %s",
-                    len(self.symbols),
-                    f" ({kizart[0]})" if kizart else "",
-                    f"{ticks:,}", interval,
+                    "STATUS     %d par | %s tick | %s | %d candidate, %d jelzes, "
+                    "%d elutasitva | Telegram: %s%s",
+                    len(self.symbols), f"{ticks:,}",
+                    self.eligibility.book_status(),
                     self.detectors.total_candidates,
                     svc.signals_today if svc else 0,
                     svc.rejected_today if svc else 0,
-                    "BE" if self.cfg.detector["telegramEnabled"] else "KI")
+                    "BE" if self.cfg.detector["telegramEnabled"] else "KI",
+                    f"\n           {kizart[0]}" if kizart else "")
 
             if ticks == 0:
                 log.error("Nem erkezik arfolyam! %s",

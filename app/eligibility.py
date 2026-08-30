@@ -22,6 +22,7 @@ class Eligibility:
     def __init__(self, cfg):
         self.cfg = cfg
         self.book = {}                          # symbol -> (bid, bidQty, ask, askQty)
+        self.book_messages = 0                  # kaptunk-e egyaltalan konyv-adatot
         self.trades = defaultdict(deque)        # symbol -> trade idobelyegek
         self.rejected = {}                      # symbol -> ok (a percenkenti osszesitohoz)
 
@@ -32,6 +33,7 @@ class Eligibility:
         try:
             self.book[data["s"]] = (float(data["b"]), float(data["B"]),
                                     float(data["a"]), float(data["A"]))
+            self.book_messages += 1
         except (KeyError, TypeError, ValueError):
             pass
 
@@ -67,8 +69,12 @@ class Eligibility:
         if feher and symbol not in feher:
             return self._nem(symbol, "not_whitelisted", m)
 
-        # amig nem lattuk a konyvet, nem itelunk -- de nem is engedunk at
         if "spreadPct" not in m:
+            # Ha SEMMILYEN konyv-adat nem erkezik, az rendszerszintu baj (rossz WS
+            # utvonal), nem a paron mulik. Ilyenkor nem nemitjuk el az egesz
+            # rendszert: atengedunk, es a STATUS sor hangosan szol rola.
+            if self.book_messages == 0:
+                return True, None, m
             return self._nem(symbol, "no_book_data", m)
 
         if c["maxSpreadPct"] and m["spreadPct"] > c["maxSpreadPct"]:
@@ -86,6 +92,12 @@ class Eligibility:
         return False, ok, m
 
     # ---------------------------------------------------------------- kijelzes
+
+    def book_status(self):
+        """Rovid allapot a konyv-adatrol a STATUS sorhoz."""
+        if self.book_messages == 0:
+            return "KONYV-ADAT NEM ERKEZIK -- a spread/melyseg szures kikapcsolva!"
+        return f"konyv: {len(self.book)} par"
 
     def summary(self):
         """Okonkent osszesitve, hany par esik ki -- nem soronkent."""

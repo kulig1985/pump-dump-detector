@@ -352,9 +352,27 @@ def test_eligibility_rejects_low_activity():
 
 
 def test_eligibility_without_book_data_does_not_pass():
+    """Van konyv-adat a rendszerben, de EZT a part meg nem lattuk -> varunk."""
     e = Eligibility(cfg_obj)
+    _book(e, "OTHERUSDT", 1.0000, 1.0001)
     _aktivitas(e, "UNKNOWNUSDT")
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
+
+
+def test_total_book_outage_fails_open_and_says_so():
+    """Ha SEMMILYEN konyv-adat nem erkezik, az rendszerszintu baj (rossz WS utvonal).
+
+    Ilyenkor nem nemitjuk el az egesz rendszert -- atengedunk, es a STATUS sor
+    hangosan szol rola. Kulonben orakig nem lenne jelzes, ok nelkul.
+    """
+    e = Eligibility(cfg_obj)
+    _aktivitas(e, "BTCUSDT")
+    assert e.check("BTCUSDT")[0] is True
+    assert "NEM ERKEZIK" in e.book_status()
+
+    e.on_book_ticker({"e": "bookTicker", "s": "BTCUSDT", "b": "1.0000",
+                      "B": "100000", "a": "1.0001", "A": "100000"})
+    assert "konyv: 1 par" in e.book_status()
 
 
 def test_blacklist_and_whitelist():
