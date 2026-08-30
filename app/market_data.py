@@ -1,6 +1,15 @@
 """MarketDataService -- Binance Futures aggTrade streamek.
 
-Kombinalt stream endpoint:  wss://fstream.binance.com/stream?streams=a@aggTrade/b@aggTrade
+A kapcsolat a  wss://fstream.binance.com/ws  vegpontra megy, es a stream neveket
+SUBSCRIBE uzenetben kuldjuk el:
+
+    {"method": "SUBSCRIBE", "params": ["btcusdt@aggTrade", ...], "id": 1}
+
+Szandekosan nem a /stream?streams=... URL-t hasznaljuk: ott a stream nevek a query
+stringben utaznanak, es ha barmi a halozaton (proxy, CDN) levagja a query stringet,
+a Binance egy csupasz /stream kapcsolatot lat -- elfogadja, majd soha nem kuld semmit.
+SUBSCRIBE eseten a nevek az uzenet torzseben mennek, es nyugtat is kapunk rola.
+
 A futures WS kapcsolatonkent max 200 subscription-t enged, ezert 150-es chunkokra bontjuk.
 """
 import json
@@ -17,7 +26,7 @@ from .detector import MovementDetector
 
 log = logging.getLogger("market")
 
-WS_BASE = "wss://fstream.binance.com"
+WS_BASE = "wss://fstream.binance.com/ws"
 STREAMS_PER_CONNECTION = 150
 STALL_SEC = 30          # ennyi nemasag utan halottnak tekintjuk a kapcsolatot
 
@@ -59,14 +68,16 @@ class MarketDataService:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _stream(self, index, symbols):
-        url = f"{WS_BASE}/stream?streams=" + "/".join(f"{s.lower()}@aggTrade" for s in symbols)
+        streams = [f"{s.lower()}@aggTrade" for s in symbols]
         backoff = 1
         while True:
             try:
-                async with websockets.connect(url, ping_interval=20,
+                async with websockets.connect(WS_BASE, ping_interval=20,
                                               ping_timeout=20) as ws:
+                    await ws.send(json.dumps({"method": "SUBSCRIBE",
+                                              "params": streams, "id": index}))
                     self.connected += 1
-                    log.info("WS #%d csatlakozva (%d stream)", index, len(symbols))
+                    log.info("WS #%d csatlakozva, %d stream feliratkozva", index, len(streams))
                     backoff = 1
                     first = True
                     try:
@@ -96,7 +107,11 @@ class MarketDataService:
         if not self.cfg.detector["enabled"]:
             return
         msg = json.loads(raw)
-        data = msg.get("data")
+        if "result" in msg:          # a SUBSCRIBE nyugtaja: {"result": null, "id": 1}
+            log.info("WS #%s feliratkozas nyugtazva", msg.get("id"))
+            return
+        # /ws vegponton a payload csupaszon jon, /stream eseten "data" ala csomagolva
+        data = msg.get("data", msg)
         if not data or data.get("e") != "aggTrade":
             self.ignored += 1
             if self.ignored <= 3:      # az elso parat mutassuk, hatha hibauzenet
@@ -130,7 +145,8 @@ class MarketDataService:
         if snap["ticks"] == 0:
             if self.frames == 0:
                 baj = ("A Binance WebSocket kapcsolat all, de EGY KERET SEM erkezett.\n"
-                       "  Ellenorizd a kimeno halozatot a fstream.binance.com:443 fele.")
+                       "  A SUBSCRIBE nyugtaja sem jott meg -- ellenorizd a kimeno\n"
+                       "  halozatot a fstream.binance.com:443 fele.")
             else:
                 baj = (f"Erkezett {self.frames:,} keret, de egyik sem hasznalhato arfolyam\n"
                        f"  ({self.ignored:,} eldobva). A fenti 'Ismeretlen WS uzenet' sor mutatja, mi jott.")

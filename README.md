@@ -265,8 +265,8 @@ Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 ## Binance API — mit használunk
 
 WebSocket (`wss://fstream.binance.com`):
-- `/stream?streams=<sym>@aggTrade/...` — árfolyam tickek. Futures-ön max 200 subscription /
-  kapcsolat, ezért 150-esével bontjuk.
+- `/ws` + `SUBSCRIBE` üzenet — árfolyam tickek (nem query stringes `/stream?streams=`,
+  lásd `app/market_data.py` fejlécét). Futures-ön max 200 subscription / kapcsolat.
 - `/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
 
 WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/account.position`.

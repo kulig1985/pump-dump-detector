@@ -67,8 +67,10 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ## Binance API — mit használunk
 
 WebSocket (`wss://fstream.binance.com`):
-- `/stream?streams=<sym>@aggTrade/...` — árfolyam tickek. Futures-ön **max 200 subscription /
-  kapcsolat**, ezért 150-esével bontjuk.
+- `/ws` + `{"method":"SUBSCRIBE","params":["<sym>@aggTrade",...]}` — árfolyam tickek.
+  Szándékosan nem a `/stream?streams=...` URL-t használjuk: ott a stream nevek a query
+  stringben utaznának, és ha azt bármi levágja az úton, a Binance elfogadja a kapcsolatot,
+  de soha nem küld semmit. Futures-ön **max 200 subscription / kapcsolat**, ezért 150-esével bontjuk.
 - `/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
 
 WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/account.position`.
