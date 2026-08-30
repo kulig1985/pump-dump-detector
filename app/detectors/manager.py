@@ -28,13 +28,11 @@ class DetectorManager:
         self.ticks += 1
         self.quality.on_trade(trade)
 
-        # A szaggatott, ossze-vissza ugralo parokra egyik detektor sem jelez:
-        # ott nincs mit megfogni, csak zajra jonne a jelzes.
-        if self.cfg.detector["minEfficiency"]:
-            mehet, _ = self.quality.tradeable(trade.symbol)
-            if not mehet:
-                self.skipped += 1
-                return []
+        # A szaggatott, ossze-vissza ugralo parokra nem adunk jelzest: ott nincs mit
+        # megfogni. A detektorok viszont latjak az adatot, kulonben a statusz tabla
+        # "nincs eleg kereskedes"-t irna rajuk a valos ok (kizaras) helyett.
+        blokkolt = (self.cfg.detector["minEfficiency"]
+                    and not self.quality.tradeable(trade.symbol)[0])
 
         signals = []
         for d in self.detectors:
@@ -50,13 +48,18 @@ class DetectorManager:
                     log.exception("[%s] a(z) %s detektor hibat dobott: %s",
                                   trade.symbol, d.name, e)
                 continue
-            if sig:
+            if sig and blokkolt:
+                self.skipped += 1
+            elif sig:
                 self.total_signals += 1
                 signals.append(sig)
         return signals
 
     def status_lines(self):
         """A detektorok sajat blokkjai a statusz tablahoz, egymas ala fuzve."""
+        for d in self.detectors:            # a kijelzeshez lassak a kizart parokat
+            if hasattr(d, "blocked"):
+                d.blocked = frozenset(self.quality.blocked)
         out = list(self.quality.blocked_summary())
         if out:
             out.append("")

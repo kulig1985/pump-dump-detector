@@ -13,6 +13,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from . import orderbook, ta, scoring, telegram, events, binance_rest, outcome, plan
+from .links import binance_url
 
 log = logging.getLogger("signal")
 
@@ -65,6 +66,7 @@ class SignalService:
             "symbol": symbol,
             "direction": direction,
             "price": raw["price"],
+            "url": binance_url(symbol),
             "quoteVolume24h": binance_rest.SYMBOL_VOLUME.get(symbol),
             "strength": round(raw["strength"], 3),
             "plan": terv,
@@ -89,12 +91,14 @@ class SignalService:
 
         if terv:
             log.warning("[%s] %s SCORE %d/100 | belepo %.8g  cel %.8g (+%.2f%%)  "
-                        "stop %.8g (-%.2f%%)  hozam/kockazat %.1f:1%s | %s",
+                        "stop %.8g (-%.2f%%)  hozam/kockazat %.1f:1%s | %s | %s",
                         symbol, detector, score, terv["entry"], terv["target"],
                         terv["targetPct"], terv["stop"], terv["stopPct"],
-                        terv["rewardRisk"], "  GYENGE" if terv["weak"] else "", reason)
+                        terv["rewardRisk"], "  GYENGE" if terv["weak"] else "", reason,
+                        binance_url(symbol))
         else:
-            log.warning("[%s] %s SCORE %d/100 | %s", symbol, detector, score, reason)
+            log.warning("[%s] %s SCORE %d/100 | %s | %s",
+                        symbol, detector, score, reason, binance_url(symbol))
 
         kuldjuk, ok = self._telegram_gate(detector, score, own)
         signal["shadow"] = None if kuldjuk else ok

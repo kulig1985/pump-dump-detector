@@ -52,6 +52,25 @@ elfogyott, és az ár rendszeresen visszaesett.
 
 ---
 
+## Miért időalapú az ablak?
+
+A mérés korábban **darabszám** alapú volt (utolsó 30 trade). Egy nagy páron 30 aggTrade
+akár 30 milliszekundum alatt is beérkezik — ilyenkor egy apró árváltozást apró
+időtartammal osztva hatalmas hamis „meredekség" jön ki:
+
+```
+TRIGGER LONG | meredekseg +0.398%/mp | 30 trade 0.03 mp alatt | osszesen +0.02%
+```
+
+Ez nem mozgás, ez egy trade-csokor. Ráadásul a legnagyobb párokon (ETHUSDT, SOLUSDT) sok
+aggTrade **azonos időbélyeggel** érkezik, ott a mérés egyáltalán nem működött. A
+volatilitás-adaptáció pedig felszívta a hamis meredekségeket, és 126 %/mp-es küszöböket
+állított be.
+
+Most az ablak `slopeWindowSec` (2 mp) hosszú, és három feltétel van rá: legalább
+`minTradesInWindow` trade essen bele, a tényleges időszakasz fedje le az ablak felét, és
+a nettó elmozdulás érje el a `minTotalMovePct`-ot.
+
 ## Hogyan jön ki a score?
 
 Öt rész, összesen 100 pont. A `minSignalScore` (60) alatt a jelzés mentődik, de nem megy ki.
@@ -93,9 +112,11 @@ csak akkor az, ha van hova mennie.
 
 | kulcs | alap | mit csinál | ha növeled | ha csökkented |
 |---|---|---|---|---|
-| `tradeWindow` | 30 | ennyi trade-re illesztjük az egyenest | simább, lassabb reakció | zajosabb, gyorsabb |
-| `maxSpanSec` | 5.0 | ha az N trade ennél tovább tartott, nem hirtelen mozgás | lassú mozgásokat is befogad | csak a nagyon gyorsakat |
-| `minSlopePctPerSec` | 0.15 | ennyi %/másodperc meredekség kell | kevesebb, erősebb jelzés | több, gyengébb |
+| `slopeWindowSec` | 2.0 | **időalapú** ablak: ekkora szakaszra illesztjük az egyenest | simább, lassabb reakció | zajosabb, gyorsabb |
+| `minTradesInWindow` | 10 | ennyi trade kell az ablakba, különben nem mérhető | csak a forgalmasabb párok | kevés adatból is mér |
+| `minTotalMovePct` | 0.15 | ekkora nettó elmozdulás kell az ablakban | csak az érdemi mozgások | apró rezdülésekre is jelez |
+| `minSlopePctPerSec` | 0.15 | ennyi %/másodperc tempó kell | kevesebb, erősebb jelzés | több, gyengébb |
+| `maxThresholdFactor` | 10 | a volatilitáshoz igazított küszöb legfeljebb ennyiszerese az alapnak | | |
 | `minConsistency` | 0.70 | a lépések ekkora hányada mutasson egy irányba | csak a tiszta mozgások | fűrészfogat is befogad |
 | `minVolumeFactor` | 1.0 | az ablakban legalább ennyiszer a pár átlagos forgalma | valódi pénz kell mögé | apró kötések is elmennek |
 | `volatilityMultiplier` | 4.0 | a küszöb a pár saját zajszintjéhez igazodik. **A configban megadott érték a padló**, ez alá sosem megy | a zajos párokon sokkal magasabb küszöb | `0` = kikapcsolva |

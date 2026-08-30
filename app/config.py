@@ -20,10 +20,15 @@ DETECTOR_DEFAULTS = {
     "maxSymbols": 200,                 # top N forgalom szerint
     "excludeSymbols": [],              # pl. ["1000PEPEUSDT", "TRUMPUSDT"] -- ezeket kihagyjuk
     "symbolRefreshMinutes": 60,
-    # --- trigger: az utolso N trade-re illesztett egyenes meredeksege ---
-    "tradeWindow": 30,                 # ennyi trade-bol szamolunk meredekseget
-    "maxSpanSec": 5.0,                 # ha ez a N trade ennel hosszabb ido alatt tortent,
-                                       # akkor nem hirtelen mozgas -- nem erdekel
+    # --- trigger: az utolso par masodperc trade-jeire illesztett egyenes ---
+    #
+    # IDOALAPU ablak, nem darabszam alapu. Egy nagy paron 30 aggTrade akar 30
+    # milliszekundum alatt is beerkezhet: ilyenkor egy apro arvaltozast egy apro
+    # idotartammal osztva hatalmas hamis "meredekseg" jon ki, a legnagyobb parokon
+    # pedig (azonos idobelyegu trade-ek miatt) egyaltalan nem lehetne merni.
+    "slopeWindowSec": 2.0,             # ekkora idoablakra illesztjuk az egyenest
+    "minTradesInWindow": 10,           # ennyi trade kell bele, kulonben nem merheto
+    "minTotalMovePct": 0.15,           # az ablakban ekkora nettó elmozdulas kell
     "minSlopePctPerSec": 0.15,         # ennyi %/masodperc kell a jelzeshez
     "minConsistency": 0.70,            # a lepesek ekkora hanyada mutasson egy iranyba
     "minVolumeFactor": 1.0,            # az ablakban legalabb ennyiszer annyi forgalom
@@ -32,9 +37,8 @@ DETECTOR_DEFAULTS = {
                                        # kulonben nem mozgas, csak a spread atlepese
     "volatilityMultiplier": 4.0,       # 0 = ki. A meredekseg-kuszob sose megy a fenti
                                        # ertek ala, de zajos parokon feljebb megy
-    # --- csak a tablazatban mutatott 1/3/5 mp-es szamokhoz ---
-    "minTicksInWindow": 3,             # ennyi trade-nek kell lennie az ablakban
-    "maxRefAgeFactor": 1.5,            # a viszonyitasi pont max ennyiszer regebbi az ablaknal
+    "maxThresholdFactor": 10,          # a volatilitashoz igazitott kuszob legfeljebb
+                                       # ennyiszerese lehet az alapertelmezettnek
     # --- signal ---
     "minSignalScore": 60,
     "symbolCooldownSec": 60,

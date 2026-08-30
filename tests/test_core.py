@@ -17,13 +17,13 @@ from app.plan import build as build_plan
 import app.config as C_CFG
 
 CFG = {
-    "tradeWindow": 30,
-    "maxSpanSec": 5.0,
+    "slopeWindowSec": 2.0,
+    "minTradesInWindow": 10,
+    "minTotalMovePct": 0.15,
     "minSlopePctPerSec": 0.15,
     "minConsistency": 0.70,
+    "maxThresholdFactor": 10,
     "symbolCooldownSec": 60,
-    "minTicksInWindow": 3,
-    "maxRefAgeFactor": 1.5,
     "volatilityMultiplier": 0.0,       # a legtobb teszt fix kuszobbel szamol
     "stopBufferPct": 0.05,
     "minRewardRisk": 1.5,
@@ -52,68 +52,84 @@ def feed(det, symbol, start_ts, prices, step=0.05):
     return out
 
 
-def test_no_trigger_on_slow_drift():
-    """Lassu kuszas: nagy teljes elmozdulas, de kicsi meredekseg."""
+def test_burst_of_trades_in_milliseconds_is_not_a_signal():
+    """Valos eset: 30 trade 0.03 masodperc alatt, osszesen +0.02% mozgas.
+
+    A darabszam-alapu ablak ebbol +0.4%/mp "meredekseget" szamolt, es jelzett.
+    Egy apro arvaltozas apro idotartammal osztva nem mozgas.
+    """
     det = PumpDumpDetector(cfg_obj)
-    # 60 trade, 1.5 masodpercenkent -> 90 mp alatt +0.5%
+    prices = [100.0 * (1 + 0.0002 * i / 30) for i in range(30)]
+    assert feed(det, "BURSTUSDT", 1000.0, prices, step=0.001) == []
+
+
+def test_same_timestamp_trades_do_not_break_measurement():
+    """A legnagyobb parokon sok aggTrade azonos idobelyeggel erkezik."""
+    det = PumpDumpDetector(cfg_obj)
+    for i in range(40):
+        det.on_price("ETHUSDT", 2455.0 + i * 0.01, 1000.0)      # mind ugyanakkor
+    assert det.latest["ETHUSDT"][1] is None, "nem merheto, de nem is szabad hibaznia"
+
+
+def test_no_trigger_on_slow_drift():
+    """Lassu kuszas: nagy teljes elmozdulas, de kicsi tempó."""
+    det = PumpDumpDetector(cfg_obj)
     ticks = [(1000.0 + i * 1.5, 100.0 * (1 + 0.005 * i / 60)) for i in range(60)]
     assert [t for t in (det.on_price("AAAUSDT", p, ts) for ts, p in ticks) if t] == []
 
 
 def test_trigger_on_steady_fast_move():
-    """Valodi pump: gyors, egyiranyu emelkedes."""
+    """Valodi pump: 2 masodperc alatt egyenletes +0.4%."""
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]
+    prices = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
+    d = triggers[0]["detail"]
     assert triggers[0]["direction"] == "LONG"
-    assert triggers[0]["detail"]["slopePctPerSec"] > CFG["minSlopePctPerSec"]
-    assert triggers[0]["detail"]["consistency"] >= CFG["minConsistency"]
+    assert d["spanSec"] >= CFG["slopeWindowSec"] / 2
+    assert abs(d["totalPct"]) >= CFG["minTotalMovePct"]
+    assert d["consistency"] >= CFG["minConsistency"]
 
 
 def test_dump_direction():
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 30 + [100.0 * (1 - 0.005 * (i + 1) / 40) for i in range(40)]
+    prices = [100.0] * 40 + [100.0 * (1 - 0.004 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
     assert triggers[0]["direction"] == "SHORT"
-    assert triggers[0]["detail"]["slopePctPerSec"] < 0
 
 
 def test_single_spike_then_back_is_not_a_signal():
-    """Egyetlen kiugro print, aztan vissza -- a regi logika ezt jelzesnek vette."""
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 30 + [100.45] + [100.0] * 39
+    prices = [100.0] * 40 + [100.45] + [100.0] * 40
     assert feed(det, "DDDUSDT", 1000.0, prices) == []
 
 
 def test_sawtooth_is_not_a_signal():
-    """Nagy amplitudo, de nincs irany -- a regi logika ezt is jelzesnek vette."""
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.0025 * math.sin(i * 0.8)) for i in range(100)]
+    prices = [100.0 * (1 + 0.0025 * math.sin(i * 0.8)) for i in range(120)]
     assert feed(det, "EEEUSDT", 1000.0, prices) == []
+
+
+def test_tiny_total_move_is_not_a_signal():
+    """Meredek tempó, de a nettó elmozdulas jelentektelen."""
+    det = PumpDumpDetector(cfg_obj)
+    prices = [100.0 * (1 + 0.0005 * (i + 1) / 40) for i in range(40)]   # +0.05%
+    assert feed(det, "TINYUSDT", 1000.0, prices) == []
 
 
 def test_cooldown_suppresses_repeat():
     det = PumpDumpDetector(cfg_obj)
-    prices = ([100.0] * 30
-              + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]
-              + [100.5 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])
+    prices = ([100.0] * 40
+              + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
+              + [100.4 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
     assert len(feed(det, "FFF2USDT", 1000.0, prices)) == 1
 
 
 def test_no_trigger_without_enough_trades():
-    """Kevesebb mint tradeWindow trade -> nincs mibol meredekseget szamolni."""
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.001 * i) for i in range(20)]      # csak 20 trade
+    prices = [100.0 * (1 + 0.001 * i) for i in range(8)]
     assert feed(det, "GGG2USDT", 1000.0, prices) == []
-
-
-def test_no_trigger_if_trades_are_too_spread_out():
-    """A 30 trade megvan, de 5 mp-nel hosszabb ido alatt -> nem hirtelen mozgas."""
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.0005 * i) for i in range(40)]
-    assert feed(det, "HHH2USDT", 1000.0, prices, step=0.5) == []
 
 
 def test_volatility_raises_threshold_for_noisy_symbol():
@@ -121,15 +137,20 @@ def test_volatility_raises_threshold_for_noisy_symbol():
     cfg = types.SimpleNamespace(detector={**CFG, "volatilityMultiplier": 4.0})
     det = PumpDumpDetector(cfg)
 
-    for i in range(400):
+    # a "zajos" par itt nem szapora oszcillaciot jelent (annak a MEREDEKSEGE nulla,
+    # azt a konzisztencia-szuro fogja), hanem hogy folyamatosan nagy tempóval
+    # lendul ide-oda -- ilyen parnak tenyleg tobbet kell mozdulnia a jelzeshez
+    for i in range(600):
         det.on_price("CALMUSDT", 100.0 + i * 1e-6, 1000.0 + i * 0.05)
-        det.on_price("NOISYUSDT", 100.0 * (1 + 0.004 * math.sin(i * 0.37)),
+        det.on_price("NOISYUSDT", 100.0 * (1 + 0.004 * math.sin(i * 0.04)),
                      1000.0 + i * 0.05)
 
     calm = det.threshold("CALMUSDT")
     noisy = det.threshold("NOISYUSDT")
     assert calm == CFG["minSlopePctPerSec"], calm
     assert noisy > calm, (calm, noisy)
+    # felfele is van korlat, hogy egy elszallt mertek ne nemitson el egy part
+    assert noisy <= CFG["minSlopePctPerSec"] * CFG["maxThresholdFactor"]
 
 
 # ---------------------------------------------------------------- ReversalDetector
@@ -546,7 +567,7 @@ def test_signal_detail_is_mongo_safe():
     """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
     det = PumpDumpDetector(cfg_obj)
     sig = feed(det, "FFFUSDT", 1000.0,
-               [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
+               [100.0] * 40 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
 
     def check(o, path="doc"):
         if isinstance(o, dict):
@@ -558,7 +579,7 @@ def test_signal_detail_is_mongo_safe():
                 check(v, f"{path}[{i}]")
 
     check(sig["detail"])
-    assert set(sig["detail"]["priceChange"]) == {"s1", "s3", "s5"}
+    assert "slopePctPerSec" in sig["detail"]
 
 
 def test_wall_behind_price_is_not_an_obstacle():
@@ -586,7 +607,7 @@ def test_signal_carries_its_own_thresholds():
     """A jelzes viszi magaval az ervenyes kuszoboket es a sajat bizonyitekat."""
     det = PumpDumpDetector(cfg_obj)
     sig = feed(det, "IIIUSDT", 1000.0,
-               [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
+               [100.0] * 40 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
     assert sig["detector"] == "pump_dump"
     assert sig["configKey"] == "detector"
     assert sig["contextMode"] == "momentum"

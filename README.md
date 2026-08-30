@@ -547,8 +547,9 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | `200` | top N pár forgalom szerint |
 | `excludeSymbols` | `[]` | névre kizárt párok, pl. `["4USDT","TRUMPUSDT"]` |
-| `tradeWindow` | `30` | ennyi trade-ből számolunk meredekséget |
-| `maxSpanSec` | `5.0` | ha az N trade ennél tovább tartott, nem hirtelen mozgás |
+| `slopeWindowSec` | `2.0` | **időalapú** ablak, ekkora szakaszra illesztjük az egyenest |
+| `minTradesInWindow` | `10` | ennyi trade kell az ablakba |
+| `minTotalMovePct` | `0.15` | ekkora nettó elmozdulás kell az ablakban |
 | `minSlopePctPerSec` | `0.15` | ennyi %/másodperc kell a jelzéshez (ez a **padló**) |
 | `minConsistency` | `0.70` | a lépések ekkora hányada mutasson egy irányba |
 | `volatilityMultiplier` | `4.0` | a küszöb a pár saját zajszintjéhez igazodik; `0` = kikapcsolva |

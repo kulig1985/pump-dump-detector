@@ -16,6 +16,7 @@ from collections import deque, defaultdict
 
 from .. import events, binance_rest
 from ..fmt import pad, price as fprice, money
+from ..links import binance_url
 from .base import Detector, make_signal
 
 log = logging.getLogger("reversal")
@@ -233,10 +234,10 @@ class ReversalDetector(Detector):
         fordulo = "FORDULO FELFELE -> LONG" if direction == "LONG" else \
                   "FORDULO LEFELE -> SHORT"
         log.warning("[%s] %s | %s %.8g (%.1f mp-e) | mozgas %.2f%% | "
-                    "visszapattanas %.2f%% | %s attores %.2f%% | flow %.1fx",
-                    trade.symbol, fordulo, szint, setup.extreme,
-                    trade.ts - setup.extreme_ts, setup.move_pct, bounce_pct,
-                    micro_nev, break_pct, flow["ratio"])
+                    "visszapattanas %.2f%% (a mozgas %.0f%%-a) | flow %.1fx | %s",
+                    trade.symbol, fordulo, szint, setup.extreme, kor,
+                    setup.move_pct, bounce_pct, retrace, flow["ratio"],
+                    binance_url(trade.symbol))
         events.add(f"{trade.symbol:<14} {fordulo:<24} "
                    f"{szint} {fprice(setup.extreme)}  mozgas {setup.move_pct:.2f}%  "
                    f"flow {flow['ratio']:.1f}x")

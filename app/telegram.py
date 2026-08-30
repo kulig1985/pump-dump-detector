@@ -2,6 +2,8 @@
 import html
 import logging
 
+from .links import binance_url
+
 import aiohttp
 
 log = logging.getLogger("telegram")
@@ -80,7 +82,9 @@ def format_signal(sig):
         (detector, direction),
         ("⚡", f"{detector}", "", f"{direction} pozicio"))
 
-    fej = (f"{emoji} <b>{cim}</b>  ·  <b>{esc(sig['symbol'])}</b>\n"
+    url = sig.get("url") or binance_url(sig["symbol"])
+    fej = (f"{emoji} <b>{cim}</b>  ·  "
+           f"<a href=\"{esc(url)}\"><b>{esc(sig['symbol'])}</b></a>\n"
            f"{esc(tortent)}\n"
            f"➜ <b>{esc(jelent)}</b>\n"
            f"score <b>{sig['score']}/100</b>  ·  "
@@ -132,6 +136,7 @@ def format_signal(sig):
         veg += (f"\n\n⚠️ <b>Gyenge hozam/kockazat</b> ({t['rewardRisk']}:1, "
                 f"ajanlott {t['minRewardRisk']}:1 felett)")
     veg += f"\n\n<i>{esc(sig['reason'])}</i>"
+    veg += f"\n{esc(url)}"
     if sig.get("trade", {}).get("executed"):
         veg += f"\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
     return f"{fej}\n\n<pre>{torzs}</pre>{veg}"
