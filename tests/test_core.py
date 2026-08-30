@@ -6,6 +6,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.detector import MovementDetector
+from app.market_data import _mongo_row
 from app import orderbook, scoring
 from app.ta import ema
 
@@ -88,6 +89,26 @@ def test_wall_outside_range_ignored():
     # a wall 5%-ra van, a max tavolsag 1.5% -> nem erdekel
     asks = [(100.0 + i * 0.01, 1.0) for i in range(20)] + [(105.0, 500.0)]
     assert orderbook._find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
+
+
+def test_status_row_is_mongo_safe():
+    """A Mongo csak string kulcsot fogad -- a changes dict kulcsai egesz szamok."""
+    det = MovementDetector(cfg_obj)
+    feed(det, "FFFUSDT", 1000.0, [100.0 + i * 0.01 for i in range(40)])
+    rows = [_mongo_row(r) for r in det.snapshot()["rows"]]
+    assert rows
+
+    def check(o, path="doc"):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                assert isinstance(k, str), f"{path}: nem string kulcs -> {k!r}"
+                check(v, f"{path}.{k}")
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                check(v, f"{path}[{i}]")
+
+    check({"topMovers": rows})
+    assert set(rows[0]["changes"]) == {"s1", "s3", "s5"}
 
 
 def _trigger(c1, c3, c5):

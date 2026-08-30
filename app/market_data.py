@@ -204,13 +204,18 @@ class MarketDataService:
                           "wsTotal": self._chunk_count(),
                           "ticksPerSec": round(snap["ticks"] / interval, 1),
                           "totalTriggers": snap["totalTriggers"],
-                          "topMovers": snap["rows"]}},
+                          "topMovers": [_mongo_row(r) for r in snap["rows"]]}},
                 upsert=True)
         except Exception as e:
             log.warning("statusz mentese sikertelen: %s", e)
 
     def _chunk_count(self):
         return max(1, -(-len(self.symbols) // STREAMS_PER_CONNECTION))
+
+
+def _mongo_row(r):
+    """A changes kulcsai egesz szamok (1/3/5 mp) -- a Mongo csak string kulcsot fogad."""
+    return {**r, "changes": {f"s{w}": v for w, v in r["changes"].items()}}
 
 
 def _pct(v):
