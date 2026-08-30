@@ -16,6 +16,21 @@ from collections import deque, defaultdict
 
 log = logging.getLogger("eligibility")
 
+# gepi kulcs -> emberi szoveg. A kulcs megy a Mongo-ba (hogy aggregalhato legyen),
+# a szoveg a logba.
+OKOK = {
+    "blacklisted":        "kezzel kizarva",
+    "not_whitelisted":    "nincs a figyelt listan",
+    "no_book_data":       "meg nem lattuk a konyvet",
+    "spread_too_wide":    "tul szeles a spread",
+    "insufficient_depth": "keves penz all a legjobb szinten",
+    "low_activity":       "tul keves kotes percenkent",
+}
+
+
+def szoveg(ok):
+    return OKOK.get(ok, ok)
+
 AKTIVITAS_ABLAK_SEC = 60.0
 DEPTH_MINTA = 40            # ennyi friss megfigyeles medianja adja a melyseget
 
@@ -118,8 +133,8 @@ class Eligibility:
         szamlalo = defaultdict(int)
         for ok in self.rejected.values():
             szamlalo[ok] += 1
-        reszek = ", ".join(f"{ok} {n}" for ok, n in sorted(szamlalo.items(),
-                                                           key=lambda x: -x[1]))
+        reszek = ", ".join(f"{szoveg(ok)}: {n}" for ok, n in sorted(szamlalo.items(),
+                                                                    key=lambda x: -x[1]))
         return [f"kizarva {len(self.rejected)}: {reszek}"]
 
     def distribution(self, symbols):

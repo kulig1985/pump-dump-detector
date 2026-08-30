@@ -261,14 +261,15 @@ class ReversalDetector(Detector):
 
         fordulo = "FORDULO FELFELE -> LONG" if direction == "LONG" else \
                   "FORDULO LEFELE -> SHORT"
-        log.info("CANDIDATE  %-14s %-5s %s  move %.2f%%  visszafordulas %.0f%%  flow %.1fx",
-                 trade.symbol, direction, fordulo, setup.move_pct, retrace, flow["ratio"])
+        log.info("CANDIDATE  %-14s %-5s ar %.8g  %s  mozgas %.2f%%  "
+                 "visszafordulas %.0f%%  kotesaramlas %.1fx",
+                 trade.symbol, direction, trade.price, fordulo,
+                 setup.move_pct, retrace, flow["ratio"])
         events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} {fordulo}  "
                    f"mozgas {setup.move_pct:.2f}%  flow {flow['ratio']:.1f}x")
 
         return make_signal(
             self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
-            move_pct=bounce_pct + break_pct,
             reasons=[
                 f"{'eses' if direction == 'LONG' else 'emelkedes'} "
                 f"{setup.move_pct:.2f}% elotte",
@@ -293,9 +294,6 @@ class ReversalDetector(Detector):
                 "tradesInFlow": flow["trades"],
                 "origin": setup.origin,
             },
-            stop_anchor=setup.extreme,
-            target_anchor=(setup.extreme + (setup.origin - setup.extreme)
-                           * c["targetRetracementPct"] / 100.0),
             history=[(t.ts, t.price) for t in window],
         )
 

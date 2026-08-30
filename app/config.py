@@ -22,41 +22,24 @@ DETECTOR_DEFAULTS = {
     "symbolWhitelist": [],             # ha nem ures, CSAK ezeket figyeljuk
     "symbolBlacklist": [],
 
-    # ---- realtime kereskedhetoseg (a detektorok ELOTT szur) ----
-    "maxSpreadPct": 0.05,              # ennel szelesebb spreadnel a scalp nem eri meg
-    "minTopDepthUSDT": 1_000,          # a legjobb szinten ennyi penz legyen, a friss
-                                       # megfigyelesek MEDIANJAN merve. Ez EGYETLEN
-                                       # arszint, nem a teljes konyv, es masodpercenkent
-                                       # kiurul -- ezert alacsony es median alapu.
-                                       # A STATUS percentilis sorabol hangolhato.
-    "minTradesPerMinute": 30,          # ritka kereskedesnel nincs mit megfogni
+    # ---- realtime kereskedhetoseg (a detektorok elott szur) ----
+    "maxSpreadPct": 0.05,
+    # A legjobb aron allo penz USDT-ben (a friss megfigyelesek medianja). Ha egy
+    # piaci megbizas ennel nagyobb, azonnal atcsuszik a kovetkezo arszintekre.
+    # ALAPBOL KIKAPCSOLVA (0): a mert ertek latszik a STATUS sorban, es ha akarod,
+    # onnan tudod beallitani. A spread, a 24h forgalom es a kotesszam mar szur.
+    "minTopDepthUSDT": 0,
+    "minTradesPerMinute": 30,
 
     # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
-    "moveWindowSec": 2.0,              # ekkora ablakban merjuk az elmozdulast
-    "minTradesInWindow": 10,           # ennyi kotes kell bele
+    "moveWindowSec": 2.0,              # ekkora idoablakban merjuk az elmozdulast
+    "minTradesInWindow": 10,           # ennyi kotes kell bele, kulonben nem merheto
     "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
     "baselineRatio": 4.0,              # a mozgas a par normaljanak ennyiszerese legyen
-    "minMovePct": 0.15,                # abszolut padlo, hogy egy halott paron se jelezzunk
-    "minConsistency": 0.70,            # a lepesek ekkora hanyada mutasson egy iranyba
-    "minVolumeFactor": 1.0,            # az ablak forgalma a par atlaganak ennyiszerese
+    "minMovePct": 0.15,                # abszolut padlo
     "symbolCooldownSec": 60,
 
-    # ---- validacio a jelzes elott ----
-    "minMoveToSpreadRatio": 3.0,       # a mozgas legyen legalabb ennyiszer a spread
-    "wallBlockDistancePct": 0.15,      # ennel kozelebbi fal a mozgas iranyaban elutasit
-    "minRewardRisk": 1.5,              # ez alatt nem eri meg felvenni
-    "takerFeePct": 0.05,               # Binance USDS-M futures taker dij OLDALANKENT
-                                       # (VIP szinttol fugg -- ird at, ha nalad mas)
-    "minNetTargetPct": 0.10,           # a celnak ennyivel kell tullonie a koltsegen
-                                       # (2x taker dij + spread), kulonben nem eri meg
-    "oppositeCooldownSec": 120,        # ennyi ideig nem adunk ELLENTETES iranyu
-                                       # jelzest ugyanarra a parra
-    "stopBufferOfDistancePct": 10,     # a stop ennyivel kerul a horgony moge,
-                                       # a belepo-horgony tavolsag aranyaban
-    "momentumStopRetracementPct": 50,  # a stop az impulzus ennyi %-anal
-    "momentumTargetFactor": 1.0,       # a cel azonos meretu folytatas
-
-    # ---- order book es EMA: csak informacio, nem kapu ----
+    # ---- order book es EMA: CSAK INFORMACIO a jelzesben, semmit nem kapuznak ----
     "orderBookLevels": 20,
     "wallSensitivity": 3.0,
     "wallMaxDistancePct": 1.5,
@@ -64,16 +47,9 @@ DETECTOR_DEFAULTS = {
     "emaSlow": 21,
     "emaInterval": "1m",
 
-    # ---- eredmenymeres: alapbol KI. Nem backteszt (a jelzes UTAN meri az arat),
-    #      de elso korben csak zajt csinal. Bekapcsolva 10 percenkent osszesit.
-    "outcomeEnabled": False,
-    "outcomeMinutes": 5,
-    "outcomeTargetPct": 0.3,
-    "outcomeStopPct": 0.3,
-
     # ---- megjelenites ----
-    "statusIntervalSec": 60,           # ilyen surun egy rovid allapotsor
-    "signalWindowMinutes": 10,
+    "statusIntervalSec": 60,
+    "signalWindowMinutes": 10,         # ennyi visszatekintessel: hanyadik jelzes ez
 }
 
 REVERSAL_DEFAULTS = {

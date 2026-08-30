@@ -4,21 +4,21 @@ A kerdes nem az, hogy "mozdult-e 0.3%-ot", hanem hogy "SZOKATLAN-e ez a mozgas
 EZEN a paron". Egy meme coinon 0.3% masodpercenkent tortenik, a BTC-n hetente.
 Ezert a mercet a par sajat, futas kozben mert normalja adja (lasd baseline.py).
 
-Harom feltetel, nem tobb:
+EGY feltetel:
 
-    1. a mozgas a par normaljanak baselineRatio-szorosa (es legalabb minMovePct)
-    2. a lepesek minConsistency hanyada egy iranyba mutat  -- alakzat, nem kapkodas
-    3. az ablak forgalma legalabb a par atlaga             -- van mogotte penz
+    a mozgas a par normaljanak baselineRatio-szorosa (es legalabb minMovePct)
 
 A likviditas (spread, melyseg, aktivitas) mar a detektor ELOTT elintezodik az
-eligibility szuroben, ezert itt nem szerepel.
+eligibility szuroben. A mozgast az ablakra ILLESZTETT EGYENES adja, nem a vegpontok
+kulonbsege -- igy sem egyetlen kiugro print, sem fureszfog nem tud jelzest csinalni
+(fureszfognal az illesztett meredekseg ~nulla).
 """
 import time
 import logging
 from collections import deque, defaultdict
 
 from .. import events, binance_rest
-from ..fmt import pad, price as fprice, money
+from ..fmt import pad, price as fprice
 from ..links import binance_url
 from .base import Detector, make_signal
 from .baseline import Baseline
@@ -45,7 +45,7 @@ class PumpDumpDetector(Detector):
     def on_trade(self, trade):
         c = self.cfg.detector
         h = self.history[trade.symbol]
-        h.append((trade.ts, trade.price, trade.price * trade.qty))
+        h.append((trade.ts, trade.price, 0.0))
         while h and h[0][0] < trade.ts - c["moveWindowSec"] * 2:
             h.popleft()
 
@@ -74,10 +74,6 @@ class PumpDumpDetector(Detector):
         kell = max(c["minMovePct"], m["baseline"] * c["baselineRatio"])
         if abs(m["movePct"]) < kell:
             return None
-        if m["consistency"] < c["minConsistency"]:
-            return None
-        if m["volume"] < m["expectedVolume"]:
-            return None
         if trade.ts - self.last_trigger.get(trade.symbol, 0) < c["symbolCooldownSec"]:
             return None
 
@@ -88,27 +84,19 @@ class PumpDumpDetector(Detector):
         reasons = [
             f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s",
             f"{arany:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
-            f"{m['consistency']:.0%} egy iranyba ({m['trades']} kotes)",
-            f"forgalom {money(m['volume'])} USDT "
-            f"({m['volume'] / m['expectedVolume']:.1f}x atlag)"
-            if m["expectedVolume"] else f"forgalom {money(m['volume'])} USDT",
+            f"{m['trades']} kotes az ablakban",
         ]
-        log.info("CANDIDATE  %-14s %-5s move %+.2f%% / %.1fs  normal %.3f%% (%.1fx)",
-                 trade.symbol, direction, m["movePct"], m["spanSec"],
+        log.info("CANDIDATE  %-14s %-5s ar %.8g  mozgas %+.2f%% / %.1fs  "
+                 "normal %.3f%% (%.1fx)",
+                 trade.symbol, direction, trade.price, m["movePct"], m["spanSec"],
                  m["baseline"], arany)
         events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} "
                    f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s")
 
         return make_signal(
             self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
-            move_pct=abs(m["movePct"]),
             reasons=reasons,
-            metrics={k: v for k, v in m.items() if k != "origin"},
-            # a stop az impulzus felenel: ha a mozgas felet visszaadja, a tezis halott
-            stop_anchor=(m["origin"] + (trade.price - m["origin"])
-                         * (1 - c["momentumStopRetracementPct"] / 100.0)),
-            target_anchor=(trade.price + (trade.price - m["origin"])
-                           * c["momentumTargetFactor"]),
+            metrics=dict(m),
             history=[(t, p) for t, p, _ in h],
         )
 
@@ -122,25 +110,21 @@ class PumpDumpDetector(Detector):
         milliszekundum alatt is beerkezik, es abbol ertelmetlen tempot szamolni.
         """
         start = now - c["moveWindowSec"]
-        w = [(t, p, q) for t, p, q in history if t >= start]
+        w = [(t, p) for t, p, _ in history if t >= start]
         if len(w) < c["minTradesInWindow"]:
             return None
         span = w[-1][0] - w[0][0]
         if span < c["moveWindowSec"] / 2:      # egy pillanatnyi kotescsokor nem ablak
             return None
 
-        ys = [p for _, p, _ in w]
+        ys = [p for _, p in w]
         if ys[0] <= 0:
             return None
-        volume = sum(q for _, _, q in w)
-        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol)
-        elvart = vol24 / 86400.0 * span * c["minVolumeFactor"] if vol24 else 0.0
-
         # A mozgast NEM az elso es utolso ar kulonbsegebol szamoljuk, hanem az
         # ablakra illesztett egyenes elmozdulasabol. A vegpont-kulonbseget egyetlen
         # kiugro print is felviszi (mert az 0.45%-ot mutatna, aztan visszaesne);
         # az illesztett egyenest nem.
-        xs = [t - w[0][0] for t, _, _ in w]
+        xs = [t - w[0][0] for t, _ in w]
         n = len(w)
         mean_x, mean_y = sum(xs) / n, sum(ys) / n
         sxx = sum((x - mean_x) ** 2 for x in xs)
@@ -149,21 +133,10 @@ class PumpDumpDetector(Detector):
         sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
         move_pct = (sxy / sxx) * span / mean_y * 100.0
 
-        lepesek = [ys[i + 1] - ys[i] for i in range(n - 1)]
-        mozgott = [l for l in lepesek if l != 0]
-        irany = 1 if move_pct >= 0 else -1
-        consistency = (sum(1 for l in mozgott if l * irany > 0) / len(mozgott)
-                       if mozgott else 0.0)
-
         return {
-            "movePct": move_pct,
-            "endpointPct": (ys[-1] - ys[0]) / ys[0] * 100.0,
+            "movePct": round(move_pct, 4),
             "spanSec": round(span, 2),
-            "trades": len(w),
-            "consistency": round(consistency, 3),
-            "volume": round(volume, 2),
-            "expectedVolume": round(elvart, 2),
-            "origin": ys[0],
+            "trades": n,
         }
 
     # ------------------------------------------------------------------ DEBUG tabla
@@ -209,15 +182,11 @@ class PumpDumpDetector(Detector):
             return ["  nincs merheto par"]
         sorok.sort(reverse=True, key=lambda x: x[0])
 
-        out = [f"  {pad('par', 14)}{'arfolyam':>13}{'mozgas':>9}{'normal':>9}"
-               f"{'arany':>8}{'egyirany':>10}{'kotes':>7}"]
+        out = [f"  {pad('par', 14)}{'mozgas':>9}{'normal':>9}{'arany':>8}{'kotes':>7}"]
         for _, symbol, m, alap, arany in sorok[:top]:
-            out.append(f"  {pad(symbol, 14)}"
-                       f"{fprice(m.get('price', 0)) if 'price' in m else '':>13}"
-                       f"{m['movePct']:>8.2f}%"
+            out.append(f"  {pad(symbol, 14)}{m['movePct']:>8.2f}%"
                        f"{(f'{alap:.3f}%' if alap else '--'):>9}"
-                       f"{(f'{arany:.1f}x' if arany else '--'):>8}"
-                       f"{m['consistency']:>9.0%}{m['trades']:>7}")
+                       f"{(f'{arany:.1f}x' if arany else '--'):>8}{m['trades']:>7}")
         out.append(f"  jelzeshez: {c['baselineRatio']:.1f}x a normalhoz kepest "
-                   f"(min {c['minMovePct']:.2f}%), {c['minConsistency']:.0%} egyiranyusag")
+                   f"(min {c['minMovePct']:.2f}%)")
         return out

@@ -91,19 +91,13 @@ def format_signal(sig, app_link_template=""):
     if sig.get("quoteVolume24h"):
         alap.append(("24h forgalom", f"{sig['quoteVolume24h'] / 1e6:,.0f}M USDT"))
 
-    t = sig.get("plan")
-    terv = [] if not t else [
-        ("belepo", f"{t['entry']:.8g}"),
-        ("cel", f"{t['target']:.8g}   (+{t['targetPct']:.2f}%)"),
-        ("stop", f"{t['stop']:.8g}   (-{t['stopPct']:.2f}%)"),
-        ("hozam/kockazat", f"{t['rewardRisk']} : 1"),
-        ("nettó cel", f"{t.get('netTargetPct', 0):+.2f}%   "
-                      f"(dij + spread {t.get('costPct', 0):.2f}% levonva)"),
-    ]
-
     kontextus = []
     ema = sig.get("ema")
     kontextus.append(("EMA", f"{ema['trend']} (csak informacio)" if ema else "n/a"))
+    ob = sig.get("orderBook") or {}
+    for nev, kulcs in (("sell wall", "nearestSellWall"), ("buy wall", "nearestBuyWall")):
+        w = ob.get(kulcs)
+        kontextus.append((nev, f"{w['distancePct']:.2f}% tavolsagra" if w else "nincs kozel"))
     r = sig.get("recent")
     if r:
         kontextus.append(("gyakorisag",
@@ -111,7 +105,7 @@ def format_signal(sig, app_link_template=""):
         kontextus.append((f"{detector} / {r['windowMinutes']} perc",
                           f"{r['detectorLong']} LONG / {r['detectorShort']} SHORT"))
 
-    blokkok = [("", alap), ("TERV", terv), ("KONTEXTUS", kontextus)]
+    blokkok = [("", alap), ("KONTEXTUS", kontextus)]
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
 
     indok = "\n".join(f"  • {esc(x)}" for x in sig.get("reasons", []))

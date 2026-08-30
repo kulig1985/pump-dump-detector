@@ -10,11 +10,9 @@ Binance WebSocket  (aggTrade + !bookTicker)
         ↓
   KERESKEDHETOSÉG      spread / mélység / aktivitás / white- és blacklist
         ↓
-  DetectorManager  →  PumpDumpDetector,  ReversalDetector   → CANDIDATE
+  DetectorManager  →  PumpDumpDetector,  ReversalDetector
         ↓
-  VALIDÁCIÓ            spread vs mozgás, fal az útban, hozam/kockázat
-        ↓
-   SIGNAL  vagy  REJECTED       (mindkettő okkal, MongoDB-be)
+   SIGNAL            (order book és EMA információként hozzáfűzve)
         ↓
   MongoDB → Telegram → [TradingService]
 ```

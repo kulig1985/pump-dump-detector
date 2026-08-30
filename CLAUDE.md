@@ -40,21 +40,22 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/market_data.py` | aggTrade WS-ek 150-es chunkokban, reconnect |
 | `app/detectors/base.py` | közös `Trade` / `Signal` alak, `Detector` interfész |
 | `app/detectors/manager.py` | fan-out a detektorokra, detektoronkénti hibakezelés |
-| `app/detectors/pumpdump.py` | meredekség (%/mp) + egyirányúság az utolsó N trade-en, cooldown, ártábla |
+| `app/detectors/pumpdump.py` | rendkívüli mozgás a pár saját normáljához mérve |
 | `app/detectors/reversal.py` | lokális árforduló állapotgép `aggTrade`-ből |
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |
-| `app/eligibility.py` | realtime kereskedhetőség (spread, mélység, aktivitás) |
+| `app/eligibility.py` | realtime kereskedhetőség (spread, mélység, aktivitás, white/blacklist) |
 | `app/detectors/baseline.py` | páronkénti normál rövid mozgás |
-| `app/outcome.py` | mi történt a jelzés után (MFE/MAE, találati arány score sávonként) |
-| `app/prices.py` | utolsó ismert ár symbolonként, az eredményméréshez |
-| `app/plan.py` | belépő / cél / stop / hozam-kockázat minden jelzéshez |
-
-Paraméterek részletes leírása: `docs/PARAMETEREK.md`
-| `app/fmt.py` | közös formázók a státusz táblához |
+| `app/fmt.py` | közös formázók a logoláshoz |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
 | `app/telegram.py` | Bot API sendMessage + üzenetformázás |
 | `app/trading.py` | WS API `order.place`, TP/SL, pozíciólimitek |
+
+Paraméterek részletes leírása: `docs/PARAMETEREK.md`
+
+**Ami szándékosan NINCS a rendszerben:** score, kereskedelmi terv, hozam/kockázat,
+díjszámítás, eredménymérés/backteszt. A detektor annyit csinál, hogy észreveszi a
+pumpot, a dumpot és a fordulót, és megmondja, miből gondolja.
 
 ## Konfiguráció
 

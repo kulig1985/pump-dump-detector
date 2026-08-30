@@ -19,7 +19,7 @@ from .eligibility import Eligibility
 from .signals import SignalService
 from .telegram import TelegramNotifier
 from .trading import TradingService
-from . import binance_rest, outcome
+from . import binance_rest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,16 +60,13 @@ def startup_summary(cfg):
         f"spread <= {d['maxSpreadPct']:.3f}%, melyseg >= {d['minTopDepthUSDT']:,.0f} USDT, "
         f"legalabb {d['minTradesPerMinute']} kotes/perc",
         f"Pump/dump: a mozgas a par sajat normaljanak {d['baselineRatio']:.1f}x-e "
-        f"({d['baselineMinutes']} perc visszatekintes, min {d['minMovePct']:.2f}%), "
-        f"{d['minConsistency']:.0%} egyiranyusag, cooldown {d['symbolCooldownSec']}s",
+        f"({d['baselineMinutes']} perc visszatekintes, min {d['minMovePct']:.2f}%, "
+        f"{d['moveWindowSec']:.0f} mp-es ablak), cooldown {d['symbolCooldownSec']}s",
         f"Reversal: elozetes mozgas a normal {r['baselineRatio']:.1f}x-e "
         f"(min {r['minMovePct']:.2f}%), belepes a mozgas {r['maxRetracementPct']:.0f}%-an "
         f"belul, max {r['maxExtremeAgeSec']:.0f} mp regi szelsoertekre",
-        f"Validacio: mozgas >= {d['minMoveToSpreadRatio']:.0f}x spread, "
-        f"nincs fal {d['wallBlockDistancePct']:.2f}%-on belul, "
-        f"hozam/kockazat >= {d['minRewardRisk']:.1f}:1",
+        f"Order book es EMA: csak informacio a jelzesben, semmit nem kapuznak",
         f"Telegram: {'BE -- minden SIGNAL azonnal megy' if d['telegramEnabled'] else 'KI'}"
-        f"   |   Eredmenymeres: {'BE' if d['outcomeEnabled'] else 'KI'}"
         f"   |   Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} "
         f"({t['marginMode']}, {t['leverage']}x)",
     ]
@@ -105,8 +102,7 @@ async def main():
     market.signal_service = signals
 
     try:
-        await asyncio.gather(cfg.refresh_loop(), market.run(),
-                             outcome.summary_loop(db, cfg.detector))
+        await asyncio.gather(cfg.refresh_loop(), market.run())
     finally:
         await notifier.close()
         await trader.close()

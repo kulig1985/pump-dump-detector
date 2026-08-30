@@ -5,6 +5,8 @@ a konyv vekony, vagy alig van kotes, a detektorok oda sem jutnak el.
 """
 import logging
 
+from ..eligibility import szoveg
+
 log = logging.getLogger("detectors")
 
 
@@ -51,8 +53,9 @@ class DetectorManager:
             if not mehet:
                 # a detektor allapota epult, de jelzest nem adunk ki
                 self.skipped += 1
-                log.info("REJECTED   %-14s %-5s %s", trade.symbol,
-                         sig.get("direction", ""), kizaras_oka)
+                log.info("REJECTED   %-14s %-5s ar %.8g  %s",
+                         trade.symbol, sig.get("direction", ""),
+                         trade.price, szoveg(kizaras_oka))
                 continue
             self.total_candidates += 1
             candidates.append(sig)

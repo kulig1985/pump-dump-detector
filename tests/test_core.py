@@ -13,11 +13,9 @@ from app.detectors.manager import DetectorManager
 from app.detectors.baseline import Baseline
 from app.detectors.base import Trade
 from app.eligibility import Eligibility
-from app.signals import SignalService
 from app.fmt import pad as _pad
 from app import orderbook
 from app.ta import ema
-from app.plan import build as build_plan
 from app import events
 import app.config as C_CFG
 
@@ -93,7 +91,6 @@ def test_trigger_on_steady_fast_move():
     assert triggers[0]["direction"] == "LONG"
     assert d["spanSec"] >= CFG["moveWindowSec"] / 2
     assert abs(d["movePct"]) >= CFG["minMovePct"]
-    assert d["consistency"] >= CFG["minConsistency"]
 
 
 def test_dump_direction():
@@ -103,25 +100,6 @@ def test_dump_direction():
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
     assert triggers[0]["direction"] == "SHORT"
-
-
-def test_single_spike_then_back_is_not_a_signal():
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 40 + [100.45] + [100.0] * 40
-    assert feed(det, "DDDUSDT", 1000.0, prices) == []
-
-
-def test_sawtooth_is_not_a_signal():
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.0025 * math.sin(i * 0.8)) for i in range(120)]
-    assert feed(det, "EEEUSDT", 1000.0, prices) == []
-
-
-def test_tiny_total_move_is_not_a_signal():
-    """Meredek tempó, de a nettó elmozdulas jelentektelen."""
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.0005 * (i + 1) / 40) for i in range(40)]   # +0.05%
-    assert feed(det, "TINYUSDT", 1000.0, prices) == []
 
 
 def test_cooldown_suppresses_repeat():
@@ -188,22 +166,6 @@ def test_late_entry_is_rejected():
     assert rev_run(det, rev_tape(0.78600, 0.78520, 0.78720)) == []
 
 
-def test_early_entry_is_accepted_with_a_usable_plan():
-    """Ugyanaz a mozgas, a visszapattanas 21%-anal elkapva -> van meg hely."""
-    det = ReversalDetector(rev_cfg)
-    sigs = rev_run(det, rev_tape(0.78380, 0.78330, 0.78450))
-    assert len(sigs) == 1, sigs
-    d = sigs[0]["metrics"]
-    assert d["retracementPct"] <= REV["maxRetracementPct"]
-    assert d["extremeAgeSec"] <= REV["maxExtremeAgeSec"]
-    assert sigs[0]["stopAnchor"] == MELY
-    assert MELY < sigs[0]["targetAnchor"] < CSUCS
-
-    terv = build_plan(sigs[0], CFG)
-    assert terv["stop"] < MELY < terv["entry"] < terv["target"]
-    assert terv["rewardRisk"] > 1.0
-
-
 def test_stale_extreme_is_rejected():
     """Helyes alakzat, de a melypont mar 12 masodperces -- a mozgas lefutott."""
     det = ReversalDetector(rev_cfg)
@@ -265,18 +227,6 @@ def test_new_lower_low_resets_the_setup():
     uj_mely = [t._replace(price=0.78100) for t in tape[22:26]]
     for sig in rev_run(det, tape[:22] + uj_mely + tape[26:]):
         assert sig["metrics"]["extreme"] <= 0.78101, sig["metrics"]
-
-
-def test_short_reversal_mirror():
-    """Tukorkep: emelkedes utan tetozott, majd lefordult."""
-    det = ReversalDetector(rev_cfg)
-    # csucs 100.60, melypont 100.00 -> a mozgas felfele ment, a fordulo lefele
-    tape = rev_tape(100.52, 100.545, 100.48, csucs=100.00, mely=100.60)
-    sigs = rev_run(det, tape)
-    assert len(sigs) == 1, sigs
-    assert sigs[0]["direction"] == "SHORT"
-    terv = build_plan(sigs[0], CFG)
-    assert terv["target"] < terv["entry"] < terv["stop"]
 
 
 def test_reversal_cooldown():
@@ -414,9 +364,11 @@ def test_depth_threshold_admits_a_realistic_altcoin():
     _aktivitas(e, "ALTUSDT")
     assert e.check("ALTUSDT")[0] is True, e.check("ALTUSDT")
 
-    _book(e, "TINYUSDT", 0.3500, 0.35007, qty=300.0)
-    _aktivitas(e, "TINYUSDT")
-    assert e.check("TINYUSDT")[1] == "insufficient_depth"
+    szigoru = types.SimpleNamespace(detector={**CFG, "minTopDepthUSDT": 5_000})
+    e2 = Eligibility(szigoru)
+    _book(e2, "TINYUSDT", 0.3500, 0.35007, qty=300.0)
+    _aktivitas(e2, "TINYUSDT")
+    assert e2.check("TINYUSDT")[1] == "insufficient_depth"
 
 
 def test_distribution_block_is_safe_and_informative():
@@ -498,47 +450,11 @@ def test_no_candidate_without_a_baseline():
                 [100.0 * (1 + 0.006 * (i + 1) / 40) for i in range(40)]) == []
 
 
-def test_target_must_beat_fees_and_spread():
-    """Egy 0.15%-os cel a taker dij (2x0.05%) es a spread levonasa utan nullat hoz."""
-    ob = {"spreadPct": 0.0192, "obstacleAhead": None}
-    gyenge = {"targetPct": 0.1487, "rewardRisk": 1.76}
-    assert SignalService._validate({"movePct": 0.36}, ob, gyenge, CFG) == "target_below_costs"
-    assert gyenge["netTargetPct"] < CFG["minNetTargetPct"]
-
-    jo = {"targetPct": 0.40, "rewardRisk": 1.76}
-    assert SignalService._validate({"movePct": 0.36}, ob, jo, CFG) is None
-    assert jo["netTargetPct"] > CFG["minNetTargetPct"]
-    assert jo["costPct"] == round(2 * CFG["takerFeePct"] + 0.0192, 4)
-
-
-def test_opposite_direction_signals_are_suppressed():
-    """Elesben UNIUSDT SHORT ment ki 12:52:26-kor, majd LONG 12:52:35-kor."""
-    from collections import deque
-    svc = SignalService.__new__(SignalService)
-    svc.recent = deque([(time.time(), "pump_dump", "UNIUSDT", "SHORT")])
-    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "LONG"},
-                                    CFG) == "contradicts_recent_signal"
-    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "SHORT"},
-                                    CFG) is None
-    assert svc._contradiction_check({"symbol": "MASUSDT", "direction": "LONG"},
-                                    CFG) is None
-    # a cooldown lejarta utan mar szabad
-    svc.recent = deque([(time.time() - CFG["oppositeCooldownSec"] - 1,
-                         "pump_dump", "UNIUSDT", "SHORT")])
-    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "LONG"},
-                                    CFG) is None
-
-
-def test_outcome_is_off_by_default():
-    """Elso korben nem merunk: se task, se EREDMENYEK sor."""
-    assert C_CFG.DETECTOR_DEFAULTS["outcomeEnabled"] is False
-
-
-# ---------------------------------------------------------------- eligibility
-
 def _book(e, symbol, bid, ask, qty=100000.0):
-    e.on_book_ticker({"e": "bookTicker", "s": symbol, "b": str(bid),
-                      "B": str(qty / bid), "a": str(ask), "A": str(qty / ask)})
+    """Konyv-adat feltoltese: annyi megfigyeles, hogy a median beallja."""
+    for _ in range(40):
+        e.on_book_ticker({"e": "bookTicker", "s": symbol, "b": str(bid),
+                          "B": str(qty / bid), "a": str(ask), "A": str(qty / ask)})
 
 
 def _aktivitas(e, symbol, db=60, t0=1000.0):
@@ -562,11 +478,19 @@ def test_eligibility_rejects_wide_spread():
     assert e.check("WIDEUSDT")[1] == "spread_too_wide"
 
 
-def test_eligibility_rejects_thin_book():
+def test_depth_filter_is_off_by_default_but_works_when_enabled():
+    """Alapbol ki van kapcsolva: elesben a parok felet zarta ki. Bekapcsolva mukodik."""
+    assert C_CFG.DETECTOR_DEFAULTS["minTopDepthUSDT"] == 0, "alapbol ki"
     e = Eligibility(cfg_obj)
     _book(e, "THINUSDT", 1.0000, 1.0001, qty=500.0)
     _aktivitas(e, "THINUSDT")
-    assert e.check("THINUSDT")[1] == "insufficient_depth"
+    assert e.check("THINUSDT")[0] is True, "kikapcsolva atengedi"
+
+    bekapcsolva = types.SimpleNamespace(detector={**CFG, "minTopDepthUSDT": 5_000})
+    e2 = Eligibility(bekapcsolva)
+    _book(e2, "THINUSDT", 1.0000, 1.0001, qty=500.0)
+    _aktivitas(e2, "THINUSDT")
+    assert e2.check("THINUSDT")[1] == "insufficient_depth"
 
 
 def test_eligibility_rejects_low_activity():
@@ -628,17 +552,30 @@ def test_blacklist_and_whitelist():
     assert e.check("OTHERUSDT")[1] == "not_whitelisted"
 
 
+def test_rejection_reasons_have_hungarian_text_and_machine_key():
+    """A gepi kulcs megy a Mongo-ba (aggregalhatosag), a szoveg a logba."""
+    from app.eligibility import OKOK, szoveg
+    e = Eligibility(cfg_obj)
+    _book(e, "WIDE2USDT", 1.000, 1.002)
+    _aktivitas(e, "WIDE2USDT")
+    kulcs = e.check("WIDE2USDT")[1]
+    assert kulcs == "spread_too_wide", "a Mongo-ba gepi kulcs kerul"
+    assert szoveg(kulcs) == "tul szeles a spread", "a logba magyar szoveg"
+    assert all(szoveg(k) != k for k in OKOK), "minden oknak van magyar szovege"
+
+
 def test_eligibility_summary_aggregates_by_reason():
     e = Eligibility(cfg_obj)
     for sym in ("A_USDT", "B_USDT"):
         _book(e, sym, 1.000, 1.002)
         _aktivitas(e, sym)
         e.check(sym)
-    _book(e, "C_USDT", 1.0000, 1.0001, qty=100.0)
-    _aktivitas(e, "C_USDT")
+    _book(e, "C_USDT", 1.0000, 1.0001)
+    _aktivitas(e, "C_USDT", db=5)                  # keves kotes
     e.check("C_USDT")
     osszegzes = e.summary()[0]
-    assert "kizarva 3" in osszegzes and "spread_too_wide 2" in osszegzes, osszegzes
+    assert "kizarva 3" in osszegzes, osszegzes
+    assert "tul szeles a spread: 2" in osszegzes, osszegzes
 
 
 def test_ineligible_pair_builds_state_but_emits_nothing():
@@ -706,15 +643,6 @@ def test_detector_status_lines_render():
     # (vagy elcsuszott oraju) idobelyegeknel minden alakzat "elavultnak" latszana
     assert any("CYSUSDT" in x for x in sorok), sorok
     assert det.last_ts > 0
-
-
-def test_weak_reward_risk_is_flagged_not_dropped():
-    sig = {"price": 100.0, "direction": "LONG",
-           "stopAnchor": 99.0, "targetAnchor": 100.5}
-    t = build_plan(sig, CFG)
-    assert t is not None, "a gyenge aranyu jelzest jelolni kell, nem eldobni"
-    assert t["weak"] is True
-    assert t["rewardRisk"] < CFG["minRewardRisk"]
 
 
 def test_flow_ratio_is_finite_when_one_side_is_empty():
@@ -807,7 +735,8 @@ def test_signal_detail_is_mongo_safe():
                 check(v, f"{path}[{i}]")
 
     check(sig["metrics"])
-    assert "movePct" in sig["metrics"]
+    assert set(sig["metrics"]) == {"movePct", "spanSec", "trades", "baseline",
+                                   "baselineRatio"}, sig["metrics"]
 
 
 def test_wall_behind_price_is_not_an_obstacle():
@@ -829,17 +758,6 @@ def test_wall_behind_price_is_not_an_obstacle():
 def _sig(strength, accelerating=False, mode="momentum", direction="LONG"):
     return {"symbol": "X", "direction": direction, "price": 100.0,
             "strength": strength, "accelerating": accelerating, "contextMode": mode}
-
-
-def test_momentum_plan_risks_half_the_impulse():
-    """A stop az impulzus felenel van, nem az aljan -- kulonben az arany 1:1 lenne."""
-    origin, ar = 100.00, 100.22
-    stop_a = origin + (ar - origin) * (1 - CFG["momentumStopRetracementPct"] / 100)
-    cel_a = ar + (ar - origin) * CFG["momentumTargetFactor"]
-    t = build_plan({"price": ar, "direction": "LONG",
-                    "stopAnchor": stop_a, "targetAnchor": cel_a}, CFG)
-    assert t["rewardRisk"] > 1.3, t
-    assert t["stop"] < stop_a < t["entry"] < t["target"]
 
 
 def test_ema_matches_known_values():

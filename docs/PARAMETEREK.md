@@ -40,27 +40,21 @@ Binance WebSocket  (aggTrade  +  !bookTicker)
         ↓              ha nem felel meg, a detektorokig el sem jut
   DetectorManager  →  PumpDumpDetector,  ReversalDetector      → CANDIDATE
         ↓
-  VALIDÁCIÓ            spread vs mozgás, fal az útban, hozam/kockázat
-        ↓
-   SIGNAL   vagy   REJECTED       (mindkettő okkal, mindkettő MongoDB-be)
+   SIGNAL   (order book és EMA információként hozzáfűzve)
         ↓
   MongoDB → Telegram → [TradingService]
 ```
 
-Minden elutasításnak gépi neve van, hogy aggregálható legyen:
+Egy pár akkor esik ki, ha nem kereskedhető. Az elutasításnak **gépi neve** van (ez megy
+a MongoDB-be, hogy aggregálható legyen) és **magyar szövege** (ez megy a logba):
 
 | ok | mit jelent |
 |---|---|
 | `blacklisted` / `not_whitelisted` | kézi kizárás |
 | `no_book_data` | még nem láttuk a pár order book tetejét |
 | `spread_too_wide` | a spread szélesebb, mint `maxSpreadPct` |
-| `insufficient_depth` | a legjobb szinten kevesebb pénz van, mint `minTopDepthUSDT` |
+| `insufficient_depth` | a legjobb áron kevesebb pénz áll, mint `minTopDepthUSDT`. **Alapból ki van kapcsolva** (`0`), mert a párok felét kizárta — a mért érték a `STATUS` sorban látszik, onnan állítható be, ha kell |
 | `low_activity` | kevesebb kötés percenként, mint `minTradesPerMinute` |
-| `wall_immediately_ahead` | fal a mozgás irányában `wallBlockDistancePct`-en belül |
-| `poor_reward_risk` | a hozam/kockázat `minRewardRisk` alatt |
-| `no_usable_plan` | nem számítható értelmes belépő/cél/stop |
-| `target_below_costs` | a cél a díj és a spread levonása után nem hoz eleget |
-| `contradicts_recent_signal` | ellentétes irányú jelzés ment ki nemrég ugyanarra a párra |
 
 ```js
 // mi miert esett ki?
@@ -97,7 +91,7 @@ kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 | kulcs | alap | mit csinál | ha növeled |
 |---|---|---|---|
 | `maxSpreadPct` | 0.05 | ennél szélesebb spreadnél a be- és kiszállás felemészti a mozgást | több pár fér be |
-| `minTopDepthUSDT` | 1 000 | a legjobb szinten ennyi pénz legyen, a **friss megfigyelések mediánján** mérve. Ez egyetlen árszint, nem a teljes könyv, és másodpercenként kiürül — a pillanatnyi érték 11 és 30 000 USDT között ugrál, ezért median-alapú és alacsony. A STATUS percentilis sorából hangolható |
+| `minTopDepthUSDT` | 0 (ki) | a legjobb szinten ennyi pénz legyen, a **friss megfigyelések mediánján** mérve. Ez egyetlen árszint, nem a teljes könyv, és másodpercenként kiürül — a pillanatnyi érték 11 és 30 000 USDT között ugrál, ezért median-alapú és alacsony. A STATUS percentilis sorából hangolható |
 | `minTradesPerMinute` | 30 | ritka kereskedésnél nincs mit megfogni | csak az aktív párok |
 
 ### Pump/dump
@@ -109,51 +103,12 @@ kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 | `baselineMinutes` | 5 | ennyi perc visszatekintéssel épül a „normál" | stabilabb, lassabban alkalmazkodó normál |
 | `baselineRatio` | 4.0 | **a fő kapcsoló:** a mozgás a normál ennyiszerese legyen | kevesebb, de rendkívülibb jelzés |
 | `minMovePct` | 0.15 | abszolút padló, hogy halott páron se jelezzünk | |
-| `minConsistency` | 0.70 | a lépések ekkora hányada mutasson egy irányba | csak a tiszta mozgások |
-| `minVolumeFactor` | 1.0 | az ablak forgalma a pár átlagának ennyiszerese | valódi pénz kell mögé |
 | `symbolCooldownSec` | 60 | páronként ennyi szünet | |
 
 A mozgást nem az első és utolsó ár különbsége adja, hanem az ablakra **illesztett egyenes
 elmozdulása** — így egyetlen kiugró print nem tud jelzést csinálni.
 
-### Validáció
 
-| kulcs | alap | mit csinál |
-|---|---|---|
-| `minMoveToSpreadRatio` | 3.0 | a mozgás legyen legalább ennyiszer a spread |
-| `wallBlockDistancePct` | 0.15 | ennél közelebbi fal a mozgás irányában elutasít |
-| `minRewardRisk` | 1.5 | ez alatt nem éri meg felvenni |
-| `takerFeePct` | 0.05 | a Binance USDⓈ-M futures taker díj **oldalanként** (VIP szinttől függ — írd át, ha nálad más) |
-| `minNetTargetPct` | 0.10 | a célnak ennyivel kell túllőnie a költségen (2× taker díj + spread). Enélkül egy 0.15%-os cél tökéletes kimenetel esetén is nullát hoz |
-| `oppositeCooldownSec` | 120 | ennyi ideig nem adunk **ellentétes irányú** jelzést ugyanarra a párra |
-| `stopBufferOfDistancePct` | 10 | a stop ennyivel kerül a horgony mögé, a belépő–horgony **távolság arányában** |
-| `momentumStopRetracementPct` | 50 | lendületnél a stop az impulzus felénél: ha a mozgás felét visszaadja, a tézis halott |
-| `momentumTargetFactor` | 1.0 | a cél azonos méretű folytatás (mért mozgás) |
-
-### Információ, nem kapu
-
-`orderBookLevels` (20), `wallSensitivity` (3.0), `wallMaxDistancePct` (1.5) — a wall
-detektáláshoz. `emaFast`/`emaSlow`/`emaInterval` (9/21/1m) — az EMA **csak a Telegram
-üzenetben jelenik meg**, semmit nem kapuz.
-
-### Eredménymérés és megjelenítés
-
-| kulcs | alap | mit csinál |
-|---|---|---|
-| `outcomeEnabled` | `false` | **alapból kikapcsolva** — első körben nem mérünk |
-| `outcomeMinutes` | 5 | ennyi ideig méri az árat a jelzés után (ha bekapcsolod) |
-| `outcomeTargetPct` / `outcomeStopPct` | 0.3 / 0.3 | mikor számít jónak, illetve rossznak |
-| `statusIntervalSec` | 60 | ilyen sűrűn egy rövid `STATUS` sor |
-| `signalWindowMinutes` | 10 | ekkora visszatekintéssel számolja, hányadik a jelzés |
-| `telegramEnabled` | `true` | **minden `SIGNAL` azonnal megy** — nincs más kapu előtte |
-
-Az eredménymérés **alapból ki van kapcsolva**. Nem backteszt (a jelzés *után* nézi az
-árat), de első körben csak zajt tenne a logba. Bekapcsolva 10 percenként egy `EREDMENYEK`
-tábla mutatja, merre ment az ár a jelzések után — de akkor sem kapuz semmit:
-
-```js
-db.config.updateOne({_id:"detector"}, {$set:{outcomeEnabled:true}})
-```
 
 ---
 
