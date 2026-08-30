@@ -1,10 +1,14 @@
-"""SignalService -- a detektorok jelzese utani lanc osszefogasa.
+"""SignalService -- a CANDIDATE-bol SIGNAL vagy REJECTED lesz.
 
-signal -> OrderBookAnalyzer + TAAnalyzer (parhuzamosan) -> score -> MongoDB
-       -> Telegram -> opcionalisan TradingService
+A detektor csak annyit mond: "ez a mozgas rendkivuli ezen a paron". Itt dol el,
+hogy kereskedheto-e:
 
-Detektor-fuggetlen: barmelyik detektor jelzese ugyanezen az uton megy vegig.
-A detektor-specifikus resz a signal "detail" es "lines" mezojeben utazik.
+    order book akadaly   -> wall_immediately_ahead
+    spread a mozgashoz   -> spread_too_wide
+    hozam / kockazat     -> poor_reward_risk
+
+Nincs 0-100 score. Minden dontes mogott egy megnevezett ok es egy mert szam all,
+es mindketto Mongo-ba kerul -- igy utolag aggregalhato, mi miert esett ki.
 """
 import time
 import asyncio
@@ -12,7 +16,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from . import orderbook, ta, scoring, telegram, events, binance_rest, outcome, plan
+from . import orderbook, ta, telegram, events, binance_rest, outcome, plan
 from .links import binance_url
 
 log = logging.getLogger("signal")
@@ -24,110 +28,138 @@ class SignalService:
         self.db = db
         self.notifier = notifier
         self.trader = trader
-        self.recent = deque()      # (ts, symbol, direction) a friss jelzesekrol
-        self.hit_rates = {}        # (detektor, score sav) -> (darab, talalati arany)
+        self.recent = deque()          # (ts, detektor, symbol, irany)
+        self.signals_today = 0
+        self.rejected_today = 0
 
     async def handle_trigger(self, raw):
-        """Egy detektor jelzese. Sose dob kivetelt tovabb a stream fele."""
+        """Egy detektor CANDIDATE-je. Sose dob kivetelt tovabb a stream fele."""
         try:
             await self._process(raw)
         except Exception as e:
-            log.exception("[%s] signal feldolgozas hiba: %s", raw.get("symbol"), e)
+            log.exception("[%s] feldolgozas hiba: %s", raw.get("symbol"), e)
+
+    # ------------------------------------------------------------------ validacio
 
     async def _process(self, raw):
         symbol, direction = raw["symbol"], raw["direction"]
         detector = raw["detector"]
-        # a kozos beallitasok (order book, EMA, jelzes-ablak) a detector dokumentumban
-        # vannak, a kuszob viszont a jelzest ado detektor sajat configjabol jon
-        shared = self.cfg.detector
-        own = getattr(self.cfg, raw["configKey"], shared)
-        min_score = own.get("minSignalScore", shared["minSignalScore"])
+        c = self.cfg.detector
 
         ob, ta_result = await asyncio.gather(
-            orderbook.analyze(symbol, raw["price"], direction, shared),
-            ta.analyze(symbol, raw["price"], shared),
+            orderbook.analyze(symbol, raw["price"], direction, c),
+            ta.analyze(symbol, raw["price"], c),
         )
-        # Ha a mozgas nem nagyobb erdemben a spreadnel, akkor nem mozgas tortent,
-        # csak valaki atlepte a spreadet -- ezt nem lehet lekereskedni.
-        elutasitas = self._spread_check(raw, ob, shared)
-        if elutasitas:
-            log.info("[%s] %s eldobva: %s", symbol, detector, elutasitas)
-            events.add(f"{symbol:<14} {detector} eldobva -- {elutasitas}")
+        terv = plan.build(raw, c)
+
+        ok = self._validate(raw, ob, terv, c)
+        if ok:
+            await self._save_rejected(raw, ok, ob, terv, ta_result)
             return
 
-        terv = plan.build(raw, shared)
-        score, reason, parts = scoring.score_signal(raw, ob, ta_result, shared, terv)
+        await self._emit(raw, ob, ta_result, terv, c)
+
+    @staticmethod
+    def _validate(raw, ob, terv, c):
+        """None, ha rendben; kulonben a gepi elutasitasi ok."""
+        # a mozgas legyen nagyobb, mint amennyibe a be- es kiszallas kerul
+        if ob and ob.get("spreadPct") and raw.get("movePct") is not None:
+            if raw["movePct"] < c["minMoveToSpreadRatio"] * ob["spreadPct"]:
+                return "spread_too_wide"
+
+        # kozvetlenul a mozgas iranyaban allo fal elrontja a scalpet
+        if ob:
+            akadaly = ob.get("obstacleAhead")
+            if akadaly and akadaly["distancePct"] <= c["wallBlockDistancePct"]:
+                return "wall_immediately_ahead"
+
+        if terv is None:
+            return "no_usable_plan"
+        if terv["rewardRisk"] < c["minRewardRisk"]:
+            return "poor_reward_risk"
+        return None
+
+    # ------------------------------------------------------------------ kimenet
+
+    async def _emit(self, raw, ob, ta_result, terv, c):
+        symbol, direction = raw["symbol"], raw["direction"]
+        detector = raw["detector"]
         recent = self._count_recent(detector, symbol, direction,
-                                    shared["signalWindowMinutes"])
+                                    c["signalWindowMinutes"])
+
+        reasons = list(raw["reasons"])
+        metrics = dict(raw["metrics"])
+        if ob:
+            if ob.get("spreadPct") is not None:
+                reasons.append(f"spread {ob['spreadPct']:.3f}%")
+                metrics["spreadPct"] = ob["spreadPct"]
+            reasons.append("nincs fal a mozgas iranyaban" if not ob.get("obstacleAhead")
+                           else f"fal {ob['obstacleAhead']['distancePct']:.2f}%-ra")
+        reasons.append(f"hozam/kockazat {terv['rewardRisk']}:1")
+        metrics["rewardRisk"] = terv["rewardRisk"]
 
         signal = {
             "timestamp": datetime.now(timezone.utc),
+            "status": "signal",
             "detector": detector,
             "symbol": symbol,
             "direction": direction,
             "price": raw["price"],
             "url": binance_url(symbol),
             "quoteVolume24h": binance_rest.SYMBOL_VOLUME.get(symbol),
-            "strength": round(raw["strength"], 3),
+            "reasons": reasons,
+            "metrics": metrics,
             "plan": terv,
-            "detail": raw["detail"],          # detektor-specifikus bizonyitek
-            "lines": raw["lines"],
             "ema": ta_result,
             "orderBook": _without_snapshot(ob),
-            "score": score,
-            "reason": reason,
             "recent": recent,
             "telegram": {"sent": False, "error": None},
             "trade": {"executed": False, "orderId": None, "error": None},
         }
 
-        if score < min_score:
-            log.info("[%s] %s SCORE %d/100 -- kuszob (%d) alatt, nem kuldjuk | %s",
-                     symbol, detector, score, min_score, reason)
-            events.add(f"{symbol:<14} {detector} score {score:>3}/100 -- "
-                       f"kuszob ({min_score}) alatt, nem kuldtuk")
-            await self._save(signal, raw, ob, ta_result, parts)
-            return
+        self.signals_today += 1
+        log.info("SIGNAL     %-14s %-5s %s  rr %.1f:1  %s",
+                 symbol, direction, raw["reasons"][0] if raw["reasons"] else "",
+                 terv["rewardRisk"], binance_url(symbol))
+        events.add(f"{symbol:<14} SIGNAL {direction:<5} {detector}  "
+                   f"rr {terv['rewardRisk']}:1")
 
-        if terv:
-            log.warning("[%s] %s SCORE %d/100 | belepo %.8g  cel %.8g (+%.2f%%)  "
-                        "stop %.8g (-%.2f%%)  hozam/kockazat %.1f:1%s | %s | %s",
-                        symbol, detector, score, terv["entry"], terv["target"],
-                        terv["targetPct"], terv["stop"], terv["stopPct"],
-                        terv["rewardRisk"], "  GYENGE" if terv["weak"] else "", reason,
-                        binance_url(symbol))
-        else:
-            log.warning("[%s] %s SCORE %d/100 | %s | %s",
-                        symbol, detector, score, reason, binance_url(symbol))
-
-        kuldjuk, ok = self._telegram_gate(detector, score, own)
-        signal["shadow"] = None if kuldjuk else ok
         signal["trade"] = await self.trader.maybe_open(signal)
-        if kuldjuk:
-            signal["telegram"] = await self.notifier.send(
-                symbol, telegram.format_signal(signal), detector)
-        else:
-            log.info("[%s] SHADOW: %s", symbol, ok)
-            signal["telegram"] = {"sent": False, "error": "shadow"}
-        await self._save(signal, raw, ob, ta_result, parts)
+        # minden SIGNAL azonnal megy Telegramra -- nincs kapu elotte
+        signal["telegram"] = await self.notifier.send(
+            symbol, telegram.format_signal(signal), detector)
+        await self._save(signal, raw, ob, ta_result)
 
-        kimenet = "TELEGRAM ELKULDVE" if signal["telegram"]["sent"] else \
-                  f"Telegram NEM ment ki ({signal['telegram']['error']})"
-        events.add(f"{symbol:<14} {detector} score {score:>3}/100 -- {kimenet}  "
-                   f"({recent['sameDirection']}. {direction} "
-                   f"{recent['windowMinutes']} percen belul)")
+    async def _save_rejected(self, raw, ok, ob, terv, ta_result):
+        self.rejected_today += 1
+        log.info("REJECTED   %-14s %-5s %s", raw["symbol"], raw["direction"], ok)
+        events.add(f"{raw['symbol']:<14} REJECTED {raw['direction']:<5} {ok}")
+        metrics = dict(raw["metrics"])
+        if ob and ob.get("spreadPct") is not None:
+            metrics["spreadPct"] = ob["spreadPct"]
+        if terv:
+            metrics["rewardRisk"] = terv["rewardRisk"]
+        try:
+            await self.db.signals.insert_one({
+                "timestamp": datetime.now(timezone.utc),
+                "status": "rejected",
+                "detector": raw["detector"],
+                "symbol": raw["symbol"],
+                "direction": raw["direction"],
+                "price": raw["price"],
+                "reasons": [ok],
+                "metrics": metrics,
+            })
+        except Exception as e:
+            log.warning("[%s] elutasitas mentese sikertelen: %s", raw["symbol"], e)
 
-    async def _save(self, signal, raw, ob, ta_result, parts):
+    # ------------------------------------------------------------------ mentes
+
+    async def _save(self, signal, raw, ob, ta_result):
         symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
-        # minden mentett jelzest lemerunk -- a kuszob alattiakat is, kulonben nem
-        # derulne ki, hogy jo helyen van-e a kuszob
         asyncio.create_task(outcome.track(self.db, result.inserted_id, signal,
                                           self.cfg.detector))
-
-        # A snapshot mentese kulon van kezelve: ha ez elszall, a signal akkor is
-        # megmarad, es hangosan megmondjuk, mi a baj -- nem tunik el egy altalanos
-        # "feldolgozas hiba" sorban.
         try:
             snap = await self.db.snapshots.insert_one({
                 "timestamp": signal["timestamp"],
@@ -138,96 +170,15 @@ class SignalService:
                 "priceHistory": [[ts, p] for ts, p in raw["history"]],
                 "orderBook": ob["snapshot"] if ob else None,
                 "ema": ta_result,
-                "scoreInputs": parts,
+                "metrics": signal["metrics"],
             })
-            log.info("[%s] elmentve: signals %s + market_snapshots %s",
-                     symbol, result.inserted_id, snap.inserted_id)
+            log.debug("[%s] elmentve: signals %s + market_snapshots %s",
+                      symbol, result.inserted_id, snap.inserted_id)
         except Exception as e:
             log.error("[%s] a market_snapshots mentese NEM sikerult: %s: %s",
                       symbol, type(e).__name__, e)
-            events.add(f"{symbol:<14} market_snapshots mentes HIBA: {e}")
-
-
-    def _telegram_gate(self, detector, score, own):
-        """Arnyek mod: csak bizonyitott score savokra kuldunk.
-
-        Amig egy detektor adott score savjahoz nincs eleg lemert eredmeny, vagy a
-        merteknek nem eleg jo a talalati aranya, a jelzes mentodik es logolodik,
-        de nem megy Telegramra.
-        """
-        mod = own.get("telegramMode", "auto")
-        if mod == "always":
-            return True, None
-        if mod == "never":
-            return False, "telegramMode: never"
-
-        c = self.cfg.detector
-        sav = int(score // 10 * 10)
-        darab, arany = self.hit_rates.get((detector, sav), (0, 0.0))
-        kell_db, kell_arany = c["shadowMinSamples"], c["shadowMinHitRate"]
-        if darab < kell_db:
-            return False, (f"{detector} {sav}-{sav + 9}: meg csak {darab} lemert jelzes "
-                           f"(kell {kell_db}) -- eloszor merunk, aztan kuldunk")
-        if arany < kell_arany:
-            return False, (f"{detector} {sav}-{sav + 9}: {darab} jelzes, "
-                           f"{arany:.0%} talalat (kell {kell_arany:.0%}) -- nem kuldjuk")
-        return True, None
-
-    async def refresh_hit_rates(self, interval=300):
-        """Idonkent frissiti az arnyek mod donteshez hasznalt merteket."""
-        while True:
-            try:
-                self.hit_rates = await outcome.hit_rates(self.db)
-            except Exception as e:
-                log.warning("talalati aranyok frissitese sikertelen: %s", e)
-            await asyncio.sleep(interval)
-
-    def telegram_status_lines(self):
-        """Miert megy (vagy nem megy) Telegram uzenet -- ez ne legyen rejtely."""
-        c = self.cfg.detector
-        sorok = []
-        for nev, kulcs in (("pump/dump", "detector"), ("reversal", "reversal")):
-            own = getattr(self.cfg, kulcs, c)
-            mod = own.get("telegramMode", "auto")
-            if mod == "always":
-                sorok.append(f"    {nev:<12} MINDEN jelzest kuld (telegramMode: always)")
-                continue
-            if mod == "never":
-                sorok.append(f"    {nev:<12} nem kuld semmit (telegramMode: never)")
-                continue
-            det = "pump_dump" if kulcs == "detector" else "reversal"
-            savok = {sav: v for (d, sav), v in self.hit_rates.items() if d == det}
-            if not savok:
-                sorok.append(f"    {nev:<12} meg egy lemert jelzes sincs -- "
-                             f"a meres {c['outcomeMinutes']} perccel a jelzes utan zarul")
-                continue
-            reszek = []
-            for sav in sorted(savok):
-                darab, arany = savok[sav]
-                elo = (darab >= c["shadowMinSamples"] and arany >= c["shadowMinHitRate"])
-                reszek.append(f"{sav}-{sav + 9}: {darab}db {arany:.0%}"
-                              f"{' ELO' if elo else ''}")
-            sorok.append(f"    {nev:<12} " + "   ".join(reszek))
-        return [f"  TELEGRAM   arnyek mod: {c['shadowMinSamples']} lemert jelzes es "
-                f"{c['shadowMinHitRate']:.0%} talalat kell egy score savhoz"] + sorok
-
-    @staticmethod
-    def _spread_check(raw, ob, cfg):
-        """None, ha rendben; kulonben az elutasitas oka szovegesen."""
-        move = raw.get("movePct")
-        if ob is None or move is None:
-            return None
-        spread = ob.get("spreadPct")
-        if not spread:
-            return None
-        kell = cfg["minMoveToSpreadRatio"] * spread
-        if move < kell:
-            return (f"a mozgas ({move:.3f}%) nem eri el a spread "
-                    f"{cfg['minMoveToSpreadRatio']:.0f}-szereset ({kell:.3f}%)")
-        return None
 
     def _count_recent(self, detector, symbol, direction, window_minutes):
-        """Hanyadik ez a jelzes ettol a detektortol, ebben az iranyban, az ablakban."""
         now = time.time()
         cutoff = now - window_minutes * 60
         while self.recent and self.recent[0][0] < cutoff:
@@ -237,13 +188,13 @@ class SignalService:
             "windowMinutes": window_minutes,
             "sameDirection": sum(1 for _, det, s, d in self.recent
                                  if det == detector and s == symbol and d == direction),
-            "marketLong": sum(1 for _, det, _, d in self.recent
-                              if det == detector and d == "LONG"),
-            "marketShort": sum(1 for _, det, _, d in self.recent
-                               if det == detector and d == "SHORT"),
+            "detectorLong": sum(1 for _, det, _, d in self.recent
+                                if det == detector and d == "LONG"),
+            "detectorShort": sum(1 for _, det, _, d in self.recent
+                                 if det == detector and d == "SHORT"),
         }
 
 
 def _without_snapshot(ob):
-    """A nyers 20 szintes konyv a snapshots collectionbe megy, a signalba nem kell."""
+    """A nyers konyv a snapshots collectionbe megy, a signalba nem kell."""
     return {k: v for k, v in ob.items() if k != "snapshot"} if ob else None

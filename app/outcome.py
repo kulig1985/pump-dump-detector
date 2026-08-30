@@ -74,21 +74,6 @@ async def _track(db, signal_id, signal, cfg):
              symbol, signal["detector"], perc, jel, zaras, mfe, mae)
 
 
-async def hit_rates(db):
-    """{(detektor, score sav also hatara): (darab, talalati arany)}"""
-    sorok = await db.signals.aggregate([
-        {"$match": {"outcome": {"$exists": True}}},
-        {"$group": {
-            "_id": {"detector": "$detector",
-                    "sav": {"$multiply": [{"$floor": {"$divide": ["$score", 10]}}, 10]}},
-            "db": {"$sum": 1},
-            "jo": {"$sum": {"$cond": ["$outcome.good", 1, 0]}},
-        }},
-    ]).to_list(length=100)
-    return {(r["_id"]["detector"], int(r["_id"]["sav"])): (r["db"], r["jo"] / r["db"])
-            for r in sorok if r["db"]}
-
-
 async def summary_loop(db, cfg, interval=600):
     """Idonkent osszesitest ir a logba: tenylegesen mennyi jott be."""
     while True:
@@ -100,19 +85,18 @@ async def summary_loop(db, cfg, interval=600):
 
 
 async def log_summary(db, cfg):
-    """Detektoronkent es score savonkent: hany jelzes, mennyi lett jo."""
+    """Detektoronkent: hany jelzes, mennyi lett jo."""
     sorok = await db.signals.aggregate([
-        {"$match": {"outcome": {"$exists": True}}},
+        {"$match": {"status": "signal", "outcome": {"$exists": True}}},
         {"$group": {
-            "_id": {"detector": "$detector",
-                    "sav": {"$multiply": [{"$floor": {"$divide": ["$score", 10]}}, 10]}},
+            "_id": "$detector",
             "db": {"$sum": 1},
             "jo": {"$sum": {"$cond": ["$outcome.good", 1, 0]}},
             "atlagZaras": {"$avg": "$outcome.closePct"},
             "atlagLegjobb": {"$avg": "$outcome.mfePct"},
             "atlagLegrosszabb": {"$avg": "$outcome.maePct"},
         }},
-        {"$sort": {"_id.detector": 1, "_id.sav": 1}},
+        {"$sort": {"_id": 1}},
     ]).to_list(length=100)
 
     if not sorok:
@@ -120,19 +104,17 @@ async def log_summary(db, cfg):
                  "(%d perccel a jelzes utan zarul le egy meres)", cfg["outcomeMinutes"])
         return
 
-    out = ["", "  " + "─" * 92,
+    out = ["", "  " + "─" * 80,
            "  EREDMENYEK -- mi tortent a jelzesek utan "
            f"{cfg['outcomeMinutes']} percben "
            f"(cel +{cfg['outcomeTargetPct']}%, stop -{cfg['outcomeStopPct']}%)",
-           "  " + "─" * 92,
-           f"  {'detektor':<12}{'score sav':>11}{'darab':>8}{'talalat':>10}"
+           "  " + "─" * 80,
+           f"  {'detektor':<12}{'darab':>8}{'talalat':>10}"
            f"{'atlag zaras':>14}{'atlag legjobb':>16}{'atlag legrosszabb':>20}"]
     for r in sorok:
-        sav_also = int(r["_id"]["sav"])
-        sav = f"{sav_also}-{sav_also + 9}"
         talalat = f"{r['jo'] / r['db']:.0%}"
-        out.append(f"  {str(r['_id']['detector']):<12}{sav:>11}{r['db']:>8}{talalat:>10}"
+        out.append(f"  {str(r['_id']):<12}{r['db']:>8}{talalat:>10}"
                    f"{r['atlagZaras']:>13.2f}%{r['atlagLegjobb']:>15.2f}%"
                    f"{r['atlagLegrosszabb']:>19.2f}%")
-    out.append("  " + "─" * 92)
+    out.append("  " + "─" * 80)
     log.info("\n".join(out))

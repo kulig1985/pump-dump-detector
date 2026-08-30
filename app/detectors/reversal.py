@@ -18,6 +18,7 @@ from .. import events, binance_rest
 from ..fmt import pad, price as fprice, money
 from ..links import binance_url
 from .base import Detector, make_signal
+from .baseline import Baseline
 
 log = logging.getLogger("reversal")
 
@@ -48,8 +49,9 @@ class ReversalDetector(Detector):
     name = "reversal"
     config_key = "reversal"
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, baseline=None):
         self.cfg = cfg
+        self.baseline = baseline or Baseline(cfg)
         self.trades = defaultdict(deque)   # symbol -> deque[Trade]
         self.setups = {}                   # symbol -> Setup
         self.last_signal = {}              # symbol -> ts
@@ -120,8 +122,8 @@ class ReversalDetector(Detector):
         symbol = trade.symbol
         setup = self.setups.get(symbol)
 
-        # elavult setup eldobasa
-        if setup and trade.ts - setup.extreme_ts > c["maxSetupAgeSec"]:
+        # elavult setup eldobasa (ugyanaz a hatarido, mint a jelzesnel)
+        if setup and trade.ts - setup.extreme_ts > c["maxExtremeAgeSec"]:
             setup = None
             self.setups.pop(symbol, None)
 
@@ -167,12 +169,19 @@ class ReversalDetector(Detector):
                 setup.micro = setup.peak
         return setup
 
-    @staticmethod
-    def _find_setup(window, c):
-        """1-2. lepes: volt-e erdemi lemozgas (vagy felmozgas) egy szelsoertekig."""
+    def _find_setup(self, window, c):
+        """1-2. lepes: volt-e erdemi lemozgas (vagy felmozgas) egy szelsoertekig.
+
+        "Erdemi" = a par sajat rovid tavu normaljanak baselineRatio-szorosa, es
+        legalabb minMovePct. Fix kuszob itt is felrevinne: egy meme coinon a
+        0.4%-os mozgas semmi, a BTC-n sok.
+        """
         lo = min(window, key=lambda t: t.price)
         hi = max(window, key=lambda t: t.price)
         min_move = c["minMovePct"]
+        alap = self.baseline.value(window[-1].symbol)
+        if alap:
+            min_move = max(min_move, alap * c["baselineRatio"])
 
         # LONG jelolt: a minimum a maximum UTAN keletkezett -> lefele mozgas
         if lo.ts > hi.ts and lo.price > 0:
@@ -209,17 +218,12 @@ class ReversalDetector(Detector):
             return None
 
         total = buy + sell
-        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol) if symbol else None
-        elvart = (vol24 / 86400.0 * c["flowWindowSeconds"] * c["minFlowVolumeFactor"]
-                  if vol24 else 0.0)
-        if total < elvart:
-            return None
         buy_dominant = buy >= sell
         strong, weak = (buy, sell) if buy_dominant else (sell, buy)
         # a masik oldal lehet pontosan nulla -- a vegtelen aranyt korlatozzuk,
         # kulonben inf kerulne a Mongo-ba es a score szamitasba
         ratio = min(strong / weak, MAX_FLOW_RATIO) if weak > 0 else MAX_FLOW_RATIO
-        return {"buy": buy, "sell": sell, "total": total, "expected": elvart,
+        return {"buy": buy, "sell": sell, "total": total,
                 "ratio": ratio, "buyDominant": buy_dominant, "trades": count}
 
     # ------------------------------------------------------------------ signal
@@ -233,62 +237,41 @@ class ReversalDetector(Detector):
 
         fordulo = "FORDULO FELFELE -> LONG" if direction == "LONG" else \
                   "FORDULO LEFELE -> SHORT"
-        log.warning("[%s] %s | %s %.8g (%.1f mp-e) | mozgas %.2f%% | "
-                    "visszapattanas %.2f%% (a mozgas %.0f%%-a) | flow %.1fx | %s",
-                    trade.symbol, fordulo, szint, setup.extreme, kor,
-                    setup.move_pct, bounce_pct, retrace, flow["ratio"],
-                    binance_url(trade.symbol))
-        events.add(f"{trade.symbol:<14} {fordulo:<24} "
-                   f"{szint} {fprice(setup.extreme)}  mozgas {setup.move_pct:.2f}%  "
-                   f"flow {flow['ratio']:.1f}x")
+        log.info("CANDIDATE  %-14s %-5s %s  move %.2f%%  visszafordulas %.0f%%  flow %.1fx",
+                 trade.symbol, direction, fordulo, setup.move_pct, retrace, flow["ratio"])
+        events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} {fordulo}  "
+                   f"mozgas {setup.move_pct:.2f}%  flow {flow['ratio']:.1f}x")
 
         return make_signal(
             self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
-            strength=min(setup.move_pct / c["minMovePct"],
-                         flow["ratio"] / c["minFlowRatio"]),
-            # eros attores: a mozgas kettoszeres attores-kuszobet is meghaladja
-            accelerating=(abs(trade.price - setup.micro)
-                          >= 2 * abs(setup.origin - setup.extreme)
-                          * c["breakOfMovePct"] / 100.0),
-            context_mode="reversal",
             move_pct=bounce_pct + break_pct,
-            # a stop a szelsoertek tuloldalara kerul, a cel az elozo mozgas
-            # targetRetracementPct szazalekanal van
-            stop_anchor=setup.extreme,
-            target_anchor=(setup.extreme + (setup.origin - setup.extreme)
-                           * c["targetRetracementPct"] / 100.0),
-            detail={
+            reasons=[
+                f"{'eses' if direction == 'LONG' else 'emelkedes'} "
+                f"{setup.move_pct:.2f}% elotte",
+                f"{szint} {fprice(setup.extreme)} ({kor:.1f}s), "
+                f"visszafordulas {bounce_pct:.2f}% (a mozgas {retrace:.0f}%-a)",
+                f"{micro_nev} attores {fprice(setup.micro)} ({break_pct:+.2f}%)",
+                f"kotesaramlas {flow['ratio']:.1f}x {oldal} "
+                f"({c['flowWindowSeconds']}s)",
+            ],
+            metrics={
                 "extreme": setup.extreme,
-                "extremeAt": setup.extreme_ts,
+                "extremeAgeSec": round(kor, 2),
                 "movePct": round(setup.move_pct, 4),
                 "bounceFromExtremePct": round(bounce_pct, 4),
                 "retracementPct": round(retrace, 2),
-                "extremeAgeSec": round(kor, 2),
-                "origin": setup.origin,
-                "movePct2": round(bounce_pct + break_pct, 4),
                 "microLevel": setup.micro,
                 "breakPct": round(break_pct, 4),
                 "buyVolume": round(flow["buy"], 2),
                 "sellVolume": round(flow["sell"], 2),
                 "flowVolume": round(flow["total"], 2),
-                "expectedFlowVolume": round(flow["expected"], 2),
                 "flowRatio": round(flow["ratio"], 3),
                 "tradesInFlow": flow["trades"],
+                "origin": setup.origin,
             },
-            lines=[
-                ("elotte" if direction == "LONG" else "elotte",
-                 f"{'eses' if direction == 'LONG' else 'emelkedes'} {setup.move_pct:.2f}%"),
-                (szint, f"{fprice(setup.extreme)}   ({kor:.1f} mp-e)"),
-                ("visszafordulas", f"{bounce_pct:.2f}%   "
-                                   f"(a mozgas {retrace:.0f}%-a, max "
-                                   f"{c['maxRetracementPct']:.0f}%)"),
-                (f"{micro_nev} attores",
-                 f"{fprice(setup.micro)}   "
-                 f"({'+' if direction == 'LONG' else '-'}{break_pct:.2f}%)"),
-                ("trade flow", f"{flow['ratio']:.1f}x {oldal}   "
-                               f"(buy {money(flow['buy'])} / sell {money(flow['sell'])} "
-                               f"USDT / {c['flowWindowSeconds']} mp)"),
-            ],
+            stop_anchor=setup.extreme,
+            target_anchor=(setup.extreme + (setup.origin - setup.extreme)
+                           * c["targetRetracementPct"] / 100.0),
             history=[(t.ts, t.price) for t in window],
         )
 
@@ -307,7 +290,7 @@ class ReversalDetector(Detector):
                    "attoresre var": 0}
         rows = []
         for symbol, st in self.setups.items():
-            if now - st.extreme_ts > c["maxSetupAgeSec"]:
+            if now - st.extreme_ts > c["maxExtremeAgeSec"]:
                 continue
             if st.micro is not None:
                 fazis = "attoresre var"

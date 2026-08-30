@@ -46,13 +46,13 @@ SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvon
 
 
 class MarketDataService:
-    telegram_status = None      # fuggveny, ami a Telegram allapot sorait adja
-
-    def __init__(self, cfg, db, detectors, on_signal):
+    def __init__(self, cfg, db, detectors, eligibility, on_signal):
         self.cfg = cfg
         self.db = db
         self.detectors = detectors      # DetectorManager
+        self.eligibility = eligibility
         self.on_signal = on_signal
+        self.signal_service = None      # a STATUS sorhoz, a main koti be
         self.symbols = []
         self.started = time.time()
         self.connected = 0
@@ -66,7 +66,7 @@ class MarketDataService:
         while True:
             c = self.cfg.detector
             self.symbols = await binance_rest.load_symbols(
-                c["minQuoteVolume24h"], c["maxSymbols"], c["excludeSymbols"],
+                c["minQuoteVolume24h"], c["maxSymbols"], c["symbolBlacklist"],
                 c["quoteAssets"])
             chunks = [self.symbols[i:i + STREAMS_PER_CONNECTION]
                       for i in range(0, len(self.symbols), STREAMS_PER_CONNECTION)]
@@ -87,6 +87,10 @@ class MarketDataService:
 
     async def _stream(self, index, symbols):
         streams = [f"{s.lower()}@aggTrade" for s in symbols]
+        if index == 1:
+            # EGYETLEN feliratkozas az egesz piac legjobb bid/ask arara es
+            # mennyisegere -- ebbol megy a spread/melyseg alapu kereskedhetoseg
+            streams.append("!bookTicker")
         backoff = 1
         attempt = 0
         while True:
@@ -143,6 +147,9 @@ class MarketDataService:
             return False
         # /ws vegponton a payload csupaszon jon, /stream eseten "data" ala csomagolva
         data = msg.get("data", msg)
+        if isinstance(data, dict) and data.get("e") == "bookTicker":
+            self.eligibility.on_book_ticker(data)
+            return True
         if not data or data.get("e") != "aggTrade":
             self.ignored += 1
             if self.ignored <= 3:      # az elso parat mutassuk, hatha hibauzenet
@@ -159,63 +166,48 @@ class MarketDataService:
         return True
 
     async def _status_loop(self):
-        """5 masodpercenkent kiirja, mi tortenik eppen az arfolyamokkal.
-
-        Ez nem technikai eletjel: az a celja, hogy ranezesre lehessen latni,
-        mit csinalnak az arak, es miert nincs (meg) jelzes.
-        """
+        """Percenkent egy rovid allapotsor. A reszletes tabla csak DEBUG szinten."""
         while True:
             interval = self.cfg.detector["statusIntervalSec"]
             await asyncio.sleep(interval)
             ticks = self.detectors.take_ticks()
             self.cycle += 1
-            level = logging.ERROR if ticks == 0 else logging.INFO
-            log.log(level, "\n%s", self._render(ticks, interval))
-            self.cycle_start = time.time()
+            svc = self.signal_service
+            kizart = self.eligibility.summary()
+
+            log.log(logging.ERROR if ticks == 0 else logging.INFO,
+                    "STATUS     %d par%s | %s tick/%ds | %d candidate, %d jelzes, "
+                    "%d elutasitva | Telegram: %s",
+                    len(self.symbols),
+                    f" ({kizart[0]})" if kizart else "",
+                    f"{ticks:,}", interval,
+                    self.detectors.total_candidates,
+                    svc.signals_today if svc else 0,
+                    svc.rejected_today if svc else 0,
+                    "BE" if self.cfg.detector["telegramEnabled"] else "KI")
+
+            if ticks == 0:
+                log.error("Nem erkezik arfolyam! %s",
+                          "Meg a feliratkozas nyugtaja sem jott meg."
+                          if self.messages == 0 else
+                          "Erkeznek uzenetek, de nem arfolyamok -- rossz WS utvonal?")
+
+            if log.isEnabledFor(logging.DEBUG):
+                blokk = self._events_section() + self.detectors.debug_lines()
+                log.debug("\n%s", "\n".join(blokk))
+            else:
+                events.drain()          # ne gyuljon vegtelenul
+
             await self._save_status(ticks, interval)
 
-    def _render(self, ticks, interval):
-        line = "  " + "─" * 110
-        head = [
-            line,
-            f"  #{self.cycle}   {clock(self.cycle_start)} - {clock(time.time())}   "
-            f"{len(self.symbols)} par figyelese   "
-            f"jelzes indulas ota: {self.detectors.total_signals}",
-        ]
-
-        if ticks == 0:
-            if self.messages == 0:
-                head.append("  A Binance kapcsolat all, de EGYETLEN UZENET SEM erkezett.")
-                head.append("  Meg a feliratkozas nyugtaja sem -- ellenorizd a kimeno halozatot")
-                head.append("  a fstream.binance.com:443 fele.")
-            else:
-                head.append(f"  Erkezett {self.messages:,} uzenet, de egyetlen arfolyam sem.")
-                head.append("  Valoszinuleg rossz WebSocket utvonalon vagyunk -- a kovetkezo")
-                head.append("  ujracsatlakozaskor masikkal probalkozunk.")
-            return "\n".join(head + [line])
-
-        head += [
-            f"  {ticks:,} arvaltozas erkezett {interval} mp alatt   "
-            f"({self.connected}/{self._chunk_count()} kapcsolat el)",
-            line,
-        ]
-        head += self._events_section()
-        head += [line]
-        if self.telegram_status:
-            self.detectors.telegram_status = self.telegram_status()
-        head += self.detectors.status_lines()      # detektoronkent sajat blokk
-        return "\n".join(head + [line])
-
     @staticmethod
-    def _events_section(limit=12):
+    def _events_section(limit=30):
         items = events.drain()
         if not items:
-            return ["  AZ ELOZO TABLA OTA: nem tortent semmi"]
-        out = [f"  AZ ELOZO TABLA OTA TORTENT ({len(items)}):"]
+            return ["  az elozo statusz ota nem tortent semmi"]
+        out = [f"  AZ ELOZO STATUSZ OTA ({len(items)}):"]
         for ts, text in items[-limit:]:
             out.append(f"    {clock(ts)}  {text}")
-        if len(items) > limit:
-            out.insert(1, f"    ... {len(items) - limit} korabbi esemeny kihagyva")
         return out
 
     async def _save_status(self, ticks, interval):
@@ -228,10 +220,11 @@ class MarketDataService:
                           "wsConnected": self.connected,
                           "wsTotal": self._chunk_count(),
                           "ticksPerSec": round(ticks / interval, 1),
-                          "totalSignals": self.detectors.total_signals,
+                          "candidates": self.detectors.total_candidates,
+                          "skippedByEligibility": self.detectors.skipped,
                           "detectors": [d.name for d in self.detectors.detectors
                                         if self.detectors.enabled(d)],
-                          "statusLines": self.detectors.status_lines()}},
+                          "notEligible": self.eligibility.summary()}},
                 upsert=True)
         except Exception as e:
             log.warning("statusz mentese sikertelen: %s", e)

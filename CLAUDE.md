@@ -20,11 +20,10 @@ Teszt hálózat nélkül: `python tests/test_core.py`
 ## Adatfolyam
 
 ```
-Binance WebSocket -> MarketDataService -> DetectorManager
-                                            ├── PumpDumpDetector
-                                            └── ReversalDetector
-   -> (jelzés) -> OrderBookAnalyzer + TAAnalyzer -> scoring
-   -> SignalService -> MongoDB -> TelegramNotifier -> [TradingService]
+Binance WebSocket (aggTrade + !bookTicker)
+   → eligibility (spread/mélység/aktivitás) → DetectorManager → CANDIDATE
+   → validáció (spread, fal, hozam/kockázat) → SIGNAL vagy REJECTED
+   → MongoDB → Telegram → [TradingService]
 ```
 
 Új detektor = új fájl az `app/detectors/` alá + egy `*_DEFAULTS` a `config.py`-ban +
@@ -45,11 +44,11 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/detectors/reversal.py` | lokális árforduló állapotgép `aggTrade`-ből |
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |
-| `app/scoring.py` | 0–100 score + indoklás, `contextMode` szerint momentum/reversal ág |
+| `app/eligibility.py` | realtime kereskedhetőség (spread, mélység, aktivitás) |
+| `app/detectors/baseline.py` | páronkénti normál rövid mozgás |
 | `app/outcome.py` | mi történt a jelzés után (MFE/MAE, találati arány score sávonként) |
 | `app/prices.py` | utolsó ismert ár symbolonként, az eredményméréshez |
 | `app/plan.py` | belépő / cél / stop / hozam-kockázat minden jelzéshez |
-| `app/quality.py` | symbolonkénti mozgásminőség — a szaggatott párok kizárása |
 
 Paraméterek részletes leírása: `docs/PARAMETEREK.md`
 | `app/fmt.py` | közös formázók a státusz táblához |

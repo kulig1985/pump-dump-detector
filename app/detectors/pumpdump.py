@@ -1,24 +1,17 @@
-"""PumpDumpDetector -- hirtelen, egyiranyu armozgas detektalasa.
+"""PumpDumpDetector -- rendkivuli rovid tavu armozgas.
 
-A trigger az utolso N TRADE-re illesztett egyenes MEREDEKSEGE (%/masodperc), plusz
-egy konzisztencia-feltetel: a lepesek mekkora hanyada mutat egy iranyba.
+A kerdes nem az, hogy "mozdult-e 0.3%-ot", hanem hogy "SZOKATLAN-e ez a mozgas
+EZEN a paron". Egy meme coinon 0.3% masodpercenkent tortenik, a BTC-n hetente.
+Ezert a mercet a par sajat, futas kozben mert normalja adja (lasd baseline.py).
 
-Miert nem a "most vs 1 masodperccel ezelott" osszehasonlitas? Mert az nem latja,
-mi tortent kozben. Meressel:
+Harom feltetel, nem tobb:
 
-    esemeny                        1 mp valtozas   meredekseg   konzisztencia
-    valodi pump                       +0.25%       +0.249%/mp       100%   <- ez kell
-    lassu kuszas (90 mp alatt)        +0.00%       +0.008%/mp       100%
-    egyetlen kiugro print, aztan vissza +0.45%     +0.000%/mp         0%   <- hamis jelzes volt
-    fureszfog, nagy amplitudo         -0.24%       -0.004%/mp        48%   <- hamis jelzes volt
+    1. a mozgas a par normaljanak baselineRatio-szorosa (es legalabb minMovePct)
+    2. a lepesek minConsistency hanyada egy iranyba mutat  -- alakzat, nem kapkodas
+    3. az ablak forgalma legalabb a par atlaga             -- van mogotte penz
 
-Az utolso ket sor a regi logikaval jelzest adott. A meredekseg %/masodpercben van,
-tehat a sebesseg dimenzio megmarad: a lassu kuszas 30x kisebb erteket ad.
-
-Az 1/3/5 masodperces szamok megmaradnak a tablazatban tajekoztatasul, de nem
-triggerelnek.
-
-A statusz tablat is ez a detektor rajzolja (status_lines).
+A likviditas (spread, melyseg, aktivitas) mar a detektor ELOTT elintezodik az
+eligibility szuroben, ezert itt nem szerepel.
 """
 import time
 import logging
@@ -28,258 +21,172 @@ from .. import events, binance_rest
 from ..fmt import pad, price as fprice, money
 from ..links import binance_url
 from .base import Detector, make_signal
+from .baseline import Baseline
 
 log = logging.getLogger("pumpdump")
-
-VOL_ALPHA = 0.01             # a volatilitas EWMA tanulasi rata (~40 masodperc emlekezet)
 
 
 class PumpDumpDetector(Detector):
     name = "pump_dump"
     config_key = "detector"
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, baseline=None):
         self.cfg = cfg
-        self.history = defaultdict(deque)   # symbol -> deque[(ts, price)]
-        self.last_trigger = {}              # symbol -> ts
-        # az elo statusz tablahoz
+        self.baseline = baseline or Baseline(cfg)
+        self.history = defaultdict(deque)   # symbol -> deque[(ts, ar, quote mennyiseg)]
+        self.last_trigger = {}
+        self.latest = {}                    # symbol -> mert allapot (a DEBUG tablahoz)
+        self.last_ts = 0.0
         self.ticks = 0
-        self.total_triggers = 0
-        self.latest = {}                    # symbol -> (ar, valtozasok, meredekseg)
-        self.last_ts = 0.0                  # az utolso feldolgozott trade tozsdei ideje
-        self.vol = {}                       # symbol -> atlagos abszolut meredekseg
+        self.total_candidates = 0
+
+    # ------------------------------------------------------------------ fo utvonal
 
     def on_trade(self, trade):
-        return self.on_price(trade.symbol, trade.price, trade.ts,
-                             trade.price * trade.qty)
-
-    def on_price(self, symbol, price, ts, quote_qty=0.0):
-        """Uj ar. Visszaad egy signal dictet, vagy None-t."""
         c = self.cfg.detector
-        h = self.history[symbol]
-        h.append((ts, price, quote_qty))
-        while h and h[0][0] < ts - c["slopeWindowSec"] * 2:
+        h = self.history[trade.symbol]
+        h.append((trade.ts, trade.price, trade.price * trade.qty))
+        while h and h[0][0] < trade.ts - c["moveWindowSec"] * 2:
             h.popleft()
 
         self.ticks += 1
-        self.last_ts = ts
-        trend = self._trend(h, ts, c, symbol)
-        self.latest[symbol] = (price, trend)
+        self.last_ts = trade.ts
 
-        if trend is None:
-            return None
-        self._update_volatility(symbol, trend["pctPerSec"])
-
-        threshold = self.threshold(symbol)
-        if abs(trend["pctPerSec"]) < threshold:
-            return None
-        if trend["consistency"] < c["minConsistency"]:
-            return None
-        if abs(trend["totalPct"]) < c["minTotalMovePct"]:
+        m = self._measure(h, trade.ts, c, trade.symbol)
+        self.latest[trade.symbol] = m
+        if m is None:
             return None
 
-        direction = "LONG" if trend["pctPerSec"] > 0 else "SHORT"
-        if ts - self.last_trigger.get(symbol, 0) < c["symbolCooldownSec"]:
-            return None
-        self.last_trigger[symbol] = ts
-        self.total_triggers += 1
+        # a baseline MINDEN merheto ablakbol epul, nem csak a jelzesekbol
+        self.baseline.add(trade.symbol, trade.ts, abs(m["movePct"]))
+        arany = self.baseline.ratio(trade.symbol, m["movePct"])
+        m["baseline"] = self.baseline.value(trade.symbol)
+        m["baselineRatio"] = arany
 
-        log.warning("[%s] TRIGGER %s | %+.2f%% %.1f mp alatt (%+.3f%%/mp, kuszob %.3f) | "
-                    "egyirany %.0f%% | %d trade | %s",
-                    symbol, direction, trend["totalPct"], trend["spanSec"],
-                    trend["pctPerSec"], threshold, trend["consistency"] * 100,
-                    trend["trades"], binance_url(symbol))
-        events.add(f"{symbol:<14} PUMP/DUMP {direction:<5} "
-                   f"{trend['totalPct']:+.2f}% / {trend['spanSec']:.1f} mp  "
-                   f"({trend['pctPerSec']:+.3f}%/mp, egyirany {trend['consistency']:.0%})")
+        kell = c["minMovePct"]
+        if arany is not None:
+            kell = max(kell, m["baseline"] * c["baselineRatio"])
+        if abs(m["movePct"]) < kell:
+            return None
+        if m["consistency"] < c["minConsistency"]:
+            return None
+        if m["volume"] < m["expectedVolume"]:
+            return None
+        if trade.ts - self.last_trigger.get(trade.symbol, 0) < c["symbolCooldownSec"]:
+            return None
+
+        self.last_trigger[trade.symbol] = trade.ts
+        self.total_candidates += 1
+        direction = "LONG" if m["movePct"] > 0 else "SHORT"
+
+        reasons = [
+            f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s",
+            (f"{arany:.1f}x a par normaljahoz kepest "
+             f"(normal {m['baseline']:.3f}%)" if arany is not None
+             else f"nincs meg baseline, abszolut padlo {c['minMovePct']:.2f}%"),
+            f"{m['consistency']:.0%} egy iranyba ({m['trades']} kotes)",
+            f"forgalom {money(m['volume'])} USDT "
+            f"({m['volume'] / m['expectedVolume']:.1f}x atlag)"
+            if m["expectedVolume"] else f"forgalom {money(m['volume'])} USDT",
+        ]
+        log.info("CANDIDATE  %-14s %-5s move %+.2f%% / %.1fs  baseline %s",
+                 trade.symbol, direction, m["movePct"], m["spanSec"],
+                 f"{arany:.1f}x" if arany is not None else "n/a")
+        events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} "
+                   f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s")
 
         return make_signal(
-            self.name, self.config_key, symbol, direction, price, ts,
-            strength=abs(trend["pctPerSec"]) / threshold,
-            accelerating=trend["accelerating"],
-            context_mode="momentum",
-            move_pct=abs(trend["totalPct"]),
-            # A stop nem a teljes impulzus aljan van, hanem annak felenel: ha a
-            # mozgas felet visszaadja, a tezis mar halott.
-            stop_anchor=(trend["origin"] + (price - trend["origin"])
+            self.name, self.config_key, trade.symbol, direction, trade.price, trade.ts,
+            move_pct=abs(m["movePct"]),
+            reasons=reasons,
+            metrics={k: v for k, v in m.items() if k != "origin"},
+            # a stop az impulzus felenel: ha a mozgas felet visszaadja, a tezis halott
+            stop_anchor=(m["origin"] + (trade.price - m["origin"])
                          * (1 - c["momentumStopRetracementPct"] / 100.0)),
-            target_anchor=price + (price - trend["origin"]) * c["momentumTargetFactor"],
-            detail={
-                "slopePctPerSec": round(trend["pctPerSec"], 5),
-                "slopeThreshold": round(threshold, 5),
-                "consistency": round(trend["consistency"], 3),
-                "spanSec": round(trend["spanSec"], 3),
-                "trades": trend["trades"],
-                "totalPct": round(trend["totalPct"], 4),
-                "volumeUSDT": round(trend["volume"], 2),
-                "expectedVolumeUSDT": round(trend["expectedVolume"], 2),
-            },
-            lines=[
-                ("mozgas", f"{trend['totalPct']:+.2f}%   {trend['spanSec']:.1f} mp alatt"),
-                ("meredekseg", f"{trend['pctPerSec']:+.3f} %/mp   (kuszob {threshold:.3f})"),
-                ("egyiranyusag", f"{trend['consistency']:.0%}   "
-                                 f"({trend['trades']} trade)"),
-                ("forgalom", f"{money(trend['volume'])} USDT   "
-                             f"(atlag {money(trend['expectedVolume'])})"),
-            ],
+            target_anchor=(trade.price + (trade.price - m["origin"])
+                           * c["momentumTargetFactor"]),
             history=[(t, p) for t, p, _ in h],
         )
 
-    @staticmethod
-    def _trend(history, now, c, symbol=None):
-        """Az utolso slopeWindowSec masodperc trade-jeire illesztett egyenes.
+    # ------------------------------------------------------------------ meres
 
-        None, ha nem merheto megbizhatoan: keves trade, tul rovid tenyleges
-        idoszakasz, vagy nincs mogotte valodi forgalom.
+    @staticmethod
+    def _measure(history, now, c, symbol):
+        """Az utolso moveWindowSec masodperc elmozdulasa. None, ha nem merheto.
+
+        IDOALAPU ablak, nem darabszam alapu: egy nagy paron 30 kotes akar 30
+        milliszekundum alatt is beerkezik, es abbol ertelmetlen tempot szamolni.
         """
-        start = now - c["slopeWindowSec"]
+        start = now - c["moveWindowSec"]
         w = [(t, p, q) for t, p, q in history if t >= start]
         if len(w) < c["minTradesInWindow"]:
             return None
-
         span = w[-1][0] - w[0][0]
-        # az ablak legalabb felet le kell fednie, kulonben egy pillanatnyi
-        # trade-csokorbol szamolnank %/masodpercet
-        if span < c["slopeWindowSec"] / 2:
+        if span < c["moveWindowSec"] / 2:      # egy pillanatnyi kotescsokor nem ablak
             return None
 
-        volume = sum(q for _, _, q in w)
-        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol) if symbol else None
-        elvart = vol24 / 86400.0 * span * c["minVolumeFactor"] if vol24 else 0.0
-        if volume < elvart:
-            return None
-
-        t0 = w[0][0]
-        xs = [t - t0 for t, _, _ in w]
         ys = [p for _, p, _ in w]
+        if ys[0] <= 0:
+            return None
+        volume = sum(q for _, _, q in w)
+        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol)
+        elvart = vol24 / 86400.0 * span * c["minVolumeFactor"] if vol24 else 0.0
+
+        # A mozgast NEM az elso es utolso ar kulonbsegebol szamoljuk, hanem az
+        # ablakra illesztett egyenes elmozdulasabol. A vegpont-kulonbseget egyetlen
+        # kiugro print is felviszi (mert az 0.45%-ot mutatna, aztan visszaesne);
+        # az illesztett egyenest nem.
+        xs = [t - w[0][0] for t, _, _ in w]
         n = len(w)
         mean_x, mean_y = sum(xs) / n, sum(ys) / n
         sxx = sum((x - mean_x) ** 2 for x in xs)
-        if sxx == 0 or mean_y == 0 or ys[0] == 0:
+        if sxx == 0 or mean_y <= 0:
             return None
         sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-        slope = sxy / sxx
-        pct_per_sec = slope / mean_y * 100.0
+        move_pct = (sxy / sxx) * span / mean_y * 100.0
 
-        steps = [ys[i + 1] - ys[i] for i in range(n - 1)]
-        moved = [st for st in steps if st != 0]
-        consistency = (sum(1 for st in moved if st * slope > 0) / len(moved)
-                       if moved else 0.0)
+        lepesek = [ys[i + 1] - ys[i] for i in range(n - 1)]
+        mozgott = [l for l in lepesek if l != 0]
+        irany = 1 if move_pct >= 0 else -1
+        consistency = (sum(1 for l in mozgott if l * irany > 0) / len(mozgott)
+                       if mozgott else 0.0)
 
-        half = n // 2
-        first = (ys[half] - ys[0]) / max(xs[half] - xs[0], 1e-9)
-        second = (ys[-1] - ys[half]) / max(xs[-1] - xs[half], 1e-9)
+        return {
+            "movePct": move_pct,
+            "endpointPct": (ys[-1] - ys[0]) / ys[0] * 100.0,
+            "spanSec": round(span, 2),
+            "trades": len(w),
+            "consistency": round(consistency, 3),
+            "volume": round(volume, 2),
+            "expectedVolume": round(elvart, 2),
+            "origin": ys[0],
+        }
 
-        return {"pctPerSec": pct_per_sec, "spanSec": span, "consistency": consistency,
-                "trades": n, "origin": ys[0], "volume": volume, "expectedVolume": elvart,
-                "totalPct": (ys[-1] - ys[0]) / ys[0] * 100.0,
-                "accelerating": abs(second) > abs(first) and second * first > 0}
+    # ------------------------------------------------------------------ DEBUG tabla
 
-    def _update_volatility(self, symbol, pct_per_sec):
-        """EWMA az abszolut meredeksegbol -- ez a par sajat "zajszintje"."""
-        prev = self.vol.get(symbol)
-        self.vol[symbol] = (abs(pct_per_sec) if prev is None
-                            else prev + VOL_ALPHA * (abs(pct_per_sec) - prev))
-
-    def base_threshold(self):
-        return self.cfg.detector["minSlopePctPerSec"]
-
-    def threshold(self, symbol=None):
-        """A par sajat meredekseg-kuszobe. A configban megadott ertek a padlo: egy
-        nyugtalan parnak a sajat zajszintjehez merten meredekebben kell mozdulnia.
-        Felfele is van korlat, hogy egy elszallt merteg ne nemitson el egy part."""
-        base = self.base_threshold()
-        mult = self.cfg.detector["volatilityMultiplier"]
-        if not symbol or not mult:
-            return base
-        v = self.vol.get(symbol)
-        if not v:
-            return base
-        return min(max(base, mult * v), base * self.cfg.detector["maxThresholdFactor"])
-
-    def snapshot(self, top=10):
-        """Az aktualis allapot a statusz tablahoz. A tick szamlalot nullazza."""
-        now = self.last_ts or time.time()
-        cooldown = self.cfg.detector["symbolCooldownSec"]
-        min_cons = self.cfg.detector["minConsistency"]
-        rows = []
-        for symbol, (price, trend) in self.latest.items():
-            th = self.threshold(symbol)
-            slope = trend["pctPerSec"] if trend else None
-            rows.append({
-                "symbol": symbol,
-                "price": price,
-                "movePct": trend["totalPct"] if trend else None,
-                "spanSec": trend["spanSec"] if trend else None,
-                "slope": slope,
-                "consistency": trend["consistency"] if trend else None,
-                "threshold": th,
-                "minConsistency": min_cons,
-                "ratio": abs(slope) / th if slope is not None and th else 0.0,
-                "rising": (slope or 0) > 0,
-                "cooling": now - self.last_trigger.get(symbol, 0) < cooldown,
-            })
-        rows.sort(key=lambda r: r["ratio"], reverse=True)
-        ticks, self.ticks = self.ticks, 0
-        return {"ticks": ticks, "totalTriggers": self.total_triggers,
-                "symbols": len(self.latest), "rows": rows[:top]}
-
-    blocked = frozenset()      # a manager tolti, csak a kijelzeshez
-    noise = {}                 # symbol -> tick zaj %, szinten a managertol
-
-    def status_lines(self):
-        """Az "mi tortenik most az arakkal" tabla."""
-        snap = self.snapshot()
+    def status_lines(self, top=10):
+        """Reszletes paronkenti allapot -- csak DEBUG szinten kerul kiirasra."""
         c = self.cfg.detector
-        out = [
-            f"  ARFOLYAMOK   jelzeshez kell: legalabb {c['minTotalMovePct']:.2f}% mozgas "
-            f"{c['slopeWindowSec']:.0f} masodpercen belul, {c['minSlopePctPerSec']:.2f}%/mp "
-            f"tempoval es {c['minConsistency']:.0%} egyiranyusaggal",
-            f"  {pad('par', 14)}{'24h forg.':>11}{'arfolyam':>13}"
-            f"{'mozgas':>9}{'%/mp':>9}{'kuszob':>8}{'egyirany':>10}{'tick zaj':>10}"
-            f"   allapot",
-        ]
-        for r in snap["rows"]:
-            mozgas = f"{r['movePct']:+.2f}%" if r["movePct"] is not None else "--"
-            slope = f"{r['slope']:+.3f}" if r["slope"] is not None else "--"
-            cons = f"{r['consistency']:.0%}" if r["consistency"] is not None else "--"
-            allapot = ("KIZARVA -- egy kotes tul sokat mozdit"
-                       if r["symbol"] in self.blocked else _verdict(r))
-            zaj = self.noise.get(r["symbol"])
-            zaj_txt = f"{zaj:.3f}%" if zaj is not None else "--"
-            out.append(f"  {pad(r['symbol'], 14)}"
-                       f"{money(binance_rest.SYMBOL_VOLUME.get(r['symbol'])):>11}"
-                       f"{fprice(r['price']):>13}"
-                       f"{mozgas:>9}{slope:>9}{r['threshold']:>8.3f}{cons:>10}{zaj_txt:>10}"
-                       f"   {allapot}")
+        sorok = []
+        for symbol, m in self.latest.items():
+            if m is None:
+                continue
+            alap = self.baseline.value(symbol)
+            arany = abs(m["movePct"]) / alap if alap else None
+            sorok.append((arany or 0, symbol, m, alap, arany))
+        if not sorok:
+            return ["  nincs merheto par"]
+        sorok.sort(reverse=True, key=lambda x: x[0])
+
+        out = [f"  {pad('par', 14)}{'arfolyam':>13}{'mozgas':>9}{'normal':>9}"
+               f"{'arany':>8}{'egyirany':>10}{'kotes':>7}"]
+        for _, symbol, m, alap, arany in sorok[:top]:
+            out.append(f"  {pad(symbol, 14)}"
+                       f"{fprice(m.get('price', 0)) if 'price' in m else '':>13}"
+                       f"{m['movePct']:>8.2f}%"
+                       f"{(f'{alap:.3f}%' if alap else '--'):>9}"
+                       f"{(f'{arany:.1f}x' if arany else '--'):>8}"
+                       f"{m['consistency']:>9.0%}{m['trades']:>7}")
+        out.append(f"  jelzeshez: {c['baselineRatio']:.1f}x a normalhoz kepest "
+                   f"(min {c['minMovePct']:.2f}%), {c['minConsistency']:.0%} egyiranyusag")
         return out
-
-
-def _verdict(r):
-    """Emberi nyelven: mi van ezzel a parral."""
-    if r["slope"] is None:
-        return "keves friss kotes, nem merheto"
-    irany = "emelkedik" if r["rising"] else "esik"
-    eleg_egyiranyu = r["consistency"] >= r["minConsistency"]
-
-    if r["ratio"] >= 1.0:
-        if r["cooling"]:
-            return "jelzes mar elment, varakozunk a kovetkezore"
-        if not eleg_egyiranyu:
-            return (f"gyorsan {irany}, de kapkodva "
-                    f"({r['consistency']:.0%} egy iranyba, kell {r['minConsistency']:.0%})")
-        return f"kuszob felett {irany}"
-
-    hiany = f"{(r['threshold'] - abs(r['slope'])):.3f}%/mp"
-    if not eleg_egyiranyu and r["ratio"] >= 0.5:
-        return f"{irany}, de kapkodva ({r['consistency']:.0%} egy iranyba)"
-    if r["ratio"] >= 0.9:
-        return f"MINDJART JELZES -- {irany}, meg {hiany} hianyzik"
-    if r["ratio"] >= 0.6:
-        return f"hatarozottan {irany}, meg {hiany} hianyzik"
-    if r["ratio"] >= 0.3:
-        return f"{irany}, de meg messze a jelzestol"
-    return "alig mozdul"
-
-
-

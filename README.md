@@ -6,11 +6,17 @@ gyors order book + EMA elemzést végez, pontoz, **Telegramra** küld, és opcio
 (alapból **kikapcsolva**) pozíciót is nyit.
 
 ```
-Binance WebSocket -> MarketDataService -> DetectorManager
-                                            ├── PumpDumpDetector
-                                            └── ReversalDetector
-   -> (jelzés) -> OrderBookAnalyzer + TAAnalyzer -> scoring
-   -> SignalService -> MongoDB -> TelegramNotifier -> [TradingService]
+Binance WebSocket  (aggTrade + !bookTicker)
+        ↓
+  KERESKEDHETOSÉG      spread / mélység / aktivitás / white- és blacklist
+        ↓
+  DetectorManager  →  PumpDumpDetector,  ReversalDetector   → CANDIDATE
+        ↓
+  VALIDÁCIÓ            spread vs mozgás, fal az útban, hozam/kockázat
+        ↓
+   SIGNAL  vagy  REJECTED       (mindkettő okkal, MongoDB-be)
+        ↓
+  MongoDB → Telegram → [TradingService]
 ```
 
 Két detektor fut párhuzamosan ugyanazon a trade-folyamon, külön konfigurációval:
@@ -260,336 +266,43 @@ Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
 
 ---
 
-## Hogyan dönt a pump/dump detektor
+## Hogyan dönt a rendszer
 
-**Nem** azt nézi, mennyit változott az ár 1 / 3 / 5 másodperc alatt. Az a mérés nem
-látja, mi történt közben: egyetlen kiugró print vagy egy fűrészfog ugyanúgy átlépi a
-küszöböt, mint egy valódi pump.
-
-Helyette az utolsó `tradeWindow` darab trade-re **egyenest illeszt**, és két dolgot néz:
-
-- **meredekség** `%/másodperc`-ben — ez a mozgás *sebessége*, nem a nagysága
-- **egyirányúság** — a lépések hány százaléka mutat a meredekség irányába
-
-Jelzés csak akkor van, ha mindkettő átmegy, és az N trade `maxSpanSec`-en belül történt.
-Mért összehasonlítás ugyanazon az adaton:
-
-| eset | 1 mp változás | meredekség | egyirányúság | régi | mostani |
-|---|---|---|---|---|---|
-| valódi pump (+0.5% / 2 mp) | +0.25% | +0.249%/mp | 100% | — | **jelzés** |
-| lassú kúszás (+0.5% / 90 mp) | +0.00% | +0.008%/mp | 100% | — | — |
-| egyetlen kiugró print, aztán vissza | +0.45% | +0.000%/mp | 0% | **jelzés** | — |
-| fűrészfog, nagy amplitúdó | −0.24% | −0.004%/mp | 48% | **jelzés** | — |
-
-A meredekség `%/másodperc`-ben van, ezért a sebesség dimenzió megmarad: a lassú kúszás
-30× kisebb értéket ad, mint a valódi pump — pedig a teljes elmozdulás ugyanaz.
-
-**`volatilityMultiplier`** — minden pár a **saját zajszintjéhez** mérve triggerel. A
-configban megadott érték a padló, ez alá sosem megy. A táblázat `kuszob` oszlopa mutatja
-a párra érvényes értéket.
-
-Ha kevés a jelzés: `minSlopePctPerSec` lejjebb, vagy `minConsistency: 0.6`.
-Ha sok a szemét: `minConsistency: 0.8`, vagy `volatilityMultiplier: 6`.
-
-> A régi `priceChangeThreshold1s/3s/5s` kulcsok **már nem hatnak semmire**. Ha a
-> MongoDB-ben még megvannak, induláskor figyelmeztetést írunk róluk; nyugodtan törölhetők.
-
-## ReversalDetector
-
-Nem gyertyákból dolgozik, hanem egy néhány másodperces rolling `aggTrade` ablakból.
-Nincs benne EMA / RSI / MACD trigger. A LONG eseménysor (a SHORT pontos tükörképe):
+**Nem fix küszöbbel.** A kérdés nem az, hogy „mozdult-e 0.3%-ot", hanem hogy *szokatlan-e
+ez a mozgás ezen a páron*. Futás közben, páronként mérjük, mi a normális:
 
 ```
-LEMOZGÁS -> LOKÁLIS MINIMUM -> VISSZAPATTANÁS -> NINCS ÚJ MINIMUM
-         -> MICRO-HIGH RÖGZÜL -> VÉTELI FLOW -> MICRO-HIGH ÁTTÖRÉS -> LONG_REVERSAL
+baseline = az utolso 5 percben mert 2 masodperces |elmozdulasok| medianja
+jelzeshez kell:  |mozgas| >= max( minMovePct , baselineRatio × baseline )
 ```
 
-### Melyik jelzés mit jelent
+Ehhez jön két megerősítés — egyirányúság (a lépések 70%-a egy felé) és forgalom (az
+ablakban legalább a pár átlaga) —, majd a validáció: spread, fal az útban, hozam/kockázat.
 
-A „SHORT REVERSAL" félreérthető lenne (egy short fordul meg? vagy short irányba fordult?),
-ezért a Telegram üzenet kiírja, mi történt és milyen pozíciót jelent:
-
-| fejléc | mi történt | mit jelent |
-|---|---|---|
-| 🚨 **PUMP** | hirtelen, egyirányú emelkedés | **LONG** — vételi pozíció |
-| 🔻 **DUMP** | hirtelen, egyirányú esés | **SHORT** — eladási pozíció |
-| 🟢 **FORDULO FELFELE** | esés után aljazott és visszapattant | **LONG** — vételi pozíció |
-| 🔴 **FORDULO LEFELE** | emelkedés után tetőzött és lefordult | **SHORT** — eladási pozíció |
+**Nincs 0-100 score.** Minden jelzés egy indoklás-listát és a hozzá tartozó mért számokat
+viszi, és minden elutasításnak gépi neve van:
 
 ```
-🔴 FORDULO LEFELE  ·  TUTUSDT
-emelkedes utan tetozott es lefordult
-➜ SHORT — eladasi pozicio
-score 74/100  ·  08:03:37 UTC  ·  reversal
+CANDIDATE  SOLUSDT  LONG  move +0.32% / 2.1s  baseline 4.1x
+REJECTED   SOLUSDT  LONG  spread_too_wide
+SIGNAL     BTCUSDT  LONG  move +0.24% / 2.1s  rr 2.4:1  https://www.binance.com/en/futures/BTCUSDT
+STATUS     136 par (kizarva 24 par: spread_too_wide: 18  low_activity: 6) | 1,932 tick/60s | 12 candidate, 3 jelzes, 9 elutasitva | Telegram: BE
 ```
 
-### A flow aránynak valódi pénz kell mögé
-
-Egy `1.9x eladoi` arány önmagában semmit nem mond, ha összesen 1500 USDT forgott — egy
-110M/napos páron az a 3 másodperces átlag 40%-a. Ezért a `minFlowVolumeFactor` megköveteli,
-hogy a flow ablakban legalább annyi forgalom legyen, amennyi a pár saját átlaga ugyanennyi
-idő alatt (`24h forgalom / 86400 × flowWindowSeconds`). Így a küszöb páronként automatikusan
-skálázódik.
-
-A buy/sell oldalt a Binance `aggTrade` `m` mezőjéből határozzuk meg: `m: true` esetén a
-vevő a maker, tehát az agresszor az eladó. A flow arány quote (USDT) mennyiséggel számol.
-
-A státusz táblában külön blokk mutatja, hol tart minden alakzat, és mi hiányzik még:
-
-```
-  REVERSAL FIGYELO  (2 par alakzatban, jelzes indulas ota: 0)
-    4USDT      LOW  0.01891485  mozgas 0.78%  micro 0.01906368  flow 1.2x   kell: flow 1.6x + attores > 0.01906368
-    SKRUSDT    LOW  0.01292000  mozgas 0.62%  micro          -  flow 1.8x   kell: micro-high rogzulese
-```
-
-A státusz táblában mindig látod, mit csinál — akkor is, ha épp nincs alakzat:
-
-```
-  REVERSAL FIGYELO   35 paron van eleg adat   3 alakzat all   jelzes indulas ota: 0
-    kell hozza: 0.40% elozetes mozgas, 0.15% visszapattanas, 0.08% visszahuzas, majd 1.6x flow + attores
-    fazisok:  visszapattanasra var: 1    attoresre var: 2
-    ENAUSDT     LOW  0.16106786  mozgas 0.58%  micro 0.16145000  flow 1.7x elado   kell: 1.6x veteli flow, majd attores
-    SKRUSDT     LOW  0.01291531  mozgas 0.65%  micro          -  flow 99.0x elado  kell: visszapattanasra var
-```
-
-### `reversal` config
-
-| kulcs | default | mit csinál |
-|---|---|---|
-| `enabled` | `true` | a detektor kapcsolója |
-| `minSignalScore` | `60` | saját küszöb, független a pump/dump-étól |
-| `cooldownSec` | `120` | páronkénti szünet két jelzés között |
-| `windowSeconds` | `20` | a rolling trade ablak hossza |
-| `minMovePct` | `0.40` | mekkora mozgás kell a forduló előtt |
-| `bouncePct` | `0.15` | ennyit kell eltávolodni a szélsőértéktől |
-| `pullbackPct` | `0.08` | ennyi visszahúzás rögzíti a micro-szintet |
-| `newExtremeTolerancePct` | `0.05` | ennél mélyebb minimum új alakzatot indít |
-| `breakTolerancePct` | `0.02` | ennyivel kell átütni a micro-szintet |
-| `flowWindowSeconds` | `3` | ekkora ablakon mérjük a trade flow-t |
-| `minFlowRatio` | `1.6` | buy/sell (vagy sell/buy) arány |
-| `minFlowVolumeFactor` | `1.0` | a flow ablakban legalább ennyiszer annyi forgalom legyen, mint a pár átlaga ugyanennyi idő alatt |
-| `minTradesInFlowWindow` | `5` | ennyi trade kell az ablakba |
-| `maxSetupAgeSec` | `30` | ennyi idő után elavul egy alakzat |
-
-### Pontozás fordulóknál
-
-A jelzés magával viszi, hogyan kell olvasni a kontextust (`contextMode`). Fordulónál a
-trend természetesen még a régi irányba mutat — ezért nem az EMA iránya számít, hanem hogy
-**az ár visszavette-e az EMA9-et**, és hogy van-e **támasz** a szélsőérték mögött. Momentum
-módban (pump/dump) marad a régi értelmezés: a trend támogassa az irányt, és ne legyen wall
-előttünk.
-
-## Árnyék mód: előbb mérünk, aztán küldünk
-
-Alapból **egyetlen jelzés sem megy Telegramra**, amíg nincs mért bizonyíték rá. Minden
-jelzés mentődik és logolódik, az eredménymérés fut, és amikor egy detektor adott score
-sávja eléri az `shadowMinSamples` (50) mintát és az `shadowMinHitRate` (55%) találati
-arányt, a küldés magától bekapcsol arra a sávra.
-
-```
-SHADOW  reversal 70-79: 18 jelzes, 33% talalat -> meg nem kuldunk (kell 50 / 55%)
-ELO     pump_dump 80-89: 64 jelzes, 61% talalat -> Telegram BE
-```
-
-Ha azonnal látni akarod a jelzéseket a mérés bevárása nélkül:
+A `REJECTED` dokumentumok is a `signals` collectionbe kerülnek, így egy lekérdezéssel
+látszik, mi miért esik ki:
 
 ```js
-db.config.updateOne({_id:"reversal"}, {$set:{telegramMode:"always"}})
+db.signals.aggregate([{$match:{status:"rejected"}},
+                      {$group:{_id:"$reasons", db:{$sum:1}}}, {$sort:{db:-1}}])
 ```
 
-## Túl sok a jelzés? — mérd, ne tippelj
+Részletes detektor-állapot: `LOG_LEVEL=DEBUG`.
 
-Minden mentett jelzés után a rendszer `outcomeMinutes` (alap 5) percig figyeli az árat, és
-visszaírja a `signals` dokumentumba, mi történt. Nem szimulál kereskedést, csak mér:
+**Minden `SIGNAL` azonnal megy Telegramra** — nincs mérési előfeltétel. Az eredménymérés
+fut és 10 percenként összesít, de semmit nem kapuz.
 
-```js
-db.signals.findOne({}, {symbol:1, score:1, outcome:1})
-// outcome: { mfePct: 0.62, maePct: -0.11, closePct: 0.44,
-//            checkpoints: {m1: 0.21, m3: 0.44, m5: 0.44},
-//            result: "cel", good: true }
-```
-
-- `mfePct` — a legjobb elmozdulás a jelzés irányába
-- `maePct` — a legrosszabb elmozdulás ellenirányba
-- `good` — elérte-e a `outcomeTargetPct`-ot, mielőtt a `outcomeStopPct`-ot ütötte volna
-
-**A küszöb alatti jelzéseket is méri** — különben nem derülne ki, hogy jó helyen van-e a
-küszöb. 10 percenként összesítést ír a logba:
-
-```
-  EREDMENYEK -- mi tortent a jelzesek utan 5 percben (cel +0.3%, stop -0.3%)
-  detektor      score sav   darab   talalat   atlag zaras   atlag legjobb   atlag legrosszabb
-  pump_dump         50-59      31       19%        -0.08%           0.14%              -0.31%
-  pump_dump         70-79      12       67%         0.41%           0.63%              -0.18%
-  reversal          60-69      24       33%        -0.02%           0.22%              -0.27%
-  reversal          80-89       6       83%         0.55%           0.71%              -0.09%
-```
-
-Ebből látszik, **hol húzd meg a `minSignalScore`-t**: a fenti példában a 70 alatti
-pump/dump jelzések nem érnek semmit, a reversal viszont csak 80 felett működik.
-
-### Ha addig is kevesebb jelzés kell
-
-| beavatkozás | hatás |
-|---|---|
-| `minSignalScore: 75` | a leggyorsabb, de vak — előbb nézd meg az eredménytáblát |
-| `minVolumeFactor: 2` (detector) | a pump/dump ablakában legyen kétszer az átlagos forgalom |
-| `minFlowVolumeFactor: 2` (reversal) | ugyanez a flow ablakra |
-| `minMoveToSpreadRatio: 5` | a mozgás legyen 5× a spread |
-| `minConsistency: 0.85` | csak a tiszta, egyirányú mozgások |
-| `symbolCooldownSec: 300` | páronként ritkábban |
-
-## Két szűrő, ami a zajt vágja
-
-**Volumen padló.** Egy meredek egyenes 30 apró kötésből ugyanúgy kijön, mint valódi
-vásárlásból. Mindkét detektor megköveteli, hogy az ablakban legalább annyi forgalom
-legyen, mint a pár saját átlaga ugyanennyi idő alatt (`24h forgalom / 86400 × ablak`).
-Páronként automatikusan skálázódik.
-
-**Spread szűrő.** Ha a mozgás nem nagyobb érdemben a spreadnél, akkor nem mozgás történt,
-csak valaki átlépte a spreadet — az nem lekereskedhető. A `minMoveToSpreadRatio` (alap 3)
-ezt dobja el, és a logban meg is mondja:
-
-```
-INFO signal [XYZUSDT] pump_dump eldobva: a mozgas (0.250%) nem eri el a spread 3-szereset (0.360%)
-```
-
-## USDT és USDC párok
-
-Alapból mindkettőt figyeli. Induláskor kiírja a bontást:
-
-```
-INFO rest Perpetual USDC/USDT parok: 531 | forgalom >= 50,000,000: 42 | figyelunk: 42
-INFO rest Elszamolo deviza szerint: USDC: 7  USDT: 35
-```
-
-Csak az egyikre szűkíteni:
-
-```js
-db.config.updateOne({_id:"detector"}, {$set:{quoteAssets:["USDT"]}})
-```
-
-> Ugyanaz az eszköz két párban is szerepelhet (`BTCUSDT` és `BTCUSDC`), így egy nagy
-> mozgásra két jelzés is jöhet. Ha ez zavar, vedd ki az egyik devizát, vagy tedd a
-> párt az `excludeSymbols` listába.
-
-## Meme coinok kiszűrése
-
-A forgalmi küszöb önmagában nem elég: a `4USDT`-nek is 62M a 24 órás forgalma. Három fogó:
-
-```js
-// 1. magasabb forgalmi küszöb -- ez a leghatásosabb
-db.config.updateOne({_id:"detector"}, {$set:{minQuoteVolume24h: 300000000}})
-
-// 2. névre szólóan kizárás
-db.config.updateOne({_id:"detector"}, {$set:{excludeSymbols:["4USDT","TRUMPUSDT"]}})
-
-// 3. a volatilitás-adaptáció (alapból be van kapcsolva) automatikusan feljebb tolja
-//    a zajos párok küszöbét -- a táblázat "kuszob" oszlopa mutatja
-db.config.updateOne({_id:"detector"}, {$set:{volatilityMultiplier: 6}})
-```
-
-Induláskor a log kiírja a teljes figyelt listát forgalom szerint csökkenő sorrendben, így
-látod, hol érdemes meghúzni a határt.
-
-## Új detektor hozzáadása
-
-1. Új fájl az `app/detectors/` alá egy osztállyal, ami tud `name`-et, `config_key`-t és
-   `on_trade(trade)`-et (opcionálisan `status_lines()`-t).
-2. Egy `*_DEFAULTS` dokumentum az `app/config.py`-ban.
-3. Egy sor az `app/main.py` detektor-listájában.
-
-A `SignalService`, a `scoring`, a `telegram`, a Mongo-mentés és a trading nem igényel
-módosítást — a detektor-specifikus rész a jelzés `detail` (Mongo) és `lines` (Telegram)
-mezőjében utazik.
-
-## Paraméterek
-
-Minden beállítás részletes leírása, az összes küszöb hatásával és a fordulós alakzat
-anatómia-rajzával: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
-
-## Hangolás
-
-Minden beállítás a MongoDB `config` collectionjében van, négy dokumentumban:
-`detector`, `reversal`, `trading`, `telegram`. **A DB az igazság** — módosítás után 30
-másodpercen belül él, újraindítás nélkül.
-
-A dokumentumok **magukat karbantartják**: induláskor a hiányzó beállítások bekerülnek a
-defaultjukkal, a már nem használt kulcsok pedig törlődnek. A meglévő értékekhez nem
-nyúlunk. A logban látod:
-
-```
-INFO  config Config 'detector': 9 uj beallitas felveve -> maxSpanSec, minConsistency, ...
-WARN  config Config 'detector': 3 mar nem hasznalt beallitas torolve -> priceChangeThreshold1s, ...
-```
-
-```bash
-docker compose exec mongo mongosh pumpdump
-```
-
-```js
-db.config.find().pretty()
-
-// érzékenyebb detektor
-db.config.updateOne({_id:"detector"}, {$set:{priceChangeThreshold1s:0.20, minSignalScore:50}})
-
-// az utolsó 5 jelzés
-db.signals.find().sort({timestamp:-1}).limit(5)
-```
-
-### `detector`
-
-| kulcs | default | mit csinál |
-|---|---|---|
-| `enabled` | `true` | fő kapcsoló |
-| `telegramEnabled` | `true` | értesítés küldése |
-| `quoteAssets` | `["USDT","USDC"]` | melyik elszámoló devizás perpetualokat figyeljük |
-| `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
-| `maxSymbols` | `200` | top N pár forgalom szerint |
-| `excludeSymbols` | `[]` | névre kizárt párok, pl. `["4USDT","TRUMPUSDT"]` |
-| `slopeWindowSec` | `2.0` | **időalapú** ablak, ekkora szakaszra illesztjük az egyenest |
-| `minTradesInWindow` | `10` | ennyi trade kell az ablakba |
-| `minTotalMovePct` | `0.15` | ekkora nettó elmozdulás kell az ablakban |
-| `minSlopePctPerSec` | `0.15` | ennyi %/másodperc kell a jelzéshez (ez a **padló**) |
-| `minConsistency` | `0.70` | a lépések ekkora hányada mutasson egy irányba |
-| `volatilityMultiplier` | `4.0` | a küszöb a pár saját zajszintjéhez igazodik; `0` = kikapcsolva |
-| `minTicksInWindow` / `maxRefAgeFactor` | `3` / `1.5` | csak a táblázat 1/3/5 mp-es tájékoztató oszlopaihoz |
-| `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
-| `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
-| `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |
-| `signalWindowMinutes` | `10` | ekkora visszatekintéssel számolja, hányadik a jelzés |
-| `minVolumeFactor` | `1.0` | az ablakban legalább ennyiszer a pár átlagos forgalma |
-| `minMoveToSpreadRatio` | `3.0` | a mozgás legyen legalább ennyiszer a spread |
-| `outcomeMinutes` | `5` | ennyi ideig méri az árat a jelzés után |
-| `outcomeTargetPct` / `outcomeStopPct` | `0.3` / `0.3` | mikor számít jónak, illetve rossznak |
-| `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
-| `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
-| `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |
-| `emaFast` / `emaSlow` / `emaInterval` | `9 / 21 / 1m` | trendfilter |
-
-### `trading` — alapból kikapcsolva
-
-| kulcs | default |
-|---|---|
-| `autoTradingEnabled` | **`false`** |
-| `positionSizeUSDT` | `20` (notional, nem margin) |
-| `leverage` / `marginMode` | `5` / `CROSSED` (EU-ban az ISOLATED nem elérhető) |
-| `takeProfitPct` / `stopLossPct` | `1.5` / `0.8` |
-| `maxOpenPositions` | `3` |
-| `longEnabled` / `shortEnabled` | `true` / `true` |
-| `minScoreForTrade` | `75` |
-
-**Bekapcsolás előtt testneten próbáld:** `FUTURES_TESTNET=1` a `.env`-ben,
-[testnet kulcsok](https://testnet.binancefuture.com/) beírása, majd:
-
-```js
-db.config.updateOne({_id:"trading"}, {$set:{autoTradingEnabled:true}})
-```
-
-A Binance API kulcson engedélyezni kell a Futures kereskedést, és érdemes
-IP-korlátozást beállítani.
-
----
+Minden beállítás leírása: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
 ## Collectionök
 

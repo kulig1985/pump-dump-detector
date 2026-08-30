@@ -15,10 +15,13 @@ def build(sig, cfg):
 
     belepo = sig["price"]
     hosszu = sig["direction"] == "LONG"
-    puffer = cfg["stopBufferPct"] / 100.0
 
-    # a stop a horgon TULOLDALARA kerul, hogy egy pillanatnyi kiszuras ne vigye el
-    stop = stop_anchor * (1 - puffer) if hosszu else stop_anchor * (1 + puffer)
+    # A stop a horgony TULOLDALARA kerul, hogy egy pillanatnyi kiszuras ne vigye el.
+    # A puffer a belepo es a horgony TAVOLSAGANAK aranyaban ertendo, nem az arhoz
+    # kepest: kulonben egy kis mozgasnal a fix puffer felemesztene a teljes aranyt.
+    tav = abs(belepo - stop_anchor)
+    puffer = tav * cfg["stopBufferOfDistancePct"] / 100.0
+    stop = stop_anchor - puffer if hosszu else stop_anchor + puffer
     cel = target_anchor
 
     kockazat = (belepo - stop) if hosszu else (stop - belepo)

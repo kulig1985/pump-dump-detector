@@ -1,41 +1,37 @@
 """DetectorManager -- minden trade-et vegigad az engedelyezett detektorokon.
 
-Egyetlen dolga, hogy a market data es a detektorok kozott alljon: nem ertelmezi
-a jelzeseket, nem ment, nem ertesit.
+Elotte azonban lefut a kereskedhetosegi szuro: ha egy paron a spread tul szeles,
+a konyv vekony, vagy alig van kotes, a detektorok oda sem jutnak el.
 """
 import logging
-
-from .. import events
-from ..quality import SymbolQuality
 
 log = logging.getLogger("detectors")
 
 
 class DetectorManager:
-    def __init__(self, cfg, detectors):
+    def __init__(self, cfg, detectors, eligibility):
         self.cfg = cfg
         self.detectors = detectors
-        self.quality = SymbolQuality(cfg)
-        self.skipped = 0
+        self.eligibility = eligibility
         self.ticks = 0
-        self.total_signals = 0
-        self._broken = set()      # amelyik detektor mar dobott hibat (ne spammeljunk)
+        self.skipped = 0
+        self.total_candidates = 0
+        self._broken = set()
 
     def enabled(self, detector):
         return getattr(self.cfg, detector.config_key, {}).get("enabled", True)
 
     def on_trade(self, trade):
-        """Visszaadja az osszes detektor jelzeset erre a trade-re (altalaban ures lista)."""
+        """Az osszes detektor CANDIDATE-je erre a trade-re (altalaban ures lista)."""
         self.ticks += 1
-        self.quality.on_trade(trade)
+        self.eligibility.on_trade(trade)
 
-        # A szaggatott, ossze-vissza ugralo parokra nem adunk jelzest: ott nincs mit
-        # megfogni. A detektorok viszont latjak az adatot, kulonben a statusz tabla
-        # "nincs eleg kereskedes"-t irna rajuk a valos ok (kizaras) helyett.
-        mehet, kizaras_oka = self.quality.tradeable(trade.symbol)
-        blokkolt = not mehet
+        mehet, _, _ = self.eligibility.check(trade.symbol)
+        if not mehet:
+            self.skipped += 1
+            return []
 
-        signals = []
+        candidates = []
         for d in self.detectors:
             if not self.enabled(d):
                 continue
@@ -49,45 +45,24 @@ class DetectorManager:
                     log.exception("[%s] a(z) %s detektor hibat dobott: %s",
                                   trade.symbol, d.name, e)
                 continue
-            if sig and blokkolt:
-                # a detektor mar kiirta a triggert -- mondjuk meg, miert nem lett belole
-                # jelzes, kulonben ugy tunik, mintha nyom nelkul eltunt volna
-                self.skipped += 1
-                log.warning("[%s] a(z) %s jelzese ELDOBVA: %s",
-                            trade.symbol, d.name, kizaras_oka)
-                events.add(f"{trade.symbol:<14} {d.name} jelzes ELDOBVA -- {kizaras_oka}")
-            elif sig:
-                self.total_signals += 1
-                signals.append(sig)
-        return signals
+            if sig:
+                self.total_candidates += 1
+                candidates.append(sig)
+        return candidates
 
-    telegram_status = None      # a SignalService tolti, csak a kijelzeshez
-
-    def status_lines(self):
-        """A detektorok sajat blokkjai a statusz tablahoz, egymas ala fuzve."""
-        for d in self.detectors:            # a kijelzeshez lassak a kizart parokat
-            if hasattr(d, "blocked"):
-                d.blocked = frozenset(self.quality.blocked)
-                d.noise = dict(self.quality.noise)
+    def debug_lines(self):
+        """Reszletes detektor-allapot -- csak DEBUG szinten."""
         out = []
-        if self.telegram_status:
-            out += self.telegram_status + [""]
-        out += self.quality.blocked_summary()
-        if out and out[-1] != "":
-            out.append("")
         for d in self.detectors:
             if not self.enabled(d):
-                out.append(f"  {d.name.upper()}  kikapcsolva "
-                           f"(config: {d.config_key}.enabled)")
                 continue
             try:
-                lines = d.status_lines()
+                sorok = d.status_lines()
             except Exception as e:
-                lines = [f"  {d.name.upper()}  statusz hiba: {e}"]
-            if lines:
-                if out:
-                    out.append("")
-                out.extend(lines)
+                sorok = [f"  statusz hiba: {e}"]
+            if sorok:
+                out.append(f"[{d.name}]")
+                out.extend(sorok)
         return out
 
     def take_ticks(self):

@@ -13,101 +13,87 @@ DETECTOR_DEFAULTS = {
     "_id": "detector",
     "enabled": True,
     "telegramEnabled": True,
-    "telegramMode": "auto",            # auto | always | never  (lasd arnyek mod)
-    # --- symbol szures ---
-    "quoteAssets": ["USDT", "USDC"],   # melyik elszamolo devizas perpetualokat nezzuk
-    "minQuoteVolume24h": 50_000_000,   # 24h forgalom minimum (az elszamolo devizaban)
-    "maxSymbols": 200,                 # top N forgalom szerint
-    "excludeSymbols": [],              # pl. ["1000PEPEUSDT", "TRUMPUSDT"] -- ezeket kihagyjuk
+
+    # ---- melyik parokat nezzuk egyaltalan ----
+    "quoteAssets": ["USDT", "USDC"],
+    "minQuoteVolume24h": 50_000_000,
+    "maxSymbols": 200,
     "symbolRefreshMinutes": 60,
-    # --- trigger: az utolso par masodperc trade-jeire illesztett egyenes ---
-    #
-    # IDOALAPU ablak, nem darabszam alapu. Egy nagy paron 30 aggTrade akar 30
-    # milliszekundum alatt is beerkezhet: ilyenkor egy apro arvaltozast egy apro
-    # idotartammal osztva hatalmas hamis "meredekseg" jon ki, a legnagyobb parokon
-    # pedig (azonos idobelyegu trade-ek miatt) egyaltalan nem lehetne merni.
-    "slopeWindowSec": 2.0,             # ekkora idoablakra illesztjuk az egyenest
-    "minTradesInWindow": 10,           # ennyi trade kell bele, kulonben nem merheto
-    "minTotalMovePct": 0.15,           # az ablakban ekkora nettó elmozdulas kell
-    "minSlopePctPerSec": 0.15,         # ennyi %/masodperc kell a jelzeshez
+    "symbolWhitelist": [],             # ha nem ures, CSAK ezeket figyeljuk
+    "symbolBlacklist": [],
+
+    # ---- realtime kereskedhetoseg (a detektorok ELOTT szur) ----
+    "maxSpreadPct": 0.05,              # ennel szelesebb spreadnel a scalp nem eri meg
+    "minTopDepthUSDT": 20_000,         # a legjobb szinten ennyi penz legyen
+    "minTradesPerMinute": 30,          # ritka kereskedesnel nincs mit megfogni
+
+    # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
+    "moveWindowSec": 2.0,              # ekkora ablakban merjuk az elmozdulast
+    "minTradesInWindow": 10,           # ennyi kotes kell bele
+    "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
+    "baselineRatio": 4.0,              # a mozgas a par normaljanak ennyiszerese legyen
+    "minMovePct": 0.15,                # abszolut padlo, hogy egy halott paron se jelezzunk
     "minConsistency": 0.70,            # a lepesek ekkora hanyada mutasson egy iranyba
-    "minVolumeFactor": 1.0,            # az ablakban legalabb ennyiszer annyi forgalom
-                                       # legyen, mint a par atlaga ugyanennyi ido alatt
-    "minMoveToSpreadRatio": 3.0,       # a mozgas legyen legalabb ennyiszer a spread --
-                                       # kulonben nem mozgas, csak a spread atlepese
-    "volatilityMultiplier": 4.0,       # 0 = ki. A meredekseg-kuszob sose megy a fenti
-                                       # ertek ala, de zajos parokon feljebb megy
-    "maxThresholdFactor": 10,          # a volatilitashoz igazitott kuszob legfeljebb
-                                       # ennyiszerese lehet az alapertelmezettnek
-    # --- signal ---
-    "minSignalScore": 60,
+    "minVolumeFactor": 1.0,            # az ablak forgalma a par atlaganak ennyiszerese
     "symbolCooldownSec": 60,
-    "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
-    "signalWindowMinutes": 10,        # ennyi idore visszamenoleg szamoljuk a jelzeseket
-    # --- mozgasminoseg: a szaggatott parokra nem lehet jelezni ---
-    "maxTickNoisePct": 0.08,          # ha EGY kotes atlagosan ennel tobbet mozdit az
-                                      # aron, a par nem kereskedheto (0 = kikapcsolva).
-                                      # BTC/ETH: 0.000x%  normal alt: 0.00x-0.0x%
-                                      # ossze-vissza ugralo meme: 0.1% folott
-    # --- kereskedelmi terv ---
-    "stopBufferPct": 0.05,            # a stop ennyivel kerul a horgony tuloldalara
-    "momentumStopRetracementPct": 50, # lendulet: a stop az impulzus ennyi %-anal.
-                                      # Ha az impulzus felet visszaadja, a tezis halott --
-                                      # nem kell megvarni, hogy a teljes mozgas visszajojjon.
-    "momentumTargetFactor": 1.0,      # a cel az impulzussal azonos meretu folytatas
-    "minRewardRisk": 1.5,             # ez alatt "gyenge aranyu"-nak jeloljuk a jelzest
-    # --- eredmenymeres: mi tortent a jelzes utan ---
-    "outcomeMinutes": 5,              # ennyi ideig kovetjuk az arat a jelzes utan
-    "outcomeTargetPct": 0.3,          # ezt elerve szamit jonak a jelzes
-    "outcomeStopPct": 0.3,            # ezt elerve szamit rossznak
-    # --- arnyek mod: Telegram csak bizonyitott score savokra ---
-    "shadowMinSamples": 50,           # ennyi lemert jelzes kell egy savhoz
-    "shadowMinHitRate": 0.55,         # es ekkora talalati arany
-    # --- order book ---
-    "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
-    "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall
-    "wallMaxDistancePct": 1.5,         # ennel tavolabbi wall mar nem erdekes
-    # --- TA ---
+
+    # ---- validacio a jelzes elott ----
+    "minMoveToSpreadRatio": 3.0,       # a mozgas legyen legalabb ennyiszer a spread
+    "wallBlockDistancePct": 0.15,      # ennel kozelebbi fal a mozgas iranyaban elutasit
+    "minRewardRisk": 1.5,              # ez alatt nem eri meg felvenni
+    "stopBufferOfDistancePct": 10,     # a stop ennyivel kerul a horgony moge,
+                                       # a belepo-horgony tavolsag aranyaban
+    "momentumStopRetracementPct": 50,  # a stop az impulzus ennyi %-anal
+    "momentumTargetFactor": 1.0,       # a cel azonos meretu folytatas
+
+    # ---- order book es EMA: csak informacio, nem kapu ----
+    "orderBookLevels": 20,
+    "wallSensitivity": 3.0,
+    "wallMaxDistancePct": 1.5,
     "emaFast": 9,
     "emaSlow": 21,
     "emaInterval": "1m",
+
+    # ---- eredmenymeres (nem kapuz semmit, csak visszajelzes) ----
+    "outcomeMinutes": 5,
+    "outcomeTargetPct": 0.3,
+    "outcomeStopPct": 0.3,
+
+    # ---- megjelenites ----
+    "statusIntervalSec": 60,           # ilyen surun egy rovid allapotsor
+    "signalWindowMinutes": 10,
 }
 
 REVERSAL_DEFAULTS = {
     "_id": "reversal",
     "enabled": True,
-    "telegramMode": "auto",            # auto | always | never
-    "minSignalScore": 60,              # sajat kuszob, fuggetlen a pump/dump-etol
     "cooldownSec": 120,
-    # --- rolling trade ablak ---
+
+    # ---- mekkora elozetes mozgas utan keresunk fordulot ----
+    "baselineRatio": 4.0,              # a par normaljanak ennyiszerese
+    "minMovePct": 0.30,                # abszolut padlo
+
+    # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
+    #
+    #   csucs  ─────────────────────  100%
+    #                                  61.8%  <- cel (targetRetracementPct)
+    #                                  25%    <- max belepo (maxRetracementPct)
+    #                                  12%    <- ide kell visszapattannia
+    #   melypont ───────────────────   0%     <- stop ez ala
+    #
+    "bounceOfMovePct": 12,
+    "pullbackOfBouncePct": 30,         # a visszapattanasbol ennyi visszahuzas -> micro szint
+    "breakOfMovePct": 5,               # az attores merete
+    "maxRetracementPct": 25,           # ennel tobb mar ne jojjon vissza, amikor jelzunk
+    "targetRetracementPct": 61.8,
+    "newExtremeOfMovePct": 2,
+
+    # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
-    "minTradesInFlowWindow": 5,
-    "maxSetupAgeSec": 20,              # ennyi ido utan elavul egy alakzat
-    # --- alakzat ---
-    "minMovePct": 0.40,                # a fordulo elotti mozgas merteke, szazalekban
-    # Az alakzat tobbi merete a MOZGAS ARANYABAN ertendo (0-100%), nem abszolut
-    # szazalekban -- igy egy 0.5%-os es egy 3%-os mozgasnal ugyanaz a logika mukodik.
-    #
-    #   csucs  ─────────────────────────────  100%
-    #                                          61.8%  <- cel (targetRetracementPct)
-    #                                          25%    <- max belepo (maxRetracementPct)
-    #                                          12%    <- ide kell visszapattannia
-    #   melypont ───────────────────────────  0%      <- stop ez ala
-    #
-    "bounceOfMovePct": 12,             # ennyit kell visszapattannia a mozgasbol
-    "pullbackOfBouncePct": 30,         # a visszapattanas ennyit huzzon vissza -> micro szint
-    "breakOfMovePct": 5,               # az attores legyen a mozgas ennyi %-a
-    "maxRetracementPct": 25,           # EZ A LENYEG: ennel tobb mar ne jojjon vissza,
-                                       # kulonben a kereskedheto resz elfogyott
-    "targetRetracementPct": 61.8,      # a cel a mozgas ennyi %-anal van
-    "maxExtremeAgeSec": 8,             # a szelsoertek ennel frissebb legyen
-    "newExtremeOfMovePct": 2,          # ennyivel melyebb minimum mar uj alakzatot indit
-    # --- trade flow ---
+    "maxExtremeAgeSec": 8,
     "flowWindowSeconds": 3,
-    "minFlowRatio": 1.6,               # buy/sell (vagy sell/buy) arany
-    "minFlowVolumeFactor": 1.0,        # a flow ablakban legalabb ennyiszer annyi forgalom
-                                       # legyen, mint a par atlaga ugyanennyi ido alatt.
-                                       # Enelkul par szaz USDT-bol is kijon egy 1.9x arany.
+    "minFlowRatio": 1.6,
+    "minTradesInFlowWindow": 5,
 }
 
 TRADING_DEFAULTS = {

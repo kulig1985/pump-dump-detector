@@ -13,6 +13,8 @@ from .db import Database
 from .config import ConfigStore
 from .market_data import MarketDataService
 from .detectors import DetectorManager, PumpDumpDetector, ReversalDetector
+from .detectors.baseline import Baseline
+from .eligibility import Eligibility
 from .signals import SignalService
 from .telegram import TelegramNotifier
 from .trading import TradingService
@@ -47,21 +49,21 @@ def startup_summary(cfg):
     """
     d, r, t = cfg.detector, cfg.reversal, cfg.trading
     return [
-        f"Pump/dump: legalabb {d['minTotalMovePct']:.2f}% mozgas "
-        f"{d['slopeWindowSec']:.0f} mp-en belul, {d['minSlopePctPerSec']:.3f}%/mp tempoval, "
-        f"{d['minConsistency']:.0%} egyiranyusaggal | min score {d['minSignalScore']} "
-        f"| cooldown {d['symbolCooldownSec']}s",
-        f"Reversal: {r['minMovePct']:.2f}% elozetes mozgas, belepes a mozgas "
-        f"{r['maxRetracementPct']:.0f}%-an belul, max {r['maxExtremeAgeSec']:.0f} mp regi "
-        f"szelsoertekre | min score {r['minSignalScore']} | cooldown {r['cooldownSec']}s",
-        f"Szures: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
-        f"egy kotes max {d['maxTickNoisePct']:.3f}%-ot mozdit, "
-        f"mozgas >= {d['minMoveToSpreadRatio']:.0f}x spread",
-        f"Telegram: pump_dump={d['telegramMode']}, reversal={r['telegramMode']} "
-        f"(auto = csak {d['shadowMinSamples']} lemert jelzes es "
-        f"{d['shadowMinHitRate']:.0%} talalat utan)",
-        f"Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} | "
-        f"margin: {t['marginMode']} | {t['leverage']}x",
+        f"Kereskedhetoseg: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
+        f"spread <= {d['maxSpreadPct']:.3f}%, melyseg >= {d['minTopDepthUSDT']:,.0f} USDT, "
+        f"legalabb {d['minTradesPerMinute']} kotes/perc",
+        f"Pump/dump: a mozgas a par sajat normaljanak {d['baselineRatio']:.1f}x-e "
+        f"({d['baselineMinutes']} perc visszatekintes, min {d['minMovePct']:.2f}%), "
+        f"{d['minConsistency']:.0%} egyiranyusag, cooldown {d['symbolCooldownSec']}s",
+        f"Reversal: elozetes mozgas a normal {r['baselineRatio']:.1f}x-e "
+        f"(min {r['minMovePct']:.2f}%), belepes a mozgas {r['maxRetracementPct']:.0f}%-an "
+        f"belul, max {r['maxExtremeAgeSec']:.0f} mp regi szelsoertekre",
+        f"Validacio: mozgas >= {d['minMoveToSpreadRatio']:.0f}x spread, "
+        f"nincs fal {d['wallBlockDistancePct']:.2f}%-on belul, "
+        f"hozam/kockazat >= {d['minRewardRisk']:.1f}:1",
+        f"Telegram: {'BE -- minden SIGNAL azonnal megy' if d['telegramEnabled'] else 'KI'}"
+        f"   |   Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} "
+        f"({t['marginMode']}, {t['leverage']}x)",
     ]
 
 
@@ -79,17 +81,23 @@ async def main():
     trader = TradingService(cfg, db)
     signals = SignalService(cfg, db, notifier, trader)
 
+    # A baseline-t a ket detektor megosztva hasznalja: ugyanaz a "mi normalis
+    # ezen a paron" mertek all mindketto mogott.
+    baseline = Baseline(cfg)
+    eligibility = Eligibility(cfg)
+
     # Uj detektor hozzaadasa: egy uj osztaly az app/detectors/ ala, es egy sor ide.
-    detectors = DetectorManager(cfg, [PumpDumpDetector(cfg), ReversalDetector(cfg)])
+    detectors = DetectorManager(cfg, [PumpDumpDetector(cfg, baseline),
+                                      ReversalDetector(cfg, baseline)], eligibility)
     log.info("Detektorok: %s", ", ".join(
         f"{d.name} ({'BE' if detectors.enabled(d) else 'KI'})" for d in detectors.detectors))
 
-    market = MarketDataService(cfg, db, detectors, on_signal=signals.handle_trigger)
-    market.telegram_status = signals.telegram_status_lines
+    market = MarketDataService(cfg, db, detectors, eligibility,
+                               on_signal=signals.handle_trigger)
+    market.signal_service = signals
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run(),
-                             signals.refresh_hit_rates(),
                              outcome.summary_loop(db, cfg.detector))
     finally:
         await notifier.close()

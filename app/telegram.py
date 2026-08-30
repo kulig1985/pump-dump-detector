@@ -71,75 +71,52 @@ class TelegramNotifier:
 
 
 def format_signal(sig):
-    """Kozos boritek + a detektor sajat (cimke, ertek) sorai, egymas ala igazitva.
+    """Kozos boritek + a jelzes indoklas-listaja.
 
-    Uj detektornal itt nincs teendo: a detektor a signal "lines" mezojeben adja a
-    sajat bizonyitekait, a HEADERS-be pedig legfeljebb egy sort kell felvenni.
+    Nincs score: helyette az, hogy MIERT lett jelzes, es milyen mert szamokkal.
     """
     detector = sig.get("detector", "pump_dump")
     direction = sig["direction"]
     emoji, cim, tortent, jelent = HEADERS.get(
-        (detector, direction),
-        ("⚡", f"{detector}", "", f"{direction} pozicio"))
-
+        (detector, direction), ("⚡", detector, "", f"{direction} pozicio"))
     url = sig.get("url") or binance_url(sig["symbol"])
+
     fej = (f"{emoji} <b>{cim}</b>  ·  "
            f"<a href=\"{esc(url)}\"><b>{esc(sig['symbol'])}</b></a>\n"
            f"{esc(tortent)}\n"
            f"➜ <b>{esc(jelent)}</b>\n"
-           f"score <b>{sig['score']}/100</b>  ·  "
            f"{sig['timestamp'].strftime('%H:%M:%S')} UTC  ·  {esc(detector)}")
 
     alap = [("ar", f"{sig['price']:.8g}")]
     if sig.get("quoteVolume24h"):
         alap.append(("24h forgalom", f"{sig['quoteVolume24h'] / 1e6:,.0f}M USDT"))
 
+    t = sig.get("plan")
+    terv = [] if not t else [
+        ("belepo", f"{t['entry']:.8g}"),
+        ("cel", f"{t['target']:.8g}   (+{t['targetPct']:.2f}%)"),
+        ("stop", f"{t['stop']:.8g}   (-{t['stopPct']:.2f}%)"),
+        ("hozam/kockazat", f"{t['rewardRisk']} : 1"),
+    ]
+
     kontextus = []
     ema = sig.get("ema")
-    if ema:
-        hol = "ar az EMA9 felett" if ema.get("aboveFast") else "ar az EMA9 alatt"
-        kontextus.append(("EMA", f"{ema['trend']}   ({hol})"))
-    else:
-        kontextus.append(("EMA", "n/a"))
-
-    ob = sig.get("orderBook") or {}
-    for nev, kulcs in (("sell wall", "nearestSellWall"), ("buy wall", "nearestBuyWall")):
-        wall = ob.get(kulcs)
-        kontextus.append((nev, f"{wall['distancePct']:.2f}% tavolsagra" if wall else "nincs kozel"))
-
+    kontextus.append(("EMA", f"{ema['trend']} (csak informacio)" if ema else "n/a"))
     r = sig.get("recent")
     if r:
         kontextus.append(("gyakorisag",
                           f"{r['sameDirection']}. {direction} {r['windowMinutes']} percen belul"))
         kontextus.append((f"{detector} / {r['windowMinutes']} perc",
-                          f"{r['marketLong']} LONG / {r['marketShort']} SHORT"))
+                          f"{r['detectorLong']} LONG / {r['detectorShort']} SHORT"))
 
-    terv_sorok = []
-    t = sig.get("plan")
-    if t:
-        terv_sorok = [
-            ("belepo", f"{t['entry']:.8g}"),
-            ("cel", f"{t['target']:.8g}   (+{t['targetPct']:.2f}%)"),
-            ("stop", f"{t['stop']:.8g}   (-{t['stopPct']:.2f}%)"),
-            ("hozam/kockazat", f"{t['rewardRisk']} : 1"
-                               + ("   GYENGE" if t["weak"] else "")),
-        ]
-
-    blokkok = [("", alap),
-               ("TERV", terv_sorok),
-               ("MIERT", [tuple(x) for x in sig.get("lines", [])]),
-               ("KONTEXTUS", kontextus)]
-
+    blokkok = [("", alap), ("TERV", terv), ("KONTEXTUS", kontextus)]
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
-    veg = ""
-    if t and t["weak"]:
-        veg += (f"\n\n⚠️ <b>Gyenge hozam/kockazat</b> ({t['rewardRisk']}:1, "
-                f"ajanlott {t['minRewardRisk']}:1 felett)")
-    veg += f"\n\n<i>{esc(sig['reason'])}</i>"
-    veg += f"\n{esc(url)}"
+
+    indok = "\n".join(f"  • {esc(x)}" for x in sig.get("reasons", []))
+    veg = f"\n\n<b>MIERT</b>\n{indok}" if indok else ""
     if sig.get("trade", {}).get("executed"):
-        veg += f"\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
-    return f"{fej}\n\n<pre>{torzs}</pre>{veg}"
+        veg += f"\n\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
+    return f"{fej}\n\n<pre>{torzs}</pre>{veg}\n{esc(url)}"
 
 
 def _blokk(nev, sorok):
