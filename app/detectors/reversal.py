@@ -131,6 +131,7 @@ class ReversalDetector(Detector):
                  trade.price, setup.move_pct, break_pct, c["confirmSec"])
         self.pending[trade.symbol] = {
             "deadline": trade.ts + c["confirmSec"],
+            "history": [(t.ts, t.price) for t in w],
             "setup": setup, "flow": flow, "break_pct": break_pct,
             "retrace": retrace, "kor": kor,
         }
@@ -142,6 +143,7 @@ class ReversalDetector(Detector):
         """Tartja-e magat az attores? Ez valasztja el a fordulot a zajtol."""
         c = self.cfg.reversal
         p = self.pending[trade.symbol]
+        p["history"].append((trade.ts, trade.price))
         if trade.ts < p["deadline"]:
             return None
         del self.pending[trade.symbol]
@@ -160,7 +162,7 @@ class ReversalDetector(Detector):
 
         self.total_signals += 1
         return self._signal(trade, setup, p["flow"], p["break_pct"],
-                            p["retrace"], p["kor"], c, w)
+                            p["retrace"], p["kor"], c, w, p["history"])
 
     # ------------------------------------------------------------------ allapotgep
 
@@ -321,7 +323,8 @@ class ReversalDetector(Detector):
 
     # ------------------------------------------------------------------ signal
 
-    def _signal(self, trade, setup, flow, break_pct, retrace, kor, c, window):
+    def _signal(self, trade, setup, flow, break_pct, retrace, kor, c, window,
+                history=None):
         direction = setup.side
         bounce_pct = abs(trade.price - setup.extreme) / setup.extreme * 100.0
         szint = "melypont" if direction == "LONG" else "csucs"
@@ -363,7 +366,7 @@ class ReversalDetector(Detector):
                 "tradesInFlow": flow["trades"],
                 "origin": setup.origin,
             },
-            history=[(t.ts, t.price) for t in window],
+            history=history or [(t.ts, t.price) for t in window],
         )
 
     # ------------------------------------------------------------------ statusz

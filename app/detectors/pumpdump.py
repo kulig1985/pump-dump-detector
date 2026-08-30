@@ -108,6 +108,10 @@ class PumpDumpDetector(Detector):
 
         self.pending[trade.symbol] = {
             "direction": direction,
+            # A jelzes csak confirmSec mulva megy ki, addigra az ablak (2x moveWindowSec)
+            # mar TOVAGORDUL a mozgason. A bizonyitekot itt kell elmenteni, kulonben a
+            # market_snapshots egy lapos par masodpercet orizne a mozgas helyett.
+            "history": [(t, p) for t, p, _ in h],
             "startPrice": m["startPrice"],
             "triggerPrice": trade.price,
             "deadline": trade.ts + c["confirmSec"],
@@ -122,6 +126,7 @@ class PumpDumpDetector(Detector):
         """Megtartotta-e az ar a mozgast? Ez valasztja el az elindulast a korrekciotol."""
         c = self.cfg.detector
         p = self.pending[trade.symbol]
+        p["history"].append((trade.ts, trade.price))
         if trade.ts < p["deadline"]:
             return None
         del self.pending[trade.symbol]
@@ -167,7 +172,7 @@ class PumpDumpDetector(Detector):
             trade.ts,
             reasons=reasons,
             metrics=m,
-            history=[(t, pr) for t, pr, _ in h],
+            history=p["history"],
         )
 
     # ------------------------------------------------------------------ meres

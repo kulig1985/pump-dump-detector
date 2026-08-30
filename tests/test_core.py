@@ -665,6 +665,30 @@ def test_config_split_moves_your_existing_values():
     assert "minQuoteVolume24h" not in coll.docs["detector"], "a regi kulcs kikerult"
 
 
+def test_saved_history_contains_the_move_not_the_confirmation():
+    """A jelzes csak confirmSec mulva megy ki -- addigra a detektor ablaka mar
+    tovagordul a mozgason. VALODI eset (ZECUSDT): a market_snapshots egy lapos
+    4 masodpercet orzott 860.1-860.6 kozott, a +0.80%-os mozgas helyett.
+    """
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "ZECUSDT")
+    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
+    sig = feed(det, "ZECUSDT", 1000.0, tart(fel))[0]
+    h = sig["history"]
+    arak = [p for _, p in h]
+    assert min(arak) <= 100.001, "a mozgas ELOTTI szintnek benne kell lennie"
+    assert max(arak) >= 100.9, "es a mozgas tetejenek is"
+    assert h[-1][0] - h[0][0] >= CFG["confirmSec"], "a megerositesig tarto ut is"
+
+
+def test_wall_distance_is_not_rounded_into_meaninglessness():
+    """A "fal a mozgas iranyaban 0.00%-ra" ugy nez ki, mintha hianyozna az adat."""
+    from app.telegram import _tav
+    assert _tav(0.004) == "0.004%"
+    assert _tav(0.05) == "0.05%"
+    assert _tav(1.5) == "1.50%"
+
+
 def test_telegram_heartbeat_renders():
     """Idoszakos eletjel: ures allapotban (meg semmi nem tortent) se hibazzon,
     es teljes allapotban tartalmazza a lenyeget."""

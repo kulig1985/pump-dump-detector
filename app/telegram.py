@@ -97,7 +97,7 @@ def format_signal(sig, app_link_template=""):
     ob = sig.get("orderBook") or {}
     for nev, kulcs in (("sell wall", "nearestSellWall"), ("buy wall", "nearestBuyWall")):
         w = ob.get(kulcs)
-        kontextus.append((nev, f"{w['distancePct']:.2f}% tavolsagra" if w else "nincs kozel"))
+        kontextus.append((nev, f"{_tav(w['distancePct'])} tavolsagra" if w else "nincs kozel"))
     r = sig.get("recent")
     if r:
         kontextus.append(("gyakorisag",
@@ -148,6 +148,11 @@ def format_status(info):
     else:
         veg += "\n\n<i>Meg nincs lemert jelzes.</i>"
     return f"{fej}\n\n<pre>{torzs}</pre>{veg}"
+
+
+def _tav(pct):
+    """0.004% ne "0.00%"-kent jelenjen meg -- ugy ugy nez ki, mintha nem lenne adat."""
+    return f"{pct:.3f}%" if abs(pct) < 0.01 else f"{pct:.2f}%"
 
 
 def _blokk(nev, sorok):

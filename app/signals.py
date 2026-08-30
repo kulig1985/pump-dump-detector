@@ -58,7 +58,7 @@ class SignalService:
                 metrics["spreadPct"] = ob["spreadPct"]
             fal = ob.get("nearestSellWall") if direction == "LONG" \
                 else ob.get("nearestBuyWall")
-            reasons.append(f"fal a mozgas iranyaban {fal['distancePct']:.2f}%-ra"
+            reasons.append(f"fal a mozgas iranyaban {_tav(fal['distancePct'])}-ra"
                            if fal else "nincs fal a mozgas iranyaban")
 
         signal = {
@@ -130,6 +130,11 @@ class SignalService:
             "detectorShort": sum(1 for _, det, _, d in self.recent
                                  if det == detector and d == "SHORT"),
         }
+
+
+def _tav(pct):
+    """Tavolsag szazalekban. 0.004% ne "0.00%"-kent jelenjen meg -- ertelmetlen."""
+    return f"{pct:.3f}%" if abs(pct) < 0.01 else f"{pct:.2f}%"
 
 
 def _without_snapshot(ob):
