@@ -119,9 +119,20 @@ Utána a logban ezt kell látnod:
 12:04:12 INFO  market    Indul 2 WebSocket kapcsolat, osszesen 187 symbol
 12:04:13 INFO  market    WS #1 csatlakozva (150 stream)
 12:04:13 INFO  market    WS #2 csatlakozva (37 stream)
+12:04:43 INFO  market    STATUS  uptime 0m32s | 9,412 tick (313/s) | 184 aktiv symbol | 2/2 WS el | trigger: 0 (osszesen 0)
+12:04:43 INFO  market    STATUS  legnagyobb mozgas: WIFUSDT 5s +0.21% | PEPEUSDT 3s -0.14% | SUIUSDT 5s +0.11%
 ```
 
-Innentől csendben figyel. Ha van mozgás:
+Innentől **30 másodpercenként jön egy `STATUS` sor** — ebből látod, hogy él-e a stream,
+hány tick jön, és mennyire volt közel bármi a küszöbhöz. Ha nem érkezik tick, `ERROR`
+szintű sort kapsz. Ugyanez a Mongo `status` collectionben is frissül, tehát kívülről is
+monitorozható:
+
+```js
+db.status.findOne({_id:"detector"})
+```
+
+Ha van mozgás:
 
 ```
 12:05:22 WARN  detector  [PEPEUSDT] TRIGGER LONG | 1s +0.34% | 3s +0.71% | 5s +1.02%
@@ -193,6 +204,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban |
 | `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
+| `heartbeatSec` | `30` | ilyen sűrűn ír `STATUS` sort és DB heartbeatet |
 | `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
 | `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
 | `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |
@@ -204,7 +216,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 |---|---|
 | `autoTradingEnabled` | **`false`** |
 | `positionSizeUSDT` | `20` (notional, nem margin) |
-| `leverage` / `marginMode` | `5` / `ISOLATED` |
+| `leverage` / `marginMode` | `5` / `CROSSED` (EU-ban az ISOLATED nem elérhető) |
 | `takeProfitPct` / `stopLossPct` | `1.5` / `0.8` |
 | `maxOpenPositions` | `3` |
 | `longEnabled` / `shortEnabled` | `true` / `true` |
@@ -230,6 +242,8 @@ Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 - `signals` — minden detektált jelzés (score, EMA, order book összefoglaló, Telegram/trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
+- `status` — egyetlen dokumentum (`_id: "detector"`), 30 másodpercenként frissülő életjel:
+  uptime, tick/s, élő WS kapcsolatok, trigger számláló, legnagyobb mozgások
 
 ## Binance API — mit használunk
 
@@ -251,7 +265,9 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 | `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
 | a detector csendben áll, nincs `MongoDB kapcsolat kesz` sor | nem éri el a Mongo-t — lásd a 3/a pont `bindIp` részét |
 | `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. Vagy közvetlenül: `db.config.updateOne({_id:"telegram"},{$set:{botToken:"...",chatId:"..."}})` |
-| nincs jelzés órák óta | normális nyugodt piacon — nézd a fenti gyors próbát |
+| nincs jelzés órák óta | normális nyugodt piacon — a `STATUS` sor `legnagyobb mozgas` része mutatja, mennyire volt közel bármi a küszöbhöz. Ha tartósan messze, vedd lejjebb a küszöböt |
+| `EGY symbol sem felel meg a ... forgalmi kuszobnek` | vedd lejjebb a `minQuoteVolume24h` értéket |
+| kevés symbolt figyel | a `Legnagyobb / legkisebb bevalasztott` log sor mutatja, hol húz a szűrő |
 | `WS #1 szakadas ... ujracsatlakozas` | átmeneti hálózati hiba, magától visszaáll (exponenciális backoff) |
 
 ## Figyelmeztetés

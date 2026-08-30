@@ -18,6 +18,7 @@ class Database:
         self.signals = self.db["signals"]
         self.snapshots = self.db["market_snapshots"]
         self.orders = self.db["orders"]
+        self.status = self.db["status"]
 
     async def init(self):
         await self.signals.create_index([("timestamp", -1)])

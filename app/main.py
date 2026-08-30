@@ -34,12 +34,14 @@ async def main():
              cfg.detector["priceChangeThreshold1s"], cfg.detector["priceChangeThreshold3s"],
              cfg.detector["priceChangeThreshold5s"], cfg.detector["minSignalScore"],
              cfg.detector["symbolCooldownSec"])
-    log.info("Auto trading: %s", "BE" if cfg.trading["autoTradingEnabled"] else "KI")
+    log.info("Auto trading: %s | margin: %s | %dx",
+         "BE" if cfg.trading["autoTradingEnabled"] else "KI",
+         cfg.trading["marginMode"], cfg.trading["leverage"])
 
     notifier = TelegramNotifier(cfg)
     trader = TradingService(cfg, db)
     signals = SignalService(cfg, db, notifier, trader)
-    market = MarketDataService(cfg, on_trigger=signals.handle_trigger)
+    market = MarketDataService(cfg, db, on_trigger=signals.handle_trigger)
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run())

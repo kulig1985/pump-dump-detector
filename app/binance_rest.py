@@ -89,6 +89,14 @@ async def load_symbols(min_quote_volume, max_symbols):
 
     log.info("Perpetual USDT parok: %d | forgalom >= %s USDT: %d | figyelunk: %d",
              len(tradable), f"{min_quote_volume:,.0f}", len(liquid), len(symbols))
+    if liquid:
+        # latszodjon, hol huz a szuro -- ha keves symbol jon at, itt derul ki, hogy miert
+        log.info("Legnagyobb: %s (%s USDT) | legkisebb bevalasztott: %s (%s USDT)",
+                 liquid[0][0], f"{liquid[0][1]:,.0f}",
+                 liquid[len(symbols) - 1][0], f"{liquid[len(symbols) - 1][1]:,.0f}")
+    else:
+        log.error("EGY symbol sem felel meg a %s USDT forgalmi kuszobnek -- "
+                  "vedd lejjebb a minQuoteVolume24h erteket!", f"{min_quote_volume:,.0f}")
     return symbols
 
 

@@ -24,6 +24,7 @@ DETECTOR_DEFAULTS = {
     # --- signal ---
     "minSignalScore": 60,
     "symbolCooldownSec": 60,
+    "heartbeatSec": 30,               # ilyen surun ir statusz sort es DB heartbeatet
     # --- order book ---
     "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
     "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall
@@ -39,7 +40,7 @@ TRADING_DEFAULTS = {
     "autoTradingEnabled": False,       # ALAPERTELMEZETTEN KIKAPCSOLVA
     "positionSizeUSDT": 20.0,          # notional (nem margin)
     "leverage": 5,
-    "marginMode": "ISOLATED",          # ISOLATED | CROSSED
+    "marginMode": "CROSSED",           # CROSSED | ISOLATED (EU-ban az ISOLATED nem elerheto)
     "takeProfitPct": 1.5,
     "stopLossPct": 0.8,
     "maxOpenPositions": 3,
