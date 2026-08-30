@@ -187,7 +187,18 @@ def test_wall_behind_price_is_not_an_obstacle():
 
 def _trigger(c1, c3, c5):
     return {"symbol": "X", "direction": "LONG", "price": 100.0,
-            "changes": {1: c1, 3: c3, 5: c5}}
+            "changes": {1: c1, 3: c3, 5: c5},
+            "thresholds": {1: CFG["priceChangeThreshold1s"],
+                           3: CFG["priceChangeThreshold3s"],
+                           5: CFG["priceChangeThreshold5s"]}}
+
+
+def test_trigger_carries_its_own_thresholds():
+    """A trigger viszi magaval az ervenyes kuszoboket, hogy a scoring azokhoz merjen."""
+    det = MovementDetector(cfg_obj)
+    prices = [100.0] * 26 + [100.5] * 5
+    t = feed(det, "IIIUSDT", 1000.0, prices)[0]
+    assert t["thresholds"] == {1: 0.30, 3: 0.60, 5: 0.90}
 
 
 def test_score_increases_with_stronger_move():
