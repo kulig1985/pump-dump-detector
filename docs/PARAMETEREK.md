@@ -65,10 +65,10 @@ Milyen elszámoló devizás párokat figyelünk.
 > **Példa:** `["USDT"]` — csak a USDT párok. A `BTCUSDC`, `ETHUSDC` kiesik, jellemzően
 > 30–40 párral kevesebbet nézünk.
 
-### `minQuoteVolume24h` — alap: `200 000 000`
+### `minQuoteVolume24h` — alap: `120 000 000`
 Ennél kisebb 24 órás forgalmú (USDT-ben mért) párok kiesnek. Ez a **likviditási szűrő**:
 kis forgalmú páron egy nagyobb megbízás magától elviszi az árat.
-> **Példa:** `200000000` (200M) mellett kb. 40–60 pár marad a Binance ~500 perpetual
+> **Példa:** `120000000` (120M) mellett kb. 60–90 pár marad a Binance ~500 perpetual
 > párjából. `500000000`-ra emelve már csak a top 20–30 (BTC, ETH, SOL, XRP…).
 > `20000000` mellett bejönnek a kisebb altok is — több jelzés, több zaj.
 

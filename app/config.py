@@ -25,7 +25,7 @@ MARKET_DEFAULTS = {
 
     # ---- melyik parokat nezzuk egyaltalan ----
     "quoteAssets": ["USDT", "USDC"],
-    "minQuoteVolume24h": 200_000_000,
+    "minQuoteVolume24h": 120_000_000,
     "maxSymbols": 60,
     "symbolRefreshMinutes": 60,
     "symbolWhitelist": [],             # ha nem ures, CSAK ezeket figyeljuk
