@@ -17,15 +17,17 @@ DETECTOR_DEFAULTS = {
     "minQuoteVolume24h": 50_000_000,   # USDT, 24h forgalom minimum
     "maxSymbols": 200,                 # top N forgalom szerint
     "symbolRefreshMinutes": 60,
-    # --- trigger kuszobok (szazalek) ---
-    "priceChangeThreshold1s": 0.30,
-    "priceChangeThreshold3s": 0.60,
-    "priceChangeThreshold5s": 0.90,
-    # --- hamis jelzesek szurese ---
+    # --- trigger: az utolso N trade-re illesztett egyenes meredeksege ---
+    "tradeWindow": 30,                 # ennyi trade-bol szamolunk meredekseget
+    "maxSpanSec": 5.0,                 # ha ez a N trade ennel hosszabb ido alatt tortent,
+                                       # akkor nem hirtelen mozgas -- nem erdekel
+    "minSlopePctPerSec": 0.15,         # ennyi %/masodperc kell a jelzeshez
+    "minConsistency": 0.70,            # a lepesek ekkora hanyada mutasson egy iranyba
+    "volatilityMultiplier": 4.0,       # 0 = ki. A meredekseg-kuszob sose megy a fenti
+                                       # ertek ala, de zajos parokon feljebb megy
+    # --- csak a tablazatban mutatott 1/3/5 mp-es szamokhoz ---
     "minTicksInWindow": 3,             # ennyi trade-nek kell lennie az ablakban
     "maxRefAgeFactor": 1.5,            # a viszonyitasi pont max ennyiszer regebbi az ablaknal
-    "volatilityMultiplier": 4.0,       # 0 = ki. A kuszob sose megy a fenti ertek ala,
-                                       # de a sajat zajahoz kepest nyugtalan parokon feljebb megy
     # --- signal ---
     "minSignalScore": 60,
     "symbolCooldownSec": 60,
@@ -109,6 +111,25 @@ class ConfigStore:
             merged = {k: (defaults[k] if v == "" and defaults.get(k) else v)
                       for k, v in merged.items()}
             setattr(self, attr, merged)
+            self._warn_legacy(defaults, doc)
+
+    _warned = set()
+    LEGACY = {
+        "priceChangeThreshold1s": "minSlopePctPerSec",
+        "priceChangeThreshold3s": "minSlopePctPerSec",
+        "priceChangeThreshold5s": "minSlopePctPerSec",
+    }
+
+    def _warn_legacy(self, defaults, doc):
+        """Szoljunk, ha a DB-ben olyan kulcs van, amit mar senki nem olvas.
+
+        Kulonben csendben lehet allitgatni egy erteket, aminek semmi hatasa."""
+        for key, helyette in self.LEGACY.items():
+            if key in doc and key not in defaults and key not in self._warned:
+                self._warned.add(key)
+                log.warning("A config.%s mar NEM hasznalt (regi ido-ablakos trigger). "
+                            "Helyette: %s. Nyugodtan torolheto a DB-bol.",
+                            key, helyette)
 
     async def refresh_loop(self, interval=30):
         while True:

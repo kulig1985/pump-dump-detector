@@ -40,7 +40,7 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/market_data.py` | aggTrade WS-ek 150-es chunkokban, reconnect |
 | `app/detectors/base.py` | közös `Trade` / `Signal` alak, `Detector` interfész |
 | `app/detectors/manager.py` | fan-out a detektorokra, detektoronkénti hibakezelés |
-| `app/detectors/pumpdump.py` | 1s/3s/5s rolling ablak, trigger, cooldown, ártábla |
+| `app/detectors/pumpdump.py` | meredekség (%/mp) + egyirányúság az utolsó N trade-en, cooldown, ártábla |
 | `app/detectors/reversal.py` | lokális árforduló állapotgép `aggTrade`-ből |
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |

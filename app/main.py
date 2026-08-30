@@ -31,10 +31,11 @@ async def main():
 
     cfg = ConfigStore(db)
     await cfg.load()
-    log.info("Kuszobok: 1s %.2f%% | 3s %.2f%% | 5s %.2f%% | min score %d | cooldown %ds",
-             cfg.detector["priceChangeThreshold1s"], cfg.detector["priceChangeThreshold3s"],
-             cfg.detector["priceChangeThreshold5s"], cfg.detector["minSignalScore"],
-             cfg.detector["symbolCooldownSec"])
+    log.info("Pump/dump trigger: %.3f%%/mp meredekseg + %.0f%% egyiranyusag "
+             "%d trade-en (max %.0f mp) | min score %d | cooldown %ds",
+             cfg.detector["minSlopePctPerSec"], cfg.detector["minConsistency"] * 100,
+             cfg.detector["tradeWindow"], cfg.detector["maxSpanSec"],
+             cfg.detector["minSignalScore"], cfg.detector["symbolCooldownSec"])
     log.info("Auto trading: %s | margin: %s | %dx",
          "BE" if cfg.trading["autoTradingEnabled"] else "KI",
          cfg.trading["marginMode"], cfg.trading["leverage"])

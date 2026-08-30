@@ -17,7 +17,7 @@ Két detektor fut párhuzamosan ugyanazon a trade-folyamon, külön konfiguráci
 
 | detektor | mit keres | config dokumentum |
 |---|---|---|
-| `pump_dump` | hirtelen, egyirányú ármozgás 1/3/5 mp-es ablakban | `detector` |
+| `pump_dump` | hirtelen, egyirányú ármozgás — az utolsó N trade meredeksége | `detector` |
 | `reversal` | rövid távú lokális árforduló (mélypont → visszapattanás → micro-high áttörés) | `reversal` |
 
 ---
@@ -200,23 +200,39 @@ Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
 
 ---
 
-## Miért nincs / miért van jelzés
+## Hogyan dönt a pump/dump detektor
 
-Három szűrő védi a hamis jelzésektől, mindhárom kikapcsolható:
+**Nem** azt nézi, mennyit változott az ár 1 / 3 / 5 másodperc alatt. Az a mérés nem
+látja, mi történt közben: egyetlen kiugró print vagy egy fűrészfog ugyanúgy átlépi a
+küszöböt, mint egy valódi pump.
 
-1. **`minTicksInWindow`** — egyetlen trade, ami átüti a spreadet, nem mozgás.
-   Az ablakban legalább ennyi kereskedésnek kell lennie, különben `--` az érték.
-2. **`maxRefAgeFactor`** — ritkán kereskedett páron az „1 másodperces" változás
-   viszonyítási pontja lehet 3 másodperces is. Ha a referencia ennél régebbi,
-   inkább nem mérünk, mint hogy félrevezető számot adjunk.
-3. **`volatilityMultiplier`** — minden pár a **saját zajszintjéhez** mérve triggerel.
-   A configban megadott érték a padló, ez alá sosem megy. Egy nyugodt párnál marad
-   0.30%, egy folyamatosan ugráló meme coinnál felmehet 1.5–2%-ra. A státusz tábla
-   `sajat kuszob` oszlopa és a Telegram üzenet `Trigger threshold (1s)` sora
-   mutatja, mi az érvényes érték.
+Helyette az utolsó `tradeWindow` darab trade-re **egyenest illeszt**, és két dolgot néz:
 
-Ha kevés a jelzés, ezek a lazítás fogói (`volatilityMultiplier: 2`, `minTicksInWindow: 2`).
-Ha sok a hamis jelzés, szigoríts (`volatilityMultiplier: 6`).
+- **meredekség** `%/másodperc`-ben — ez a mozgás *sebessége*, nem a nagysága
+- **egyirányúság** — a lépések hány százaléka mutat a meredekség irányába
+
+Jelzés csak akkor van, ha mindkettő átmegy, és az N trade `maxSpanSec`-en belül történt.
+Mért összehasonlítás ugyanazon az adaton:
+
+| eset | 1 mp változás | meredekség | egyirányúság | régi | mostani |
+|---|---|---|---|---|---|
+| valódi pump (+0.5% / 2 mp) | +0.25% | +0.249%/mp | 100% | — | **jelzés** |
+| lassú kúszás (+0.5% / 90 mp) | +0.00% | +0.008%/mp | 100% | — | — |
+| egyetlen kiugró print, aztán vissza | +0.45% | +0.000%/mp | 0% | **jelzés** | — |
+| fűrészfog, nagy amplitúdó | −0.24% | −0.004%/mp | 48% | **jelzés** | — |
+
+A meredekség `%/másodperc`-ben van, ezért a sebesség dimenzió megmarad: a lassú kúszás
+30× kisebb értéket ad, mint a valódi pump — pedig a teljes elmozdulás ugyanaz.
+
+**`volatilityMultiplier`** — minden pár a **saját zajszintjéhez** mérve triggerel. A
+configban megadott érték a padló, ez alá sosem megy. A táblázat `kuszob` oszlopa mutatja
+a párra érvényes értéket.
+
+Ha kevés a jelzés: `minSlopePctPerSec` lejjebb, vagy `minConsistency: 0.6`.
+Ha sok a szemét: `minConsistency: 0.8`, vagy `volatilityMultiplier: 6`.
+
+> A régi `priceChangeThreshold1s/3s/5s` kulcsok **már nem hatnak semmire**. Ha a
+> MongoDB-ben még megvannak, induláskor figyelmeztetést írunk róluk; nyugodtan törölhetők.
 
 ## ReversalDetector
 
@@ -303,10 +319,12 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `telegramEnabled` | `true` | értesítés küldése |
 | `minQuoteVolume24h` | `50000000` | ez alatti 24h forgalmú párokat kihagyjuk |
 | `maxSymbols` | `200` | top N pár forgalom szerint |
-| `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban (ez a **padló**) |
-| `minTicksInWindow` | `3` | ennyi trade-nek kell lennie az ablakban, különben nem mérhető |
-| `maxRefAgeFactor` | `1.5` | a viszonyítási pont legfeljebb ennyiszer régebbi az ablaknál |
+| `tradeWindow` | `30` | ennyi trade-ből számolunk meredekséget |
+| `maxSpanSec` | `5.0` | ha az N trade ennél tovább tartott, nem hirtelen mozgás |
+| `minSlopePctPerSec` | `0.15` | ennyi %/másodperc kell a jelzéshez (ez a **padló**) |
+| `minConsistency` | `0.70` | a lépések ekkora hányada mutasson egy irányba |
 | `volatilityMultiplier` | `4.0` | a küszöb a pár saját zajszintjéhez igazodik; `0` = kikapcsolva |
+| `minTicksInWindow` / `maxRefAgeFactor` | `3` / `1.5` | csak a táblázat 1/3/5 mp-es tájékoztató oszlopaihoz |
 | `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
 | `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |

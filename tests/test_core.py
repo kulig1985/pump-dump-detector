@@ -15,9 +15,10 @@ from app import orderbook, scoring
 from app.ta import ema
 
 CFG = {
-    "priceChangeThreshold1s": 0.30,
-    "priceChangeThreshold3s": 0.60,
-    "priceChangeThreshold5s": 0.90,
+    "tradeWindow": 30,
+    "maxSpanSec": 5.0,
+    "minSlopePctPerSec": 0.15,
+    "minConsistency": 0.70,
     "symbolCooldownSec": 60,
     "minTicksInWindow": 3,
     "maxRefAgeFactor": 1.5,
@@ -28,7 +29,7 @@ CFG = {
 cfg_obj = types.SimpleNamespace(detector=CFG)
 
 
-def feed(det, symbol, start_ts, prices, step=0.2):
+def feed(det, symbol, start_ts, prices, step=0.05):
     """Tick sorozat betoltese, visszaadja az osszes triggert."""
     out = []
     for i, p in enumerate(prices):
@@ -38,82 +39,83 @@ def feed(det, symbol, start_ts, prices, step=0.2):
     return out
 
 
-def test_no_trigger_below_threshold():
+def test_no_trigger_on_slow_drift():
+    """Lassu kuszas: nagy teljes elmozdulas, de kicsi meredekseg."""
     det = PumpDumpDetector(cfg_obj)
-    # 6 masodperc alatt +0.1% -- minden kuszob alatt
-    prices = [100.0 + i * 0.0033 for i in range(31)]
-    assert feed(det, "AAAUSDT", 1000.0, prices) == []
+    # 60 trade, 1.5 masodpercenkent -> 90 mp alatt +0.5%
+    ticks = [(1000.0 + i * 1.5, 100.0 * (1 + 0.005 * i / 60)) for i in range(60)]
+    assert [t for t in (det.on_price("AAAUSDT", p, ts) for ts, p in ticks) if t] == []
 
 
-def test_trigger_above_threshold():
+def test_trigger_on_steady_fast_move():
+    """Valodi pump: gyors, egyiranyu emelkedes."""
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 26 + [100.5] * 5      # ugras +0.5% egy tickben
+    prices = [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
     assert triggers[0]["direction"] == "LONG"
-    assert triggers[0]["detail"]["priceChange"]["s1"] > 0.30
+    assert triggers[0]["detail"]["slopePctPerSec"] > CFG["minSlopePctPerSec"]
+    assert triggers[0]["detail"]["consistency"] >= CFG["minConsistency"]
 
 
 def test_dump_direction():
     det = PumpDumpDetector(cfg_obj)
-    prices = [100.0] * 26 + [99.5] * 5
+    prices = [100.0] * 30 + [100.0 * (1 - 0.005 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
     assert triggers[0]["direction"] == "SHORT"
+    assert triggers[0]["detail"]["slopePctPerSec"] < 0
+
+
+def test_single_spike_then_back_is_not_a_signal():
+    """Egyetlen kiugro print, aztan vissza -- a regi logika ezt jelzesnek vette."""
+    det = PumpDumpDetector(cfg_obj)
+    prices = [100.0] * 30 + [100.45] + [100.0] * 39
+    assert feed(det, "DDDUSDT", 1000.0, prices) == []
+
+
+def test_sawtooth_is_not_a_signal():
+    """Nagy amplitudo, de nincs irany -- a regi logika ezt is jelzesnek vette."""
+    det = PumpDumpDetector(cfg_obj)
+    prices = [100.0 * (1 + 0.0025 * math.sin(i * 0.8)) for i in range(100)]
+    assert feed(det, "EEEUSDT", 1000.0, prices) == []
 
 
 def test_cooldown_suppresses_repeat():
     det = PumpDumpDetector(cfg_obj)
-    # ket kulon ugras 4 masodperc kulonbseggel, a cooldown 60s -> csak az elso jon at
-    prices = [100.0] * 26 + [100.5] * 20 + [101.5] * 5
-    assert len(feed(det, "DDDUSDT", 1000.0, prices)) == 1
+    prices = ([100.0] * 30
+              + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)]
+              + [100.5 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])
+    assert len(feed(det, "FFF2USDT", 1000.0, prices)) == 1
 
 
-def test_no_trigger_without_enough_history():
+def test_no_trigger_without_enough_trades():
+    """Kevesebb mint tradeWindow trade -> nincs mibol meredekseget szamolni."""
     det = PumpDumpDetector(cfg_obj)
-    # rogton egy nagy ugras, elozmeny nelkul -> nincs mihez viszonyitani
-    assert feed(det, "EEEUSDT", 1000.0, [100.0, 105.0]) == []
+    prices = [100.0 * (1 + 0.001 * i) for i in range(20)]      # csak 20 trade
+    assert feed(det, "GGG2USDT", 1000.0, prices) == []
 
 
-def test_stale_reference_is_rejected():
-    """Ritka par: egyetlen trade a spreaden at nem szamit 1 masodperces mozgasnak."""
+def test_no_trigger_if_trades_are_too_spread_out():
+    """A 30 trade megvan, de 5 mp-nel hosszabb ido alatt -> nem hirtelen mozgas."""
     det = PumpDumpDetector(cfg_obj)
-    # sok tick, majd 2.5 mp szunet, majd egy nagy ugras
-    ticks = [(1000.0 + i * 0.1, 100.0) for i in range(30)]      # 0.0 - 2.9
-    ticks.append((1005.4, 100.5))                                # 2.5 mp szunet utan +0.5%
-    out = [det.on_price("GGGUSDT", p, t) for t, p in ticks]
-    assert not any(out), "a tul regi viszonyitasi pont miatt nem lehet trigger"
-
-
-def test_too_few_ticks_in_window_is_rejected():
-    """Ket trade nem mozgas, csak zaj -- minTicksInWindow = 3."""
-    det = PumpDumpDetector(cfg_obj)
-    base = [(1000.0 + i * 0.1, 100.0) for i in range(30)]
-    out = [det.on_price("HHHUSDT", p, t) for t, p in base]
-    assert not any(out)
-    # a sorozat 1002.9-nel ert veget; az 1 mp-es ablakba (1002.9 - 1003.9] most
-    # csak ket tick esik, tehat nem merheto, hiaba +0.5% az ugras
-    assert det.on_price("HHHUSDT", 100.2, 1003.6) is None
-    assert det.on_price("HHHUSDT", 100.5, 1003.9) is None
-    # egy harmadik tick mar eleg a mereshez -- es akkor trigger is lesz
-    assert det.on_price("HHHUSDT", 100.5, 1003.95) is not None
+    prices = [100.0 * (1 + 0.0005 * i) for i in range(40)]
+    assert feed(det, "HHH2USDT", 1000.0, prices, step=0.5) == []
 
 
 def test_volatility_raises_threshold_for_noisy_symbol():
-    """A nyugtalan parnak tobbet kell mozdulnia; a config ertek a padlo."""
+    """A nyugtalan parnak meredekebben kell mozdulnia; a config ertek a padlo."""
     cfg = types.SimpleNamespace(detector={**CFG, "volatilityMultiplier": 4.0})
     det = PumpDumpDetector(cfg)
 
-    # nyugodt par: gyakorlatilag all
-    for i in range(300):
-        det.on_price("CALMUSDT", 100.0 + i * 1e-6, 1000.0 + i * 0.1)
-    # zajos par: masodpercenkent tobb tizedszazalekot hullamzik
-    for i in range(300):
-        det.on_price("NOISYUSDT", 100.0 * (1 + 0.004 * math.sin(i * 0.37)), 1000.0 + i * 0.1)
+    for i in range(400):
+        det.on_price("CALMUSDT", 100.0 + i * 1e-6, 1000.0 + i * 0.05)
+        det.on_price("NOISYUSDT", 100.0 * (1 + 0.004 * math.sin(i * 0.37)),
+                     1000.0 + i * 0.05)
 
-    calm = det.thresholds("CALMUSDT")[1]
-    noisy = det.thresholds("NOISYUSDT")[1]
-    assert calm == CFG["priceChangeThreshold1s"], calm
+    calm = det.threshold("CALMUSDT")
+    noisy = det.threshold("NOISYUSDT")
+    assert calm == CFG["minSlopePctPerSec"], calm
     assert noisy > calm, (calm, noisy)
 
 
@@ -332,7 +334,8 @@ def test_cjk_symbol_column_alignment():
 def test_signal_detail_is_mongo_safe():
     """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
     det = PumpDumpDetector(cfg_obj)
-    sig = feed(det, "FFFUSDT", 1000.0, [100.0] * 26 + [100.5] * 5)[0]
+    sig = feed(det, "FFFUSDT", 1000.0,
+               [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
 
     def check(o, path="doc"):
         if isinstance(o, dict):
@@ -345,7 +348,6 @@ def test_signal_detail_is_mongo_safe():
 
     check(sig["detail"])
     assert set(sig["detail"]["priceChange"]) == {"s1", "s3", "s5"}
-    assert set(sig["detail"]["thresholds"]) == {"s1", "s3", "s5"}
 
 
 def test_wall_behind_price_is_not_an_obstacle():
@@ -372,11 +374,12 @@ def _sig(strength, accelerating=False, mode="momentum", direction="LONG"):
 def test_signal_carries_its_own_thresholds():
     """A jelzes viszi magaval az ervenyes kuszoboket es a sajat bizonyitekat."""
     det = PumpDumpDetector(cfg_obj)
-    sig = feed(det, "IIIUSDT", 1000.0, [100.0] * 26 + [100.5] * 5)[0]
+    sig = feed(det, "IIIUSDT", 1000.0,
+               [100.0] * 30 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
     assert sig["detector"] == "pump_dump"
     assert sig["configKey"] == "detector"
     assert sig["contextMode"] == "momentum"
-    assert sig["detail"]["thresholds"] == {"s1": 0.30, "s3": 0.60, "s5": 0.90}
+    assert sig["detail"]["slopeThreshold"] == CFG["minSlopePctPerSec"]
     assert sig["strength"] > 1.0
 
 
