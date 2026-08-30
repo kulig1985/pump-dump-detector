@@ -24,7 +24,7 @@ DETECTOR_DEFAULTS = {
     # --- signal ---
     "minSignalScore": 60,
     "symbolCooldownSec": 60,
-    "heartbeatSec": 30,               # ilyen surun ir statusz sort es DB heartbeatet
+    "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
     # --- order book ---
     "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
     "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall

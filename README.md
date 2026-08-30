@@ -119,18 +119,35 @@ Utána a logban ezt kell látnod:
 12:04:12 INFO  market    Indul 2 WebSocket kapcsolat, osszesen 187 symbol
 12:04:13 INFO  market    WS #1 csatlakozva (150 stream)
 12:04:13 INFO  market    WS #2 csatlakozva (37 stream)
-12:04:43 INFO  market    STATUS  uptime 0m32s | 9,412 tick (313/s) | 184 aktiv symbol | 2/2 WS el | trigger: 0 (osszesen 0)
-12:04:43 INFO  market    STATUS  legnagyobb mozgas: WIFUSDT 5s +0.21% | PEPEUSDT 3s -0.14% | SUIUSDT 5s +0.11%
 ```
 
-Innentől **30 másodpercenként jön egy `STATUS` sor** — ebből látod, hogy él-e a stream,
-hány tick jön, és mennyire volt közel bármi a küszöbhöz. Ha nem érkezik tick, `ERROR`
-szintű sort kapsz. Ugyanez a Mongo `status` collectionben is frissül, tehát kívülről is
-monitorozható:
+Innentől **5 másodpercenként kiírja, mi történik éppen az árakkal** — a 10 legmozgékonyabb
+párt, és hogy miért nincs (még) jelzés:
+
+```
+07:56:38 INFO  market
+  ──────────────────────────────────────────────────────────────────────────────
+  MI TORTENIK MOST   187 par figyelese   jelzes indulas ota: 1
+  az elmult 5 masodpercben 2,061 arvaltozas erkezett   (2/2 kapcsolat el)
+  jelzes kell hozza: 1 mp alatt 0.30%, 3 mp alatt 0.60%, 5 mp alatt 0.90%
+  ──────────────────────────────────────────────────────────────────────────────
+  par               arfolyam     1 mp     3 mp     5 mp   mi van vele
+  WIFUSDT         0.85230384   +0.21%   +0.60%   +1.02%   jelzes mar elment, varakozas a kovetkezoig
+  PEPEUSDT        0.00000932   -0.14%   -0.40%   -0.68%   erosen esik, meg 0.22% hianyzik a jelzeshez
+  SUIUSDT             3.1350   +0.06%   +0.16%   +0.27%   emelkedik, de meg messze van a jelzestol
+  BTCUSDT          61,013.42   +0.00%   +0.01%   +0.02%   alig mozdul
+  ...
+  ──────────────────────────────────────────────────────────────────────────────
+```
+
+Ha nem érkezik adat, `ERROR` szintű sort kapsz helyette. Ugyanez a Mongo `status`
+collectionben is frissül, tehát kívülről is monitorozható:
 
 ```js
 db.status.findOne({_id:"detector"})
 ```
+
+A gyakoriságot és a tábla méretét a `statusIntervalSec` állítja.
 
 Ha van mozgás:
 
@@ -204,7 +221,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `priceChangeThreshold1s/3s/5s` | `0.30 / 0.60 / 0.90` | trigger küszöb %-ban |
 | `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
-| `heartbeatSec` | `30` | ilyen sűrűn ír `STATUS` sort és DB heartbeatet |
+| `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |
 | `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
 | `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
 | `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |
@@ -242,8 +259,8 @@ Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 - `signals` — minden detektált jelzés (score, EMA, order book összefoglaló, Telegram/trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
-- `status` — egyetlen dokumentum (`_id: "detector"`), 30 másodpercenként frissülő életjel:
-  uptime, tick/s, élő WS kapcsolatok, trigger számláló, legnagyobb mozgások
+- `status` — egyetlen dokumentum (`_id: "detector"`), 5 másodpercenként frissül:
+  uptime, tick/s, élő WS kapcsolatok, trigger számláló, a 10 legmozgékonyabb pár
 
 ## Binance API — mit használunk
 
@@ -265,7 +282,7 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 | `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
 | a detector csendben áll, nincs `MongoDB kapcsolat kesz` sor | nem éri el a Mongo-t — lásd a 3/a pont `bindIp` részét |
 | `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. Vagy közvetlenül: `db.config.updateOne({_id:"telegram"},{$set:{botToken:"...",chatId:"..."}})` |
-| nincs jelzés órák óta | normális nyugodt piacon — a `STATUS` sor `legnagyobb mozgas` része mutatja, mennyire volt közel bármi a küszöbhöz. Ha tartósan messze, vedd lejjebb a küszöböt |
+| nincs jelzés órák óta | normális nyugodt piacon — a `MI TORTENIK MOST` tábla `mi van vele` oszlopa megmondja, mennyi hiányzik a jelzéshez. Ha tartósan „alig mozdul", vedd lejjebb a küszöböt |
 | `EGY symbol sem felel meg a ... forgalmi kuszobnek` | vedd lejjebb a `minQuoteVolume24h` értéket |
 | kevés symbolt figyel | a `Legnagyobb / legkisebb bevalasztott` log sor mutatja, hol húz a szűrő |
 | `WS #1 szakadas ... ujracsatlakozas` | átmeneti hálózati hiba, magától visszaáll (exponenciális backoff) |

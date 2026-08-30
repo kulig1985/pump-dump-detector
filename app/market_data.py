@@ -32,7 +32,7 @@ class MarketDataService:
         self.connected = 0
 
     async def run(self):
-        asyncio.create_task(self._heartbeat())
+        asyncio.create_task(self._status_loop())
         while True:
             c = self.cfg.detector
             self.symbols = await binance_rest.load_symbols(
@@ -86,50 +86,91 @@ class MarketDataService:
             # a reszletes elemzes lassu (order book + klines), nem blokkolhatja a stream olvasast
             asyncio.create_task(self.on_trigger(trigger))
 
-    async def _heartbeat(self):
-        """Periodikus eletjel: konzolra es a Mongo `status` collectionbe.
+    async def _status_loop(self):
+        """5 masodpercenkent kiirja, mi tortenik eppen az arfolyamokkal.
 
-        Enelkul egy nyugodt piacon oraszamra nem irna semmit, es nem latszana,
-        hogy egyaltalan el-e a stream.
+        Ez nem technikai eletjel: az a celja, hogy ranezesre lehessen latni,
+        mit csinalnak az arak, es miert nincs (meg) jelzes.
         """
         while True:
-            interval = self.cfg.detector["heartbeatSec"]
+            interval = self.cfg.detector["statusIntervalSec"]
             await asyncio.sleep(interval)
-            s = self.detector.take_stats()
-            uptime = int(time.time() - self.started)
+            snap = self.detector.snapshot()
+            level = logging.ERROR if snap["ticks"] == 0 else logging.INFO
+            log.log(level, "\n%s", self._render(snap, interval))
+            await self._save_status(snap, interval)
 
-            if s["ticks"] == 0:
-                log.error("STATUS  NEM ERKEZIK TICK az elmult %ds-ben! (%d/%d WS kapcsolat el)",
-                          interval, self.connected, self._chunk_count())
-            else:
-                log.info("STATUS  uptime %s | %d tick (%.0f/s) | %d aktiv symbol | "
-                         "%d/%d WS el | trigger: %d (osszesen %d)",
-                         _hms(uptime), s["ticks"], s["ticks"] / interval, s["activeSymbols"],
-                         self.connected, self._chunk_count(), s["triggers"], s["totalTriggers"])
-                if s["topMovers"]:
-                    log.info("STATUS  legnagyobb mozgas: %s", " | ".join(
-                        f"{m['symbol']} {m['window']} {m['changePct']:+.2f}%"
-                        for m in s["topMovers"]))
+    def _render(self, snap, interval):
+        th = self.detector.thresholds()
+        head = (f"  {'─' * 78}\n"
+                f"  MI TORTENIK MOST   {len(self.symbols)} par figyelese   "
+                f"jelzes indulas ota: {snap['totalTriggers']}\n")
 
-            try:
-                await self.db.status.update_one(
-                    {"_id": "detector"},
-                    {"$set": {"lastHeartbeat": datetime.now(timezone.utc),
-                              "uptimeSec": uptime,
-                              "watchedSymbols": len(self.symbols),
-                              "wsConnected": self.connected,
-                              "wsTotal": self._chunk_count(),
-                              "ticksPerSec": round(s["ticks"] / interval, 1),
-                              **s}},
-                    upsert=True)
-            except Exception as e:
-                log.warning("STATUS  heartbeat mentes sikertelen: %s", e)
+        if snap["ticks"] == 0:
+            return (head + "  NEM ERKEZIK ADAT A BINANCE-TOL! Ellenorizd a halozatot.\n"
+                    f"  {'─' * 78}")
+
+        head += (f"  az elmult {interval} masodpercben {snap['ticks']:,} arvaltozas erkezett   "
+                 f"({self.connected}/{self._chunk_count()} kapcsolat el)\n"
+                 f"  jelzes kell hozza: 1 mp alatt {th[1]:.2f}%, 3 mp alatt {th[3]:.2f}%, "
+                 f"5 mp alatt {th[5]:.2f}%\n"
+                 f"  {'─' * 78}\n"
+                 f"  {'par':<13}{'arfolyam':>13}{'1 mp':>9}{'3 mp':>9}{'5 mp':>9}   mi van vele\n")
+
+        lines = []
+        for r in snap["rows"]:
+            c = r["changes"]
+            lines.append(f"  {r['symbol']:<13}{_price(r['price']):>13}"
+                         f"{_pct(c[1]):>9}{_pct(c[3]):>9}{_pct(c[5]):>9}   {_verdict(r)}")
+        return head + "\n".join(lines) + f"\n  {'─' * 78}"
+
+    async def _save_status(self, snap, interval):
+        try:
+            await self.db.status.update_one(
+                {"_id": "detector"},
+                {"$set": {"lastUpdate": datetime.now(timezone.utc),
+                          "uptimeSec": int(time.time() - self.started),
+                          "watchedSymbols": len(self.symbols),
+                          "wsConnected": self.connected,
+                          "wsTotal": self._chunk_count(),
+                          "ticksPerSec": round(snap["ticks"] / interval, 1),
+                          "totalTriggers": snap["totalTriggers"],
+                          "topMovers": snap["rows"]}},
+                upsert=True)
+        except Exception as e:
+            log.warning("statusz mentese sikertelen: %s", e)
 
     def _chunk_count(self):
         return max(1, -(-len(self.symbols) // STREAMS_PER_CONNECTION))
 
 
-def _hms(sec):
-    h, rem = divmod(sec, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
+def _pct(v):
+    return "  --  " if v is None else f"{v:+.2f}%"
+
+
+def _price(p):
+    """Olvashato arformatum: a nagy arak ket tizedessel, a torpek teljes hosszban."""
+    if p >= 100:
+        return f"{p:,.2f}"
+    if p >= 1:
+        return f"{p:.4f}"
+    return f"{p:.8f}"
+
+
+def _verdict(r):
+    """Emberi nyelven: mi van ezzel a parral."""
+    if r["window"] is None:
+        return "meg gyulik rola az adat"
+    irany = "emelkedik" if r["rising"] else "esik"
+    if r["missing"] <= 0:
+        # a kuszobot mar atlepte -- vagy most ment el a jelzes, vagy varakozunk
+        return (f"jelzes mar elment, varakozas a kovetkezoig" if r["cooling"]
+                else f"kuszob atlepve, {irany}")
+    hiany = f"{r['missing']:.2f}%"
+    if r["ratio"] >= 0.9:
+        return f"MINDJART JELZES! {irany}, meg {hiany} hianyzik"
+    if r["ratio"] >= 0.6:
+        return f"erosen {irany}, meg {hiany} hianyzik a jelzeshez"
+    if r["ratio"] >= 0.3:
+        return f"{irany}, de meg messze van a jelzestol"
+    return "alig mozdul"

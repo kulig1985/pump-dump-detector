@@ -3,6 +3,7 @@
 Symbolonkent memoriaban tartjuk az utolso ~6 masodperc arait, es minden uj tick-nel
 kiszamoljuk az 1s / 3s / 5s valtozast. Nem varunk gyertyazarasra.
 """
+import time
 import logging
 from collections import deque, defaultdict
 
@@ -17,12 +18,10 @@ class MovementDetector:
         self.cfg = cfg
         self.history = defaultdict(deque)   # symbol -> deque[(ts, price)]
         self.last_trigger = {}              # symbol -> ts
-        # statisztika a heartbeat loghoz
+        # az elo statusz tablahoz
         self.ticks = 0
-        self.triggers = 0
-        self.total_ticks = 0
         self.total_triggers = 0
-        self.movers = {}                    # symbol -> (abs valtozas, ablak, valtozas)
+        self.latest = {}                    # symbol -> (ar, valtozasok)
 
     def on_price(self, symbol, price, ts):
         """Uj ar. Visszaad egy trigger dictet, vagy None-t."""
@@ -34,12 +33,7 @@ class MovementDetector:
         changes = {w: self._change(h, ts, w, price) for w in WINDOWS}
 
         self.ticks += 1
-        self.total_ticks += 1
-        measured = [(abs(ch), w, ch) for w, ch in changes.items() if ch is not None]
-        if measured:
-            best = max(measured)
-            if symbol not in self.movers or best[0] > self.movers[symbol][0]:
-                self.movers[symbol] = best
+        self.latest[symbol] = (price, changes)
 
         c = self.cfg.detector
         thresholds = {
@@ -64,7 +58,6 @@ class MovementDetector:
         if ts - self.last_trigger.get(symbol, 0) < c["symbolCooldownSec"]:
             return None
         self.last_trigger[symbol] = ts
-        self.triggers += 1
         self.total_triggers += 1
 
         log.warning("[%s] TRIGGER %s | 1s %s | 3s %s | 5s %s", symbol, direction,
@@ -97,22 +90,35 @@ class MovementDetector:
         return (price - ref) / ref * 100.0
 
 
-    def take_stats(self, top=3):
-        """A heartbeat ota gyult statisztika; a periodikus szamlalokat nullazza."""
-        movers = sorted(self.movers.items(), key=lambda kv: kv[1][0], reverse=True)[:top]
-        stats = {
-            "ticks": self.ticks,
-            "triggers": self.triggers,
-            "totalTicks": self.total_ticks,
-            "totalTriggers": self.total_triggers,
-            "activeSymbols": len(self.movers),
-            "topMovers": [{"symbol": sym, "window": f"{w}s", "changePct": round(ch, 3)}
-                          for sym, (_, w, ch) in movers],
-        }
-        self.ticks = 0
-        self.triggers = 0
-        self.movers.clear()
-        return stats
+    def thresholds(self):
+        c = self.cfg.detector
+        return {1: c["priceChangeThreshold1s"],
+                3: c["priceChangeThreshold3s"],
+                5: c["priceChangeThreshold5s"]}
+
+    def snapshot(self, top=10):
+        """Az aktualis allapot a statusz tablahoz. A tick szamlalot nullazza."""
+        th = self.thresholds()
+        now = time.time()
+        cooldown = self.cfg.detector["symbolCooldownSec"]
+        rows = []
+        for symbol, (price, changes) in self.latest.items():
+            measured = [(abs(ch) / th[w], w, ch) for w, ch in changes.items() if ch is not None]
+            ratio, window, change = max(measured) if measured else (0.0, None, None)
+            rows.append({
+                "symbol": symbol,
+                "price": price,
+                "changes": changes,
+                "ratio": ratio,                                    # 1.0 = pont a kuszobon
+                "window": window,
+                "missing": (th[window] - abs(change)) if window else None,
+                "rising": (change or 0) > 0,
+                "cooling": now - self.last_trigger.get(symbol, 0) < cooldown,
+            })
+        rows.sort(key=lambda r: r["ratio"], reverse=True)
+        ticks, self.ticks = self.ticks, 0
+        return {"ticks": ticks, "totalTriggers": self.total_triggers,
+                "symbols": len(self.latest), "rows": rows[:top]}
 
 
 def _pct(v):

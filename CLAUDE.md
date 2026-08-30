@@ -62,7 +62,7 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 - `signals` — minden detektált signal (score, EMA, order book összefoglaló, Telegram és trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
-- `status` — 30 mp-enként frissülő életjel (uptime, tick/s, WS kapcsolatok, legnagyobb mozgások)
+- `status` — 5 mp-enként frissülő élő állapot (uptime, tick/s, WS kapcsolatok, top 10 mozgó pár)
 
 ## Binance API — mit használunk
 
