@@ -19,6 +19,7 @@ log = logging.getLogger("market")
 
 WS_BASE = "wss://fstream.binance.com"
 STREAMS_PER_CONNECTION = 150
+STALL_SEC = 30          # ennyi nemasag utan halottnak tekintjuk a kapcsolatot
 
 
 class MarketDataService:
@@ -30,6 +31,9 @@ class MarketDataService:
         self.symbols = []
         self.started = time.time()
         self.connected = 0
+        self.frames = 0          # nyers WS keret, barmi jott a droton
+        self.ignored = 0         # keret, amit nem aggTrade-kent dobtunk el
+        self.last_frame = 0.0
 
     async def run(self):
         asyncio.create_task(self._status_loop())
@@ -59,13 +63,26 @@ class MarketDataService:
         backoff = 1
         while True:
             try:
-                async with websockets.connect(url, ping_interval=180) as ws:
+                async with websockets.connect(url, ping_interval=20,
+                                              ping_timeout=20) as ws:
                     self.connected += 1
                     log.info("WS #%d csatlakozva (%d stream)", index, len(symbols))
                     backoff = 1
+                    first = True
                     try:
-                        async for raw in ws:
+                        while True:
+                            # ha STALL_SEC-ig egy keret sem jon, a kapcsolat halott:
+                            # bontunk es ujracsatlakozunk, nem varunk vegtelenul
+                            raw = await asyncio.wait_for(ws.recv(), timeout=STALL_SEC)
+                            self.frames += 1
+                            self.last_frame = time.time()
+                            if first:
+                                log.info("WS #%d elso keret megjott: %s", index, raw[:160])
+                                first = False
                             self._handle(raw)
+                    except asyncio.TimeoutError:
+                        log.error("WS #%d %ds-ig egy keret sem erkezett -- ujracsatlakozas",
+                                  index, STALL_SEC)
                     finally:
                         self.connected -= 1
             except asyncio.CancelledError:
@@ -78,8 +95,12 @@ class MarketDataService:
     def _handle(self, raw):
         if not self.cfg.detector["enabled"]:
             return
-        data = json.loads(raw).get("data")
+        msg = json.loads(raw)
+        data = msg.get("data")
         if not data or data.get("e") != "aggTrade":
+            self.ignored += 1
+            if self.ignored <= 3:      # az elso parat mutassuk, hatha hibauzenet
+                log.warning("Ismeretlen WS uzenet eldobva: %s", str(msg)[:200])
             return
         trigger = self.detector.on_price(data["s"], float(data["p"]), data["T"] / 1000.0)
         if trigger:
@@ -107,8 +128,13 @@ class MarketDataService:
                 f"jelzes indulas ota: {snap['totalTriggers']}\n")
 
         if snap["ticks"] == 0:
-            return (head + "  NEM ERKEZIK ADAT A BINANCE-TOL! Ellenorizd a halozatot.\n"
-                    f"  {'─' * 78}")
+            if self.frames == 0:
+                baj = ("A Binance WebSocket kapcsolat all, de EGY KERET SEM erkezett.\n"
+                       "  Ellenorizd a kimeno halozatot a fstream.binance.com:443 fele.")
+            else:
+                baj = (f"Erkezett {self.frames:,} keret, de egyik sem hasznalhato arfolyam\n"
+                       f"  ({self.ignored:,} eldobva). A fenti 'Ismeretlen WS uzenet' sor mutatja, mi jott.")
+            return head + f"  {baj}\n  {'─' * 78}"
 
         head += (f"  az elmult {interval} masodpercben {snap['ticks']:,} arvaltozas erkezett   "
                  f"({self.connected}/{self._chunk_count()} kapcsolat el)\n"
