@@ -52,11 +52,11 @@ DETECTOR_DEFAULTS = {
 REVERSAL_DEFAULTS = {
     "_id": "reversal",
     "enabled": True,
-    "cooldownSec": 120,
+    "cooldownSec": 300,
 
     # ---- mekkora elozetes mozgas utan keresunk fordulot ----
-    "baselineRatio": 4.0,              # a par normaljanak ennyiszerese
-    "minMovePct": 0.30,                # abszolut padlo
+    "baselineRatio": 5.0,              # a par normaljanak ennyiszerese
+    "minMovePct": 0.60,                # abszolut padlo
     "wickSliceSec": 0.5,               # ekkora szeletek kozeparan keressuk a szelsoerteket
 
     # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
@@ -68,13 +68,14 @@ REVERSAL_DEFAULTS = {
     #
     "bounceOfMovePct": 12,
     "pullbackOfBouncePct": 30,         # a visszapattanasbol ennyi visszahuzas -> micro szint
-    "breakOfMovePct": 5,               # az attores merete
+    "breakOfMovePct": 5,               # az attores merete (bounce + break < maxRetracement!)
     "maxRetracementPct": 25,           # ennel tobb mar ne jojjon vissza, amikor jelzunk
     "newExtremeOfMovePct": 2,
 
     # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
     "maxExtremeAgeSec": 8,
+    "confirmSec": 3.0,                 # ennyivel kesobb: tartja-e meg az attorest
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,
     "minTradesInFlowWindow": 5,

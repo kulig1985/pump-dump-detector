@@ -1,52 +1,208 @@
-# Paraméterek
+# Paraméterek — mit állítasz, és mi történik tőle
 
-Minden beállítás a MongoDB `config` collectionjében van, négy dokumentumban:
-`detector`, `reversal`, `trading`, `telegram`. Módosítás után **30 másodpercen belül él**,
-újraindítás nélkül. A dokumentumok magukat tartják karban: az új beállítások bekerülnek,
-a már nem használtak törlődnek.
+Minden beállítás a MongoDB `config` collectionben van, négy dokumentumban:
+`detector`, `reversal`, `trading`, `telegram`. Ez a leírás a két detektorról szól.
 
 ```js
-use pump-dump
-db.config.find().pretty()
-db.config.updateOne({_id:"detector"}, {$set:{baselineRatio: 6}})
+use("pump-dump")
+db.config.findOne({_id: "detector"})
+db.config.findOne({_id: "reversal"})
+```
+
+Menet közbeni módosítás **30 másodpercen belül** életbe lép, újraindítás nélkül.
+
+> **Fontos:** az induláskori seed a **meglévő értékeket sosem írja felül** — csak a
+> hiányzó kulcsokat veszi fel. Ha egy alapértelmezés a kódban megváltozik, a te
+> dokumentumodba **nem** jut el. Induláskor a log kiírja, mi tér el:
+> `A DB-ben eltero beallitas: minMovePct=0.3 (alap 0.6)`.
+> Az új alapértelmezés átvétele: `db.config.updateOne({_id:"reversal"}, {$unset:{minMovePct:""}})`
+> és újraindítás — vagy egyszerűen `$set`-eld kézzel arra, amit akarsz.
+
+---
+
+## Hogyan dönt a rendszer
+
+Mindkét detektor **a pár saját normáljához** méri a mozgást, nem fix százalékhoz.
+A normál (`baseline`) futás közben épül: másodpercenként egy minta a 2 másodperces
+ablak elmozdulásából, `baselineMinutes` perc visszatekintés, és ezek **mediánja**.
+
+```
+   jelzéshez kell:   |mozgás|  >=  max( minMovePct ,  baselineRatio × normál )
+```
+
+Ezért ugyanaz a +0.3% egy nyugodt páron rendkívüli, egy meme coinon a normál működés
+része. Amíg egy párnak nincs elég mintája (kb. 1–2 perc), nincs jelzés — nem tippelünk.
+
+---
+
+## `detector` — pump / dump
+
+### Melyik párokat nézzük egyáltalán
+
+| kulcs | alap | mit jelent |
+|---|---|---|
+| `enabled` | true | a pump/dump detektor ki-/bekapcsolása |
+| `telegramEnabled` | true | ha false, a jelzés a DB-be és a logba megy, Telegramra nem |
+| `quoteAssets` | `["USDT","USDC"]` | melyik elszámoló devizás párokat figyeljük |
+| `minQuoteVolume24h` | 50 000 000 | ennél kisebb 24 órás forgalmú párok kiesnek |
+| `maxSymbols` | 200 | a forgalom szerinti lista első ennyi eleme |
+| `symbolRefreshMinutes` | 60 | ennyi percenként frissül a figyelt lista |
+| `symbolWhitelist` | `[]` | **ha nem üres, CSAK ezeket figyeljük** |
+| `symbolBlacklist` | `[]` | ezeket sosem |
+| `maxSpreadPct` | 0.05 | ennél szélesebb vétel–eladás résnél nincs jelzés: a be- és kiszállás felemésztené a mozgást |
+
+### A mozgás mérése
+
+| kulcs | alap | mit jelent | ha **növeled** |
+|---|---|---|---|
+| `moveWindowSec` | 2.0 | ekkora időablakban mérünk elmozdulást. Nem gyertya: **nem várunk zárásra** | lassabb, nagyobb mozgásokat keres |
+| `minTradesInWindow` | 10 | ennyi kötés kell az ablakba, különben nem mérhető | kevesebb, forgalmasabb pár jelez |
+| `baselineMinutes` | 5 | ennyi perc visszatekintésből épül a pár normálja | lassabban alkalmazkodik |
+
+### Érzékenység — **ezeket állítsd**
+
+| kulcs | alap | mit jelent | ha **növeled** |
+|---|---|---|---|
+| **`baselineRatio`** | **4.0** | **a fő kapcsoló:** a mozgás a pár normáljának ennyiszerese legyen | kevesebb, de rendkívülibb jelzés |
+| `minMovePct` | 0.15 | abszolút padló: ennél kisebb mozgás sosem jelzés, akármilyen nyugodt a pár | kiszűröd az apró mozgásokat |
+| `maxSingleStepPct` | 50 | ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés. Egy nagy kötés átsöpri a könyvet, a többi már az új áron nyomtat, és az ablak szép egyenletes mozgásnak látszik | több egykötéses ugrás fér be. `0` = kikapcsolva |
+| `confirmSec` | 3.0 | a jelzés **nem** a mozgás pillanatában megy ki: ennyivel később megnézzük, megvan-e még | később, de biztosabban jelez |
+| `confirmHoldPct` | 60 | és a látott mozgás ennyi %-a legyen még meg. **Ez választja el a valódi elindulást a pillanatnyi korrekciótól** | szigorúbb: csak az marad, ami tényleg ott is marad |
+| `symbolCooldownSec` | 60 | páronként ennyi szünet két jelzés között | ritkább ismétlés |
+
+A logban végigkövethető:
+
+```
+MOZGAS      SKRUSDT  LONG  ar 0.015717  +0.31% / 1.8s  normal 0.049% (6.3x)  -- 3 mp megerositesre var
+VISSZAESETT SKRUSDT  LONG  ar 0.015702  a +0.31%-bol +0.04% maradt (13%, kell 60%) -- pillanatnyi korrekcio volt
+CANDIDATE   PROMUSDT LONG  ar 0.2841    mozgas +0.44% / 2.0s  normal 0.041% (10.7x)  megtartott 118%
+KIHAGYVA    BTRUSDT  ar 0.0912  a mozgas 78%-at EGYETLEN arlepes adta (max 50%)
+```
+
+### Csak információ a jelzésben (semmit nem kapuznak)
+
+| kulcs | alap | mit jelent |
+|---|---|---|
+| `orderBookLevels` | 20 | ennyi szintet kérünk le triggerkor |
+| `wallSensitivity` | 3.0 | fal = a többi szint **mediánjának** ennyiszerese |
+| `wallMaxDistancePct` | 1.5 | ennél távolabbi falat nem említünk |
+| `emaFast` / `emaSlow` / `emaInterval` | 9 / 21 / `1m` | EMA az üzenetbe. **Sosem trigger, sosem szűrő** |
+| `statusIntervalSec` | 60 | ennyi másodpercenként egy STATUS sor |
+| `signalWindowMinutes` | 10 | „hányadik jelzés ebbe az irányba" — ekkora visszatekintéssel |
+
+---
+
+## `reversal` — lokális forduló
+
+Az alakzat, LONG esetben (a SHORT ennek a tükörképe):
+
+```
+   origin  ─────────────────────────────  100%   ← innen indult a lemozgás
+                                           25%   ← max belépő (maxRetracementPct)
+                                           12%   ← ide kell visszapattannia (bounceOfMovePct)
+   szélsőérték ─────────────────────────    0%
+```
+
+`LEMOZGÁS → MÉLYPONT → VISSZAPATTANÁS → MICRO-HIGH RÖGZÜL → VÉTELI FLOW → ÁTTÖRÉS`
+
+Minden méret **a mozgás arányában** van, nem abszolút százalékban — így egy 0.6%-os és
+egy 3%-os mozgásnál ugyanaz a logika működik.
+
+### Érzékenység — **ezeket állítsd**
+
+| kulcs | alap | mit jelent | ha **növeled** |
+|---|---|---|---|
+| **`minMovePct`** | **0.60** | mekkora előzetes mozgás után van értelme fordulót keresni. **A legerősebb szűrő:** egy 0.3%-os hullámzásból nincs mit kifordulni | jóval kevesebb, de nagyobb jelzés |
+| **`baselineRatio`** | **5.0** | és ugyanez a pár normáljához mérve. A normál a mozgás **tényleges hosszára** skálázódik (bolyongásnál az elmozdulás az idő gyökével nő), így egy 20 mp-es kúszás nem számít rendkívülinek | kevesebb, rendkívülibb |
+| `confirmSec` | 3.0 | az áttörés pillanata még nem forduló: ennyivel később az árnak **még mindig** a micro szint túloldalán kell lennie | később, de biztosabban |
+| `cooldownSec` | 300 | páronként ennyi szünet | ritkább ismétlés |
+| `maxExtremeAgeSec` | 8 | a szélsőérték ennél frissebb legyen — egy 15 mp-es mélypontra már késő beszállni | régebbi fordulókra is jelez |
+| **`maxRetracementPct`** | **25** | a jelzés pillanatáig a mozgásnak legfeljebb ennyi %-a jöhetett vissza. Efölött a kereskedhető rész elfogyott | későbbi, rosszabb belépők is átmennek |
+
+### Az alakzat geometriája (ritkán kell hozzányúlni)
+
+| kulcs | alap | mit jelent |
+|---|---|---|
+| `wickSliceSec` | 0.5 | a szélsőértéket **nem** a nyers min/max adja, hanem ekkora szeletek középára. Enélkül egyetlen pillanat alatt beérkező pár print (egy nagy kötés, ami átsöpri a könyvet, majd az ár azonnal visszaáll) lett a „mozgás" kezdőpontja. `0` = kikapcsolva, nyers min/max |
+| `bounceOfMovePct` | 12 | ennyit kell visszapattannia a mozgásból, hogy egyáltalán fordulóról beszéljünk |
+| `pullbackOfBouncePct` | 30 | a visszapattanásból ennyi visszahúzás rögzíti a micro szintet (ez teszi swing-csúccsá) |
+| `breakOfMovePct` | 5 | ekkora áttörés kell a micro szinten, a mozgás arányában |
+| `newExtremeOfMovePct` | 2 | ennyivel mélyebb új minimum indítja újra az alakzatot |
+| `windowSeconds` | 20 | ekkora rolling kötés-ablakban keressük az alakzatot |
+
+> ⚠️ `bounceOfMovePct + breakOfMovePct` **maradjon jóval `maxRetracementPct` alatt**,
+> különben a belépő matematikailag mindig a maximális visszahúzáson túlra esik, és
+> soha nem lesz jelzés. Alapon: 12 + 5 = 17 < 25.
+
+### Kötésáramlás
+
+| kulcs | alap | mit jelent |
+|---|---|---|
+| `flowWindowSeconds` | 3 | ekkora ablakban nézzük a vevő/eladó arányt |
+| `minFlowRatio` | 1.6 | a fordulat irányába ekkora túlsúly kell (USDT-ben mérve) |
+| `minTradesInFlowWindow` | 5 | ennyi kötés kell bele. A domináns oldalnak **kötésszámban is** vezetnie kell — egyetlen bálna-print nem csinál fordulást |
+
+---
+
+## Recept: kevesebb és jobb jelzés
+
+Sorrendben, **egyszerre csak egyet** állíts, hogy tudd, mi okozta a változást.
+
+```js
+// 1. PUMP/DUMP: csak a rendkívüli mozgás
+db.config.updateOne({_id:"detector"}, {$set:{baselineRatio: 6.0, minMovePct: 0.30}})
+
+// 2. PUMP/DUMP: csak az, ami meg is marad
+db.config.updateOne({_id:"detector"}, {$set:{confirmSec: 5.0, confirmHoldPct: 75}})
+
+// 3. REVERSAL: csak nagy mozgás után keressünk fordulót
+db.config.updateOne({_id:"reversal"}, {$set:{minMovePct: 1.0, baselineRatio: 6.0}})
+
+// 4. REVERSAL: korai belépő, friss szélsőérték
+db.config.updateOne({_id:"reversal"}, {$set:{maxRetracementPct: 20, maxExtremeAgeSec: 5}})
+
+// 5. ritkábban ugyanarról a párról
+db.config.updateOne({_id:"detector"}, {$set:{symbolCooldownSec: 300}})
+db.config.updateOne({_id:"reversal"}, {$set:{cooldownSec: 600}})
+
+// 6. csak a legforgalmasabb párok
+db.config.updateOne({_id:"detector"}, {$set:{minQuoteVolume24h: 200000000, maxSymbols: 60}})
+```
+
+Több jelzés kell? Ugyanezek lefelé: `baselineRatio` 3.0, `minMovePct` kisebb,
+`confirmHoldPct` 40, `cooldownSec` rövidebb.
+
+Az egyik detektort teljesen kikapcsolni:
+
+```js
+db.config.updateOne({_id:"reversal"}, {$set:{enabled: false}})
+```
+
+Csak néhány páron tesztelni:
+
+```js
+db.config.updateOne({_id:"detector"}, {$set:{symbolWhitelist: ["BTCUSDT","ETHUSDT"]}})
 ```
 
 ---
 
-## Az elv: a pár saját normáljához mérünk
-
-Nem az a kérdés, hogy „mozdult-e 0.3%-ot", hanem hogy **szokatlan-e ez a mozgás ezen a
-páron**. Egy meme coinon 0.3% másodpercenként történik, a BTC-n hetente. Fix küszöbbel ez
-nem kezelhető — ezért a rendszer futás közben, páronként méri, mi a normális.
+## Mit mutat a STATUS sor
 
 ```
-  baseline = az utolso baselineMinutes percben mert 2 masodperces
-             |elmozdulasok| MEDIANJA   (masodpercenkent egy minta)
-
-  jelzeshez kell:  |mozgas|  >=  max( minMovePct ,  baselineRatio × baseline )
+STATUS  40 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 3 jelzes, 2 kihagyva | Telegram: BE
+   kizarva 2: tul szeles a spread: 2
+   spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
+   normal kesz: 34/40 par | legkozelebb: SKRUSDT 0.283% (kell 0.154%, normalja 0.038%)
 ```
 
-A medián azért jó, mert egyetlen kiugró érték nem viszi el. Amíg nincs elég minta
-(legalább egy perc), az abszolút `minMovePct` padló dönt.
+- **`normal kesz`** — hány párnak épült már fel a normálja. Amíg nem kész, az a pár nem jelezhet.
+- **`legkozelebb`** — a mezőny legjobbja épp mennyire van a küszöbtől. Ha itt tartósan
+  „kell 0.154%" mellett 0.05%-os mozgások vannak, a piac áll — nem a beállítás rossz.
+- **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
 
----
+## Elutasítási okok
 
-## A pipeline
-
-```
-Binance WebSocket  (aggTrade  +  !bookTicker)
-        ↓
-  KERESKEDHETOSÉG      spread / white- és blacklist
-        ↓              ha nem felel meg, a detektorokig el sem jut
-  DetectorManager  →  PumpDumpDetector,  ReversalDetector      → CANDIDATE
-        ↓
-   SIGNAL   (order book és EMA információként hozzáfűzve)
-        ↓
-  MongoDB → Telegram → [TradingService]
-```
-
-Egy pár akkor esik ki, ha nem kereskedhető. Az elutasításnak **gépi neve** van (ez megy
-a MongoDB-be, hogy aggregálható legyen) és **magyar szövege** (ez megy a logba):
+Gépi név megy a MongoDB-be (hogy aggregálható legyen), magyar szöveg a logba.
 
 | ok | mit jelent |
 |---|---|
@@ -55,169 +211,6 @@ a MongoDB-be, hogy aggregálható legyen) és **magyar szövege** (ez megy a log
 | `spread_too_wide` | a spread szélesebb, mint `maxSpreadPct` |
 
 ```js
-// mi miert esett ki?
-db.signals.aggregate([{$match:{status:"rejected"}},
-                      {$group:{_id:"$reasons", db:{$sum:1}}}, {$sort:{db:-1}}])
+// mi miért esett ki?
+db.signals.aggregate([{$group:{_id:"$rejectedReason", n:{$sum:1}}}, {$sort:{n:-1}}])
 ```
-
----
-
-## `detector`
-
-### Melyik párokat nézzük
-
-| kulcs | alap | mit csinál |
-|---|---|---|
-| `quoteAssets` | `["USDT","USDC"]` | melyik elszámoló devizás perpetualokat |
-| `minQuoteVolume24h` | 50 000 000 | ez alatti 24h forgalom kizárva |
-| `maxSymbols` | 200 | top N forgalom szerint |
-| `symbolWhitelist` | `[]` | ha nem üres, **csak** ezeket figyeljük |
-| `symbolBlacklist` | `[]` | névre kizárás |
-| `symbolRefreshMinutes` | 60 | ilyen sűrűn építjük újra a listát |
-
-### Realtime kereskedhetőség — a detektorok előtt szűr
-
-Az adat egyetlen `!bookTicker` feliratkozásból jön, ami az egész piac legjobb bid/ask
-árát és mennyiségét adja — **külön WebSocket kapcsolaton**. Az aggTrade a `market`, a
-bookTicker a `public` csoportba tartozik, és ez az URL szegmensben is megjelenik:
-`/market/stream` illetve `/public/stream`. Rossz szegmensen a Binance nyugtázza a
-feliratkozást, de **nem küld adatot**.
-
-Ha egyáltalán nem érkezik könyv-adat, a rendszer nem némul el: a spread szűrés
-kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
-
-| kulcs | alap | mit csinál | ha növeled |
-|---|---|---|---|
-| `maxSpreadPct` | 0.05 | ennél szélesebb spreadnél a be- és kiszállás felemészti a mozgást | több pár fér be |
-
-### Pump/dump
-
-| kulcs | alap | mit csinál | ha növeled |
-|---|---|---|---|
-| `moveWindowSec` | 2.0 | ekkora **időablakban** mérjük az elmozdulást | lassabb, simább mozgásokat lát |
-| `minTradesInWindow` | 10 | ennyi kötés kell bele | csak a forgalmasabb párok |
-| `baselineMinutes` | 5 | ennyi perc visszatekintéssel épül a „normál" | stabilabb, lassabban alkalmazkodó normál |
-| `baselineRatio` | 4.0 | **a fő kapcsoló:** a mozgás a normál ennyiszerese legyen | kevesebb, de rendkívülibb jelzés |
-| `minMovePct` | 0.15 | abszolút padló, hogy halott páron se jelezzünk | |
-| `maxSingleStepPct` | 50 | ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés: egy nagy kötés átsöpörte a könyvet, a többi kötés már az új áron nyomtat, és az ablak szép egyenletes mozgásnak látszik | több egy-kötéses ugrás fér be |
-| `confirmSec` | 3.0 | a jelzés nem a mozgás pillanatában megy ki: ennyivel később megnézzük, megvan-e még | később, de biztosabban jelez |
-| `confirmHoldPct` | 60 | és a látott mozgás ennyi százaléka legyen még meg. Ez választja el a valódi elindulást a pillanatnyi korrekciótól | szigorúbb: csak az marad, ami tényleg ottmarad |
-| `symbolCooldownSec` | 60 | páronként ennyi szünet | |
-
-A mozgást nem az első és utolsó ár különbsége adja, hanem az ablakra **illesztett egyenes
-elmozdulása** — így egyetlen kiugró print nem tud jelzést csinálni.
-
-
-
----
-
-## `reversal`
-
-Az eseménysor: lemozgás → lokális szélsőérték → visszapattanás → nincs új szélsőérték →
-kötésáramlás fordul → micro-szint áttörés.
-
-Az **előzetes mozgás nagyságát a baseline dönti el** (mint a pump/dump-nál), az alakzat
-méretei pedig **a mozgás arányában** (0–100%) értendők:
-
-```
-   csucs ────────────────────────────────  100%   ← innen indult
-         ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─      61.8%  ← CÉL
-         ════════════════════════════        25%   ← MEDDIG SZABAD BELÉPNI
-              ╱╲    ╱  ← áttörés = belépő    17%
-       micro ╱──╳──╱                         12%   ← ide kell visszapattannia
-            ╱    ╲  ← visszahúzás
-   melypont ──────────────────────────────    0%   ← stop ez alá
-```
-
-| kulcs | alap | mit csinál |
-|---|---|---|
-| `baselineRatio` / `minMovePct` | 4.0 / 0.30 | mekkora előzetes mozgás után keresünk fordulót. A normál a mozgás **tényleges hosszára** skálázódik (bolyongásnál az elmozdulás az idő gyökével nő), így egy 20 mp-es kúszás nem számít rendkívülinek |
-| `wickSliceSec` | 0.5 | a szélsőértéket **nem** a nyers min/max adja, hanem ekkora szeletek középára. Enélkül egyetlen pillanat alatt beérkező pár print (egy nagy kötés, ami átsöpri a könyvet, majd az ár azonnal visszaáll) lett a „mozgás" kezdőpontja |
-| `bounceOfMovePct` | 12 | ennyit kell visszapattannia a mozgásból |
-| `pullbackOfBouncePct` | 30 | a visszapattanásból ennyi visszahúzás rögzíti a micro szintet |
-| `breakOfMovePct` | 5 | az áttörés mérete |
-| **`maxRetracementPct`** | **25** | **a legfontosabb:** ennél többet ne jöjjön vissza az ár, amikor jelzünk — efölött a kereskedhető rész elfogyott |
-| `maxExtremeAgeSec` | 8 | a szélsőérték ennél frissebb legyen |
-| `newExtremeOfMovePct` | 2 | ennyivel mélyebb minimum indít új alakzatot |
-| `windowSeconds` | 20 | a rolling trade ablak |
-| `flowWindowSeconds` / `minFlowRatio` / `minTradesInFlowWindow` | 3 / 1.6 / 5 | a kötésáramlás fordulása |
-| `cooldownSec` | 120 | páronkénti szünet |
-
----
-
-## `trading` és `telegram`
-
-Az auto trading **alapból kikapcsolva** (`autoTradingEnabled: false`), lásd a README-t.
-
-A `telegram` dokumentum:
-
-| kulcs | mit csinál |
-|---|---|
-| `botToken` / `chatId` | a bot és a cél chat |
-| `chatIds` | detektoronként külön csatorna, pl. `{"pump_dump":"-100…","reversal":"-100…"}` |
-| `appLinkTemplate` | extra link az üzenet aljára, `{symbol}` helyettesítéssel |
-
-### Megnyitás a Binance appban
-
-A `https://www.binance.com/en/futures/BTCUSDT` **már universal link**: telefonon, ha fent
-van az app, az OS elvileg annak adja át. A tényleges akadály az, hogy **a Telegram a saját
-beépített böngészőjében nyitja meg**, így az OS nem is jut szóhoz.
-
-A megbízható megoldás a Telegramban: **Beállítások → Adatok és tárhely → „Beépített
-böngésző" kikapcsolása** (vagy hosszan nyomni a linket → *Megnyitás böngészőben*).
-
-Ha séma-alapú linket akarsz kipróbálni, az `appLinkTemplate`-be írhatod. **Sima
-szövegként** kerül az üzenetbe, nem kattintható hivatkozásként — a Telegram Bot API csak
-`http`, `https` és `tg` sémát fogad el `<a href>`-ben, egy `bnc://` anchor
-`Bad Request: unsupported URL protocol` hibával elszállna. Sok kliens a szöveges sémát is
-felismeri és átadja az appnak.
-
-```js
-db.config.updateOne({_id:"telegram"},
-                    {$set:{appLinkTemplate:"bnc://app.binance.com/futures/{symbol}"}})
-```
-
-> A pontos Binance séma-formátumot nem tudom hitelesen megerősíteni, ezért nem is
-> égettem be — próbáld ki a telefonodon, és ha találsz működőt, ez a mező várja.
-
----
-
-## Mit mutat a STATUS sor
-
-```
-STATUS  39 par | 14,113 tick/60s | konyv: 752 par | 0 candidate, 0 jelzes, 0 elutasitva | Telegram: BE
-   kizarva 5: tul szeles a spread: 5
-   spread   p10      0.004%  p50      0.011%  p90      0.048%   kuszob 0.050%  -> 2 par felette
-   baseline kesz: 31/39 par | legkozelebbi jelolt: SOLUSDT 1.8x normal (kell 4.0x)
-```
-
-A percentilis sorból **adatból** állítható a küszöb, nem vaktában: látod az eloszlást,
-a jelenlegi küszöböt, és hogy hány pár esik kívül. Az utolsó sor megmondja, hogy a
-detektor egyáltalán mennyire van közel jelzéshez.
-
-## Ha a DB-ben más van, mint az alapértelmezés
-
-A config dokumentum a meglévő **értékeket sosem írja felül** (hogy ne törölje a
-hangolásodat) — csak a hiányzó kulcsokat veszi fel. Ezért ha egy alapértelmezés
-megváltozik, az nem jut el egy már létező dokumentumba. Induláskor kiírjuk, mi tér el:
-
-```
-INFO main  A DB-ben eltero beallitas: maxSpreadPct=0.1 (alap 0.05)
-```
-
-Ha át akarod venni az új alapértelmezést, egy `$unset` elég — a következő indításnál
-visszakerül a friss defaulttal:
-
-```js
-db.config.updateOne({_id:"detector"}, {$unset:{maxSpreadPct:""}})
-```
-
-## Hangolási sorrend
-
-1. **Előbb a kereskedhetőség.** A `STATUS` sor kiírja, hány pár esik ki és miért. Ha túl
-   sok, lazíts a `maxSpreadPct` értéken.
-2. **Aztán a `baselineRatio`.** Ez a fő érzékenység-kapcsoló: 4.0 → kevesebb és
-   rendkívülibb, 3.0 → több.
-3. **Végül a validáció.** A Mongo aggregációból látod, melyik ok dominál a
-   `REJECTED`-ek között.
-4. Egyszerre csak egyet állíts, hogy tudd, mi okozta a változást.

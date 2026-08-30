@@ -154,7 +154,9 @@ def rev_tape(micro, visszahuzas, belepo, tetlen_mp=0.0, csucs=CSUCS, mely=MELY):
     if tetlen_mp:                       # varakozas: az alakzat oregszik
         for _ in range(6):
             add(visszahuzas, utana, 3000, tetlen_mp / 6)
-    for _ in range(8):
+    # az attores utan meg legalabb confirmSec masodpercig tart az ar -- a jelzes
+    # nem az attores pillanataban megy ki, hanem a megerosites utan
+    for _ in range(30):
         add(belepo, utana, 4000, 0.15)
     return out
 
@@ -199,10 +201,26 @@ def test_pullback_below_bounce_still_locks_the_micro_level():
     raise AssertionError("a micro szint sosem rogzult")
 
 
-def test_relative_sizing_works_on_a_small_move():
-    """Minden meret a mozgas aranyaban van, igy egy 0.6%-os mozgason is mukodik."""
+def test_breakout_that_falls_back_is_not_a_reversal():
+    """Az attores pillanata meg nem fordulo. Ha az ar confirmSec masodpercen belul
+    visszaesik a micro szint moge, nem volt fordulo -- csak egy kilenges."""
     det = ReversalDetector(rev_cfg)
-    sigs = rev_run(det, rev_tape(99.48, 99.455, 99.52, csucs=100.0, mely=99.40))
+    tape = rev_tape(0.78380, 0.78330, 0.78450)
+    # az attores utani reszt lecsereljuk: visszaesik a micro szint ala
+    attores_elott = [t for t in tape if t.price != 0.78450]
+    t0 = attores_elott[-1].ts
+    vissza = ([Trade("CYSUSDT", 0.78450, 4000 / 0.78450, t0 + 0.15 * (i + 1), True)
+               for i in range(4)]
+              + [Trade("CYSUSDT", 0.78350, 4000 / 0.78350, t0 + 0.6 + 0.15 * (i + 1), True)
+                 for i in range(30)])
+    assert rev_run(det, attores_elott + vissza) == []
+    assert "CYSUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
+
+
+def test_relative_sizing_works_on_a_small_move():
+    """Minden meret a mozgas aranyaban van, igy egy 1%-os mozgason is mukodik."""
+    det = ReversalDetector(rev_cfg)
+    sigs = rev_run(det, rev_tape(99.13, 99.09, 99.20, csucs=100.0, mely=99.00))
     assert len(sigs) == 1, sigs
     assert sigs[0]["metrics"]["retracementPct"] <= REV["maxRetracementPct"]
 
@@ -368,10 +386,10 @@ def test_instant_wick_is_not_the_start_of_a_move():
     valodi = []
     t = 2000.0
     for i in range(40):
-        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0065 * (i + 1) / 40), 30.0, t, False))
+        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0120 * (i + 1) / 40), 30.0, t, False))
         t += 0.05
     for i in range(10):
-        valodi.append(Trade("SKRUSDT", 0.015737, 30.0, t, True))
+        valodi.append(Trade("SKRUSDT", 0.015650, 30.0, t, True))
         t += 0.05
     s2 = det._find_setup(valodi, REV)
     assert s2 is not None and s2.side == "LONG", s2
@@ -587,6 +605,17 @@ def test_status_line_only_uses_existing_attributes():
     for attr in set(re.findall(r"self\.detectors\.([a-zA-Z_]+)", forras)):
         assert hasattr(DetectorManager, attr) or attr in DetectorManager.__init__.__code__.co_names, \
             f"DetectorManager.{attr} nem letezik"
+
+
+def test_every_config_key_is_documented():
+    """A doksi ne csusszon el a kodtol: minden detector/reversal beallitas
+    szerepeljen a docs/PARAMETEREK.md-ben."""
+    doksi = (pathlib.Path(__file__).parent.parent / "docs" / "PARAMETEREK.md").read_text()
+    for defaults in (C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS):
+        for k in defaults:
+            if k == "_id":
+                continue
+            assert f"`{k}`" in doksi, f"{defaults['_id']}.{k} nincs dokumentalva"
 
 
 def test_every_config_key_read_by_the_code_exists():

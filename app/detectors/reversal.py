@@ -61,6 +61,7 @@ class ReversalDetector(Detector):
         self.trades = defaultdict(deque)   # symbol -> deque[Trade]
         self.setups = {}                   # symbol -> Setup
         self.last_signal = {}              # symbol -> ts
+        self.pending = {}                  # symbol -> megerositesre varo jelzes
         self.total_signals = 0
         self.last_ts = 0.0                 # az utolso feldolgozott trade tozsdei ideje
 
@@ -75,6 +76,10 @@ class ReversalDetector(Detector):
             w.popleft()
         if len(w) < c["minTradesInFlowWindow"]:
             return None
+
+        # Van megerositesre varo jelzes? Amig el nem dol, nem keresunk ujat.
+        if trade.symbol in self.pending:
+            return self._resolve_pending(trade, w)
 
         setup = self._track_setup(trade, w, c)
         if setup is None or setup.micro is None:
@@ -116,10 +121,46 @@ class ReversalDetector(Detector):
         if trade.ts - self.last_signal.get(trade.symbol, 0) < c["cooldownSec"]:
             return None
         self.last_signal[trade.symbol] = trade.ts
-        self.total_signals += 1
         self.setups.pop(trade.symbol, None)
 
-        return self._signal(trade, setup, flow, break_pct, retrace, kor, c, w)
+        # Az attores meg csak megtortent -- attol meg nem tartja magat. A jelzes
+        # confirmSec masodperccel kesobb megy ki, ha az ar addig is a micro szint
+        # tuloldalan maradt. A hamis kitores addigra visszaesik.
+        log.info("FORDULO?   %-14s %-5s ar %.8g  mozgas %.2f%%  attores %.3f%%  "
+                 "-- %.0f mp megerositesre var", trade.symbol, setup.side,
+                 trade.price, setup.move_pct, break_pct, c["confirmSec"])
+        self.pending[trade.symbol] = {
+            "deadline": trade.ts + c["confirmSec"],
+            "setup": setup, "flow": flow, "break_pct": break_pct,
+            "retrace": retrace, "kor": kor,
+        }
+        return None
+
+    # -------------------------------------------------------------- megerosites
+
+    def _resolve_pending(self, trade, w):
+        """Tartja-e magat az attores? Ez valasztja el a fordulot a zajtol."""
+        c = self.cfg.reversal
+        p = self.pending[trade.symbol]
+        if trade.ts < p["deadline"]:
+            return None
+        del self.pending[trade.symbol]
+
+        setup = p["setup"]
+        tartja = (trade.price > setup.micro if setup.side == "LONG"
+                  else trade.price < setup.micro)
+        if not tartja:
+            log.info("VISSZAESETT %-13s %-5s ar %.8g  vissza a %s szint (%.8g) "
+                     "mogott -- az attores nem tartott",
+                     trade.symbol, setup.side, trade.price,
+                     "micro-high" if setup.side == "LONG" else "micro-low",
+                     setup.micro)
+            events.add(f"{trade.symbol:<14} fordulo elmaradt: az attores nem tartott")
+            return None
+
+        self.total_signals += 1
+        return self._signal(trade, setup, p["flow"], p["break_pct"],
+                            p["retrace"], p["kor"], c, w)
 
     # ------------------------------------------------------------------ allapotgep
 
