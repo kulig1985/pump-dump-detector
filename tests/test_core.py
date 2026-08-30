@@ -914,6 +914,31 @@ def test_cjk_symbol_column_alignment():
     assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
+def test_slowly_decaying_wick_is_dropped_mid_window():
+    """VALODI eset (ZECUSDT): a kanoc 15 masodperccel kesobb MEG fent volt, es csak
+    utana csorgott vissza. Egy vegponti pillantas ezt atengedi -- ezert nezzuk a
+    megerositest FOLYAMATOSAN, es dobjuk el, amint visszaesik.
+    """
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "WICKUSDT")
+    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
+    # 5 masodpercig tartja (a vegponti ellenorzes ezt latna), majd lassan visszacsorog
+    tartja = [101.0] * 100
+    csorog = [101.0 - 1.0 * (i + 1) / 100 for i in range(100)]
+    assert feed(det, "WICKUSDT", 1000.0, fel + tartja + csorog) == []
+    assert "WICKUSDT" not in det.pending
+
+    # a naplo mutassa, hogy a visszaeses a hatarido ELOTT dolt el
+    det2 = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det2, "WICK2USDT")
+    for i, ar in enumerate(fel + tartja + csorog):
+        det2.on_trade(Trade("WICK2USDT", ar, 30.0, 1000.0 + i * 0.05, True))
+        if "WICK2USDT" not in det2.pending and i > len(fel):
+            break
+    eltelt = i * 0.05 - len(fel) * 0.05
+    assert eltelt < CFG["confirmSec"], f"a hatarido elott eldolt ({eltelt:.1f}s)"
+
+
 def test_momentary_spike_that_falls_back_is_not_a_signal():
     """Pillanatnyi korrekcio: az ar felugrik, majd visszaesik oda, ahonnan indult.
 
@@ -937,7 +962,7 @@ def test_real_move_that_holds_is_a_signal():
     assert len(jelzesek) == 1, jelzesek
     m = jelzesek[0]["metrics"]
     assert m["heldOfMovePct"] >= CFG["confirmHoldPct"], m
-    assert any("megvan a mozgas" in r for r in jelzesek[0]["reasons"]), jelzesek[0]
+    assert any("VEGIG megvolt" in r for r in jelzesek[0]["reasons"]), jelzesek[0]["reasons"]
 
 
 def test_half_retracement_is_not_enough():

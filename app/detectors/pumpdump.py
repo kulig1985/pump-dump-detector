@@ -123,13 +123,16 @@ class PumpDumpDetector(Detector):
     # -------------------------------------------------------------- megerosites
 
     def _resolve_pending(self, trade, h):
-        """Megtartotta-e az ar a mozgast? Ez valasztja el az elindulast a korrekciotol."""
+        """Megtartotta-e az ar a mozgast? Ez valasztja el az elindulast a korrekciotol.
+
+        FOLYAMATOSAN nezzuk, nem csak a hatarido pillanataban: egy kanoc jellemzoen
+        lassan csorog vissza, es egy vegponti pillantas eppen egy felrandulasban is
+        talalhatna. Ha barmikor a megerositesi ablakon belul visszaesik, azonnal
+        eldobjuk -- nem varjuk ki a hatarido vegét.
+        """
         c = self.cfg.detector
         p = self.pending[trade.symbol]
         p["history"].append((trade.ts, trade.price))
-        if trade.ts < p["deadline"]:
-            return None
-        del self.pending[trade.symbol]
 
         m = p["metrics"]
         # A mozgas, amit a jelzes pillanataban LATTUNK: az ablak elejetol a
@@ -141,13 +144,18 @@ class PumpDumpDetector(Detector):
         tartott = maradt / p["startPrice"] * 100.0 if p["startPrice"] else 0.0
 
         if hanyad < c["confirmHoldPct"]:
+            del self.pending[trade.symbol]
             log.info("VISSZAESETT %-13s %-5s ar %.8g  a %+.2f%%-bol %+.2f%% maradt "
-                     "(%.0f%%, kell %.0f%%) -- pillanatnyi korrekcio volt",
+                     "(%.0f%%, kell %.0f%%) -- kanoc volt, nem elindulas",
                      trade.symbol, p["direction"], trade.price, m["movePct"],
                      tartott, hanyad, c["confirmHoldPct"])
             events.add(f"{trade.symbol:<14} visszaesett: a {m['movePct']:+.2f}%-bol "
                        f"{tartott:+.2f}% maradt")
             return None
+
+        if trade.ts < p["deadline"]:
+            return None                 # tartja magat, de meg nem telt le az ido
+        del self.pending[trade.symbol]
 
         self.total_candidates += 1
         m = dict(m, heldPct=round(tartott, 4), heldOfMovePct=round(hanyad, 1),
@@ -157,7 +165,7 @@ class PumpDumpDetector(Detector):
             f"{p['arany']:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
             f"{m['trades']} kotes az ablakban, a legnagyobb egyetlen arlepes "
             f"a mozgas {m['singleStepPct']:.0f}%-a",
-            f"{c['confirmSec']:.0f} mp-el kesobb is megvan a mozgas {hanyad:.0f}%-a "
+            f"a mozgas {hanyad:.0f}%-a VEGIG megvolt {c['confirmSec']:.0f} mp-en at "
             f"({tartott:+.2f}%)",
         ]
         log.info("CANDIDATE  %-14s %-5s ar %.8g  mozgas %+.2f%% / %.1fs  "

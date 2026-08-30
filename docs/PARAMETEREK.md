@@ -169,18 +169,22 @@ Ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés.
 > látszik, pedig egyetlen lépcső az egész — és az ilyen ár rendszerint visszaesik.
 > `0` = kikapcsolva.
 
-### `confirmSec` — alap: `15.0`  ⭐
-A jelzés **nem** a mozgás pillanatában megy ki. Ennyi másodperccel később
-megnézzük, megvan-e még a mozgás.
-> **Példa:** `15.0` — 15 másodperccel a mozgás után is állnia kell az árnak.
-> Ez az, ami kizárja a „lenyomták, azonnal visszaverték" eseteket. Cserébe a jelzés
-> 15 másodperccel később ér oda — ez a szándék: amit 2 másodperc alatt visszavernek,
-> azt úgysem tudod lekereskedni.
+### `confirmSec` — alap: `60.0`  ⭐
+A jelzés **nem** a mozgás pillanatában megy ki. Ennyi ideig **végig** tartania kell
+a mozgásnak — nem egy pillantás a végén, hanem **minden kötésnél** ellenőrizzük.
+Amint visszaesik, azonnal eldobjuk (a határidőt sem várjuk ki).
+> **Példa (valódi eset, ZECUSDT):** a kanóc 15 másodperccel később **még fent volt**,
+> és csak utána csorgott vissza. Egy végponti pillantás ezt átengedte — a folyamatos
+> ellenőrzés + a 60 másodperc kifogja.
+> Cserébe a jelzés egy perccel később ér oda, és elveszíted azokat a valódi
+> mozgásokat, amelyek egy percen belül lefutnak. Ez a szándék: amit ennyi idő alatt
+> visszavernek, azt úgysem tudod kézzel lekereskedni.
 
 ### `confirmHoldPct` — alap: `80`
-És a látott mozgás ennyi százaléka legyen még meg.
+És a látott mozgás ennyi százaléka legyen meg — **a `confirmSec` teljes ideje alatt,
+végig**. Nem elég, ha a végén épp jó: egy megbicsaklás menet közben is eldobja.
 > **Példa:** az ablak eleje 100.00, a jelzés pillanatában 100.30 (a látott mozgás
-> tehát 0.30). 15 másodperc múlva:
+> tehát 0.30). A következő 60 másodpercben végig:
 > 100.30 → 100% megvan → **jelzés**
 > 100.26 → 87% → **jelzés**
 > 100.22 → 73% → nincs jelzés (80% kell)
@@ -246,10 +250,11 @@ skálázódik: bolyongásnál az elmozdulás az idő gyökével nő.
 > `0.05 × √(20/2) = 0.158%`, tehát ott `0.158 × 8 = 1.26%` kell. Enélkül egy lassú
 > 20 másodperces kúszás is „rendkívülinek" látszana.
 
-### `confirmSec` — alap: `15.0`  ⭐
-Az áttörés pillanata még nem forduló. Ennyi másodperccel később az árnak **még
-mindig** a micro szint túloldalán kell lennie.
-> **Példa:** a micro-high 0.7838, az ár áttöri 0.7845-ig. 15 másodperc múlva:
+### `confirmSec` — alap: `30.0`  ⭐
+Az áttörés pillanata még nem forduló. Ennyi ideig **végig** a micro szint túloldalán
+kell maradnia az árnak — minden kötésnél ellenőrizzük, és amint visszaesik a szint
+mögé, azonnal eldobjuk.
+> **Példa:** a micro-high 0.7838, az ár áttöri 0.7845-ig. A következő 30 másodpercben:
 > 0.7850 → tartja → **jelzés**
 > 0.7832 → visszaesett a szint mögé → nincs jelzés, a logban:
 > `VISSZAESETT ... az attores nem tartott`
@@ -387,8 +392,8 @@ db.config.updateOne({_id:"market"}, {$set:{minQuoteVolume24h: 300000000, maxSymb
 // 2. PUMP/DUMP: csak a rendkivuli mozgas
 db.config.updateOne({_id:"detector"}, {$set:{baselineRatio: 10.0, minMovePct: 1.2}})
 
-// 3. PUMP/DUMP: csak az, ami 30 masodperc mulva is all
-db.config.updateOne({_id:"detector"}, {$set:{confirmSec: 30.0, confirmHoldPct: 85}})
+// 3. PUMP/DUMP: csak az, ami 2 percig VEGIG all
+db.config.updateOne({_id:"detector"}, {$set:{confirmSec: 120.0, confirmHoldPct: 90}})
 
 // 4. REVERSAL: csak nagy mozgas utan
 db.config.updateOne({_id:"reversal"}, {$set:{minMovePct: 3.0, baselineRatio: 10.0}})

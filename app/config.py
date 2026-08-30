@@ -53,7 +53,7 @@ DETECTOR_DEFAULTS = {
     "baselineRatio": 8.0,              # a mozgas a par normaljanak ennyiszerese legyen
     "minMovePct": 0.80,                # abszolut padlo
     "maxSingleStepPct": 35,            # ennel nagyobb reszt egyetlen arlepes ne adjon
-    "confirmSec": 15.0,                # ennyivel kesobb megnezzuk, megvan-e meg
+    "confirmSec": 60.0,                # ennyi ideig VEGIG tartania kell a mozgasnak
     "confirmHoldPct": 80,              # es a mozgas ennyi szazaleka legyen meg
     "symbolCooldownSec": 900,
 
@@ -92,7 +92,7 @@ REVERSAL_DEFAULTS = {
     # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
     "maxExtremeAgeSec": 6,
-    "confirmSec": 15.0,                # ennyivel kesobb: tartja-e meg az attorest
+    "confirmSec": 30.0,                # ennyi ideig VEGIG tartania kell az attoresnek
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,
     "minTradesInFlowWindow": 5,

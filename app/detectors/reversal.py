@@ -140,18 +140,20 @@ class ReversalDetector(Detector):
     # -------------------------------------------------------------- megerosites
 
     def _resolve_pending(self, trade, w):
-        """Tartja-e magat az attores? Ez valasztja el a fordulot a zajtol."""
+        """Tartja-e magat az attores? Ez valasztja el a fordulot a zajtol.
+
+        FOLYAMATOSAN nezzuk: ha az ar a megerositesi ablakon belul BARMIKOR
+        visszaesik a micro szint moge, azonnal eldobjuk.
+        """
         c = self.cfg.reversal
         p = self.pending[trade.symbol]
         p["history"].append((trade.ts, trade.price))
-        if trade.ts < p["deadline"]:
-            return None
-        del self.pending[trade.symbol]
 
         setup = p["setup"]
         tartja = (trade.price > setup.micro if setup.side == "LONG"
                   else trade.price < setup.micro)
         if not tartja:
+            del self.pending[trade.symbol]
             log.info("VISSZAESETT %-13s %-5s ar %.8g  vissza a %s szint (%.8g) "
                      "mogott -- az attores nem tartott",
                      trade.symbol, setup.side, trade.price,
@@ -159,6 +161,10 @@ class ReversalDetector(Detector):
                      setup.micro)
             events.add(f"{trade.symbol:<14} fordulo elmaradt: az attores nem tartott")
             return None
+
+        if trade.ts < p["deadline"]:
+            return None                 # tartja, de meg nem telt le az ido
+        del self.pending[trade.symbol]
 
         self.total_signals += 1
         return self._signal(trade, setup, p["flow"], p["break_pct"],
