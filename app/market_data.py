@@ -29,7 +29,7 @@ import websockets
 
 from datetime import datetime, timezone
 
-from . import binance_rest, events
+from . import binance_rest, events, telegram
 from .detectors.base import Trade
 from .fmt import clock
 
@@ -58,6 +58,7 @@ class MarketDataService:
         self.on_signal = on_signal
         self.signal_service = None      # a STATUS sorhoz, a main koti be
         self.outcome = None             # OutcomeTracker, a main koti be
+        self.notifier = None            # TelegramNotifier az idoszakos eletjelhez
         self.symbols = []
         self.started = time.time()
         self.connected = 0
@@ -68,6 +69,7 @@ class MarketDataService:
 
     async def run(self):
         asyncio.create_task(self._status_loop())
+        asyncio.create_task(self._telegram_status_loop())
         asyncio.create_task(self._book_stream())
         while True:
             c = self.cfg.market
@@ -264,6 +266,40 @@ class MarketDataService:
                 events.drain()          # ne gyuljon vegtelenul
 
             await self._save_status(ticks, interval)
+
+    async def _telegram_status_loop(self):
+        """Idoszakos eletjel Telegramra: fut-e meg, es mit nez eppen.
+
+        Kulon a log STATUS sorotol: azt percenkent irjuk, ez ritkabb es rovidebb.
+        """
+        while True:
+            perc = self.cfg.telegram.get("statusEveryMinutes", 0)
+            if not perc or not self.notifier:
+                await asyncio.sleep(60)
+                continue
+            await asyncio.sleep(perc * 60)
+            try:
+                await self.notifier.send("STATUS", telegram.format_status(self._status_info()))
+            except Exception as e:
+                log.warning("eletjel kuldese sikertelen: %s", e)
+
+    def _status_info(self):
+        pump = next((d for d in self.detectors.detectors
+                     if hasattr(d, "top_movers")), None)
+        eltelt = max(1, int(time.time() - self.started))
+        return {
+            "ido": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+            "uptime": f"{eltelt // 3600}h {eltelt % 3600 // 60}p",
+            "symbols": len(self.symbols),
+            "wsConnected": self.connected,
+            "wsTotal": self._chunk_count(),
+            "ticksPerMin": self.detectors.osszes_tick / max(1, eltelt / 60),
+            "signals": self.signal_service.signals_today if self.signal_service else 0,
+            "kizarva": (self.eligibility.summary() or [""])[0],
+            "movers": pump.top_movers() if pump else [],
+            "kozel": pump.readiness() if pump else "",
+            "eredmenyek": self.outcome.status_lines() if self.outcome else [],
+        }
 
     @staticmethod
     def _events_section(limit=30):

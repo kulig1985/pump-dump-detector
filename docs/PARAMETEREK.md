@@ -335,6 +335,33 @@ Ekkora visszatekintéssel írjuk az üzenetbe, hányadik jelzés ez ebbe az irá
 > **Példa:** `gyakorisag: 3. SHORT 10 percen belul` — ha ez a szám gyorsan nő,
 > a rendszer túl érzékenyen van beállítva.
 
+### `statusEveryMinutes` — alap: `20`
+Ennyi percenként egy **életjel** üzenet Telegramra: fut-e még, mit néz éppen, és mi
+lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
+> **Példa** (20 percenként):
+> ```
+> 🟦 ELETJEL
+> 14:20:03 UTC  ·  3h 12p ota fut
+>
+>   figyelt par          58 db
+>   WS kapcsolat         1/1
+>   kotes / perc         1,932
+>   jelzes indulas ota   7 db
+>   kizarva              kizarva 2: tul szeles a spread: 2
+>
+> MOST A LEGMOZGEKONYABB
+>   SOLUSDT   0.31% / kell 0.80%
+>   ZKCUSDT   0.22% / kell 0.80%
+>
+> LEGKOZELEBB A JELZESHEZ
+>   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
+>
+> MI LETT AZ EDDIGI JELZESEKBOL
+>   • EREDMENY  pump_dump  + 5 perc:   7 merve,  57% jo iranyba, median +0.10%
+> ```
+> A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
+> küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
+
 ### `botToken` / `chatId`
 A BotFather-től kapott token és a cél chat azonosítója. **Környezeti változóból**
 (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) is jöhet — az API kulcsok nem a DB-ben laknak.

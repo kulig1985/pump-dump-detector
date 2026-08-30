@@ -103,6 +103,7 @@ async def main():
                                on_signal=signals.handle_trigger)
     market.signal_service = signals
     market.outcome = outcome
+    market.notifier = notifier
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run(), outcome.run())

@@ -15,7 +15,8 @@ class DetectorManager:
         self.cfg = cfg
         self.detectors = detectors
         self.eligibility = eligibility
-        self.ticks = 0
+        self.ticks = 0                  # a log STATUS sora nullazza
+        self.osszes_tick = 0            # kumulalt, senki nem nullazza
         self.skipped = 0
         self.total_candidates = 0
         self._broken = set()
@@ -26,6 +27,7 @@ class DetectorManager:
     def on_trade(self, trade):
         """Az osszes detektor CANDIDATE-je erre a trade-re (altalaban ures lista)."""
         self.ticks += 1
+        self.osszes_tick += 1
 
         # A szuro NEM a detektor elott all meg, hanem a jelzes kiadasanal. Igy a
         # baseline minden figyelt paron epul, es amint egy par kereskedhetove valik,

@@ -665,6 +665,33 @@ def test_config_split_moves_your_existing_values():
     assert "minQuoteVolume24h" not in coll.docs["detector"], "a regi kulcs kikerult"
 
 
+def test_telegram_heartbeat_renders():
+    """Idoszakos eletjel: ures allapotban (meg semmi nem tortent) se hibazzon,
+    es teljes allapotban tartalmazza a lenyeget."""
+    from app.telegram import format_status
+
+    ures = {"ido": "14:20:03", "uptime": "0h 1p", "symbols": 0, "wsConnected": 0,
+            "wsTotal": 1, "ticksPerMin": 0, "signals": 0, "kizarva": "",
+            "movers": [], "kozel": "", "eredmenyek": []}
+    szoveg = format_status(ures)
+    assert "ELETJEL" in szoveg and "Meg nincs lemert jelzes" in szoveg
+
+    det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "SOLUSDT", normal_pct=0.041)
+    feed(det, "SOLUSDT", 1000.0, [100.0 * (1 + 0.0002 * i) for i in range(40)])
+    movers = det.top_movers()
+    assert movers and "kell" in movers[0][1], movers
+
+    teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
+            "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
+            "movers": movers, "kozel": det.readiness(),
+            "eredmenyek": ["EREDMENY  pump_dump  + 5 perc:  7 merve,  57% jo iranyba"]}
+    szoveg = format_status(teli)
+    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57% jo iranyba"):
+        assert kell in szoveg, (kell, szoveg)
+    assert "Meg nincs lemert jelzes" not in szoveg
+
+
 def test_outcome_records_what_happened_after_the_signal():
     """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat.
 

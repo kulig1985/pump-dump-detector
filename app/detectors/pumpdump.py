@@ -246,6 +246,26 @@ class PumpDumpDetector(Detector):
                     f"(kell {kell:.3f}%, normalja {alap:.3f}%)")
         return sor
 
+    def top_movers(self, top=5):
+        """A legmozgekonyabb parok EPPEN MOST: (par, "mozgas / kell") parok.
+
+        Nem a legnagyobb abszolut mozgas, hanem ami a sajat kuszobehez legkozelebb
+        van -- ez mondja meg, hol tart a mezony a jelzeshez kepest.
+        """
+        c = self.cfg.detector
+        sorok = []
+        for symbol, m in self.latest.items():
+            if m is None:
+                continue
+            alap = self.baseline.value(symbol)
+            if not alap:
+                continue
+            kell = max(c["minMovePct"], alap * c["baselineRatio"])
+            sorok.append((abs(m["movePct"]) / kell, symbol, abs(m["movePct"]), kell))
+        sorok.sort(reverse=True)
+        return [(sym, f"{mozgas:.2f}% / kell {kell:.2f}%")
+                for _, sym, mozgas, kell in sorok[:top]]
+
     def status_lines(self, top=10):
         """Reszletes paronkenti allapot -- csak DEBUG szinten kerul kiirasra."""
         c = self.cfg.detector

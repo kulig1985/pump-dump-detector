@@ -49,7 +49,7 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/fmt.py` | közös formázók a logoláshoz |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
 | `app/outcome.py` | a jelzés UTÁNI ár feljegyzése (+1/+5/+15 perc), semmit nem kapuz |
-| `app/telegram.py` | Bot API sendMessage + üzenetformázás |
+| `app/telegram.py` | Bot API sendMessage + üzenetformázás (jelzés és időszakos életjel) |
 | `app/trading.py` | WS API `order.place`, TP/SL, pozíciólimitek |
 
 Paraméterek részletes leírása: `docs/PARAMETEREK.md`

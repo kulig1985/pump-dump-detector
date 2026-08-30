@@ -120,6 +120,36 @@ def format_signal(sig, app_link_template=""):
     return f"{fej}\n\n<pre>{torzs}</pre>{veg}\n{linkek}"
 
 
+def format_status(info):
+    """Idoszakos eletjel: fut-e meg, mit nez eppen, es mi lett az eddigi jelzesekbol."""
+    fej = (f"🟦 <b>ELETJEL</b>\n"
+           f"{esc(info['ido'])} UTC  ·  {esc(info['uptime'])} ota fut")
+
+    allapot = [
+        ("figyelt par", f"{info['symbols']} db"),
+        ("WS kapcsolat", f"{info['wsConnected']}/{info['wsTotal']}"),
+        ("kotes / perc", f"{info['ticksPerMin']:,.0f}"),
+        ("jelzes indulas ota", f"{info['signals']} db"),
+    ]
+    if info.get("kizarva"):
+        allapot.append(("kizarva", info["kizarva"]))
+
+    blokkok = [("ALLAPOT", allapot)]
+    if info.get("movers"):
+        blokkok.append(("MOST A LEGMOZGEKONYABB", info["movers"]))
+    torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
+
+    veg = ""
+    if info.get("kozel"):
+        veg += f"\n\n<b>LEGKOZELEBB A JELZESHEZ</b>\n  • {esc(info['kozel'])}"
+    if info.get("eredmenyek"):
+        sorok = "\n".join(f"  • {esc(x)}" for x in info["eredmenyek"])
+        veg += f"\n\n<b>MI LETT AZ EDDIGI JELZESEKBOL</b>\n{sorok}"
+    else:
+        veg += "\n\n<i>Meg nincs lemert jelzes.</i>"
+    return f"{fej}\n\n<pre>{torzs}</pre>{veg}"
+
+
 def _blokk(nev, sorok):
     szeles = max(len(str(c)) for c, _ in sorok)
     torzs = "\n".join(f"  {esc(str(c)):<{szeles}}   {esc(str(v))}" for c, v in sorok)

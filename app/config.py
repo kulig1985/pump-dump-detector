@@ -115,6 +115,7 @@ TELEGRAM_DEFAULTS = {
     "_id": "telegram",
     "enabled": True,                   # ha false: log + DB igen, Telegram nem
     "signalWindowMinutes": 10,         # ennyi visszatekintessel: hanyadik jelzes ez
+    "statusEveryMinutes": 20,          # idoszakos eletjel Telegramra (0 = nincs)
     "botToken": os.getenv("TELEGRAM_BOT_TOKEN", ""),
     "chatId": os.getenv("TELEGRAM_CHAT_ID", ""),
     # Ha kulon csatornara akarod a ket detektort, ide irj chat ID-t.
