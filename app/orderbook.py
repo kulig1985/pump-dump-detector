@@ -54,6 +54,11 @@ async def analyze(symbol, price, direction, cfg):
         log.warning("[%s] ures order book snapshot", symbol)
         return None
 
+    # A trigger ota eltelt par szaz ms alatt az ar elmozdulhat, ezert nem a trigger
+    # arahoz merunk, hanem a snapshot sajat kozeparahoz: igy az ask mindig felette,
+    # a bid mindig alatta van, es nem szamit akadalynak egy mar mogottunk hagyott szint.
+    price = (bids[0][0] + asks[0][0]) / 2
+
     max_dist = cfg["wallMaxDistancePct"]
     sensitivity = cfg["wallSensitivity"]
     buy_wall = _find_wall(bids, price, sensitivity, max_dist)
@@ -67,6 +72,7 @@ async def analyze(symbol, price, direction, cfg):
     obstacle = sell_wall if direction == "LONG" else buy_wall
 
     result = {
+        "refPrice": price,          # a snapshot kozepara, ehhez mertunk
         "nearestBuyWall": buy_wall,
         "nearestSellWall": sell_wall,
         "aheadLiquidity": round(ahead_liq, 2),

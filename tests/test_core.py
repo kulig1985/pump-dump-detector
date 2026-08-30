@@ -111,6 +111,22 @@ def test_status_row_is_mongo_safe():
     assert set(rows[0]["changes"]) == {"s1", "s3", "s5"}
 
 
+def test_wall_behind_price_is_not_an_obstacle():
+    """Ha az ar a snapshotig visszaesett, a mogottunk levo szint nem akadaly."""
+    # kozepar 100.005; a nagy bid 99.95 (alatta), a nagy ask 100.06 (felette)
+    bids = [(100.00 - i * 0.01, 1.0) for i in range(20)]
+    asks = [(100.01 + i * 0.01, 1.0) for i in range(20)]
+    bids[5] = (99.95, 80.0)
+    mid = (bids[0][0] + asks[0][0]) / 2
+
+    buy = orderbook._find_wall(bids, mid, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
+    sell = orderbook._find_wall(asks, mid, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
+    assert buy is not None and buy["price"] == 99.95
+    assert sell is None, "az ask oldalon nincs wall, nem szabad talalni"
+    # a bid wall tavolsaga a kozepartol mert, pozitiv szazalek
+    assert 0.0 < buy["distancePct"] < 0.1
+
+
 def _trigger(c1, c3, c5):
     return {"symbol": "X", "direction": "LONG", "price": 100.0,
             "changes": {1: c1, 3: c3, 5: c5}}
