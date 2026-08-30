@@ -39,6 +39,32 @@ def code_fingerprint():
     return h.hexdigest()[:10]
 
 
+def startup_summary(cfg):
+    """A beallitasok osszefoglalasa indulaskor.
+
+    Kulon fuggveny, hogy tesztelheto legyen: itt korabban egy atnevezett config
+    kulcs miatt indulaskor elhasalt az egesz alkalmazas.
+    """
+    d, r, t = cfg.detector, cfg.reversal, cfg.trading
+    return [
+        f"Pump/dump: legalabb {d['minTotalMovePct']:.2f}% mozgas "
+        f"{d['slopeWindowSec']:.0f} mp-en belul, {d['minSlopePctPerSec']:.3f}%/mp tempoval, "
+        f"{d['minConsistency']:.0%} egyiranyusaggal | min score {d['minSignalScore']} "
+        f"| cooldown {d['symbolCooldownSec']}s",
+        f"Reversal: {r['minMovePct']:.2f}% elozetes mozgas, belepes a mozgas "
+        f"{r['maxRetracementPct']:.0f}%-an belul, max {r['maxExtremeAgeSec']:.0f} mp regi "
+        f"szelsoertekre | min score {r['minSignalScore']} | cooldown {r['cooldownSec']}s",
+        f"Szures: forgalom >= {d['minQuoteVolume24h']:,.0f}, "
+        f"hatekonysag >= {d['minEfficiency']:.2f}, "
+        f"mozgas >= {d['minMoveToSpreadRatio']:.0f}x spread",
+        f"Telegram: pump_dump={d['telegramMode']}, reversal={r['telegramMode']} "
+        f"(auto = csak {d['shadowMinSamples']} lemert jelzes es "
+        f"{d['shadowMinHitRate']:.0%} talalat utan)",
+        f"Auto trading: {'BE' if t['autoTradingEnabled'] else 'KI'} | "
+        f"margin: {t['marginMode']} | {t['leverage']}x",
+    ]
+
+
 async def main():
     log.info("Kod ujjlenyomat: %s", code_fingerprint())
     db = Database()
@@ -46,14 +72,8 @@ async def main():
 
     cfg = ConfigStore(db)
     await cfg.load()
-    log.info("Pump/dump trigger: %.3f%%/mp meredekseg + %.0f%% egyiranyusag "
-             "%d trade-en (max %.0f mp) | min score %d | cooldown %ds",
-             cfg.detector["minSlopePctPerSec"], cfg.detector["minConsistency"] * 100,
-             cfg.detector["tradeWindow"], cfg.detector["maxSpanSec"],
-             cfg.detector["minSignalScore"], cfg.detector["symbolCooldownSec"])
-    log.info("Auto trading: %s | margin: %s | %dx",
-         "BE" if cfg.trading["autoTradingEnabled"] else "KI",
-         cfg.trading["marginMode"], cfg.trading["leverage"])
+    for sor in startup_summary(cfg):
+        log.info("%s", sor)
 
     notifier = TelegramNotifier(cfg)
     trader = TradingService(cfg, db)

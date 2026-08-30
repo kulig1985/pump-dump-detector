@@ -341,7 +341,11 @@ def test_every_config_key_read_by_the_code_exists():
     ismert = set().union(*(set(d) for d in (
         C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS,
         C_CFG.TRADING_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS)))
-    minta = re.compile(r'(?:c|cfg|own|shared|self\.cfg\.\w+)\[\s*["\'](\w+)["\']\s*\]')
+    # barmilyen config-szeru hozzaferes: c[...], cfg[...], own[...], shared[...],
+    # es a dokumentumok nev szerint is (cfg.detector[...], self.cfg.reversal[...])
+    minta = re.compile(
+        r'(?:\b(?:c|cfg|own|shared|conf)\b|\.(?:detector|reversal|trading|telegram))'
+        r'\s*\[\s*["\'](\w+)["\']\s*\]')
     hibas = []
     for f in sorted((pathlib.Path(__file__).parent.parent / "app").rglob("*.py")):
         src = f.read_text()
@@ -350,6 +354,17 @@ def test_every_config_key_read_by_the_code_exists():
                 sor = src[:m.start()].count("\n") + 1
                 hibas.append(f"{f.name}:{sor} -> {m.group(1)}")
     assert not hibas, "nem letezo config kulcsra hivatkozunk: " + ", ".join(hibas)
+
+
+def test_startup_summary_renders():
+    """Indulaskor kiirt osszefoglalo: itt egy atnevezett kulcs miatt korabban
+    elhasalt az egesz alkalmazas, mielott barmit csinalt volna."""
+    from app.main import startup_summary
+    cfg = types.SimpleNamespace(
+        detector=dict(C_CFG.DETECTOR_DEFAULTS), reversal=dict(C_CFG.REVERSAL_DEFAULTS),
+        trading=dict(C_CFG.TRADING_DEFAULTS), telegram=dict(C_CFG.TELEGRAM_DEFAULTS))
+    sorok = startup_summary(cfg)
+    assert len(sorok) == 5 and all(isinstance(x, str) and x for x in sorok)
 
 
 def test_detector_status_lines_render():
