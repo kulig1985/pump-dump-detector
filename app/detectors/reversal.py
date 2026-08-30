@@ -193,11 +193,11 @@ class ReversalDetector(Detector):
             termeszetesen nagyobb (bolyongasnal az ido gyokevel no). Skalazas nelkul
             egy 20 mp-es normal kuszas is "rendkivulinek" latszana.
             """
-            kell = c["minMovePct"]
+            # Baseline nelkul nem tudjuk, mi szamit rendkivulinek ezen a paron
             alap = self.baseline.value_for(symbol, hossz_sec)
-            if alap:
-                kell = max(kell, alap * c["baselineRatio"])
-            return mozgas_pct >= kell
+            if not alap:
+                return False
+            return mozgas_pct >= max(c["minMovePct"], alap * c["baselineRatio"])
 
         # LONG jelolt: a minimum a maximum UTAN keletkezett -> lefele mozgas
         if lo.ts > hi.ts and lo.price > 0:

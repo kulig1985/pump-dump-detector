@@ -101,6 +101,11 @@ def _find_wall(side, price, sensitivity, max_dist_pct):
     es 20 szint mellett egy 10x akkora fal ~45%-kal emeli az atlagot -- vagyis a sajat
     aranyat hígitja fel, es alabecsult erteket kapnank.
     """
+    # A LEGJOBB szint (a touch) kimarad: ott lepsz be, az nem akadaly. A BTC-n a
+    # touch sokszorosa a tobbi szintnek, es igy minden jelzest "fal" miatt dobtunk el.
+    side = side[1:]
+    if not side:
+        return None
     notionals = [p * q for p, q in side]
     alap = statistics.median(notionals)
     if alap <= 0:

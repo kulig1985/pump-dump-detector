@@ -59,6 +59,8 @@ Minden elutasításnak gépi neve van, hogy aggregálható legyen:
 | `wall_immediately_ahead` | fal a mozgás irányában `wallBlockDistancePct`-en belül |
 | `poor_reward_risk` | a hozam/kockázat `minRewardRisk` alatt |
 | `no_usable_plan` | nem számítható értelmes belépő/cél/stop |
+| `target_below_costs` | a cél a díj és a spread levonása után nem hoz eleget |
+| `contradicts_recent_signal` | ellentétes irányú jelzés ment ki nemrég ugyanarra a párra |
 
 ```js
 // mi miert esett ki?
@@ -121,6 +123,9 @@ elmozdulása** — így egyetlen kiugró print nem tud jelzést csinálni.
 | `minMoveToSpreadRatio` | 3.0 | a mozgás legyen legalább ennyiszer a spread |
 | `wallBlockDistancePct` | 0.15 | ennél közelebbi fal a mozgás irányában elutasít |
 | `minRewardRisk` | 1.5 | ez alatt nem éri meg felvenni |
+| `takerFeePct` | 0.05 | a Binance USDⓈ-M futures taker díj **oldalanként** (VIP szinttől függ — írd át, ha nálad más) |
+| `minNetTargetPct` | 0.10 | a célnak ennyivel kell túllőnie a költségen (2× taker díj + spread). Enélkül egy 0.15%-os cél tökéletes kimenetel esetén is nullát hoz |
+| `oppositeCooldownSec` | 120 | ennyi ideig nem adunk **ellentétes irányú** jelzést ugyanarra a párra |
 | `stopBufferOfDistancePct` | 10 | a stop ennyivel kerül a horgony mögé, a belépő–horgony **távolság arányában** |
 | `momentumStopRetracementPct` | 50 | lendületnél a stop az impulzus felénél: ha a mozgás felét visszaadja, a tézis halott |
 | `momentumTargetFactor` | 1.0 | a cél azonos méretű folytatás (mért mozgás) |

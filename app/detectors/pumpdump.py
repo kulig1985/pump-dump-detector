@@ -66,9 +66,12 @@ class PumpDumpDetector(Detector):
         # a baseline MINDEN merheto ablakbol epul, nem csak a jelzesekbol
         self.baseline.add(trade.symbol, trade.ts, abs(m["movePct"]))
 
-        kell = c["minMovePct"]
-        if arany is not None:
-            kell = max(kell, m["baseline"] * c["baselineRatio"])
+        # Baseline nelkul nem tudjuk megmondani, hogy a mozgas RENDKIVULI-e ezen a
+        # paron -- ilyenkor a rendszer csak egy fix kuszob lenne, epp az, amitol el
+        # akartunk jutni. Inkabb varunk, amig felepul a normal (kb. 1-2 perc).
+        if arany is None:
+            return None
+        kell = max(c["minMovePct"], m["baseline"] * c["baselineRatio"])
         if abs(m["movePct"]) < kell:
             return None
         if m["consistency"] < c["minConsistency"]:
@@ -84,17 +87,15 @@ class PumpDumpDetector(Detector):
 
         reasons = [
             f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s",
-            (f"{arany:.1f}x a par normaljahoz kepest "
-             f"(normal {m['baseline']:.3f}%)" if arany is not None
-             else f"nincs meg baseline, abszolut padlo {c['minMovePct']:.2f}%"),
+            f"{arany:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
             f"{m['consistency']:.0%} egy iranyba ({m['trades']} kotes)",
             f"forgalom {money(m['volume'])} USDT "
             f"({m['volume'] / m['expectedVolume']:.1f}x atlag)"
             if m["expectedVolume"] else f"forgalom {money(m['volume'])} USDT",
         ]
-        log.info("CANDIDATE  %-14s %-5s move %+.2f%% / %.1fs  baseline %s",
+        log.info("CANDIDATE  %-14s %-5s move %+.2f%% / %.1fs  normal %.3f%% (%.1fx)",
                  trade.symbol, direction, m["movePct"], m["spanSec"],
-                 f"{arany:.1f}x" if arany is not None else "n/a")
+                 m["baseline"], arany)
         events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} "
                    f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s")
 

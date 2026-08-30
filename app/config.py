@@ -45,6 +45,12 @@ DETECTOR_DEFAULTS = {
     "minMoveToSpreadRatio": 3.0,       # a mozgas legyen legalabb ennyiszer a spread
     "wallBlockDistancePct": 0.15,      # ennel kozelebbi fal a mozgas iranyaban elutasit
     "minRewardRisk": 1.5,              # ez alatt nem eri meg felvenni
+    "takerFeePct": 0.05,               # Binance USDS-M futures taker dij OLDALANKENT
+                                       # (VIP szinttol fugg -- ird at, ha nalad mas)
+    "minNetTargetPct": 0.10,           # a celnak ennyivel kell tullonie a koltsegen
+                                       # (2x taker dij + spread), kulonben nem eri meg
+    "oppositeCooldownSec": 120,        # ennyi ideig nem adunk ELLENTETES iranyu
+                                       # jelzest ugyanarra a parra
     "stopBufferOfDistancePct": 10,     # a stop ennyivel kerul a horgony moge,
                                        # a belepo-horgony tavolsag aranyaban
     "momentumStopRetracementPct": 50,  # a stop az impulzus ennyi %-anal

@@ -97,6 +97,8 @@ def format_signal(sig, app_link_template=""):
         ("cel", f"{t['target']:.8g}   (+{t['targetPct']:.2f}%)"),
         ("stop", f"{t['stop']:.8g}   (-{t['stopPct']:.2f}%)"),
         ("hozam/kockazat", f"{t['rewardRisk']} : 1"),
+        ("nettó cel", f"{t.get('netTargetPct', 0):+.2f}%   "
+                      f"(dij + spread {t.get('costPct', 0):.2f}% levonva)"),
     ]
 
     kontextus = []

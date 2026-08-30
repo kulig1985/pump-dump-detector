@@ -1,6 +1,7 @@
 """Halozat nelkuli onteszt a detektor magjara: python tests/test_core.py"""
 import sys
 import math
+import time
 import types
 import pathlib
 
@@ -12,6 +13,7 @@ from app.detectors.manager import DetectorManager
 from app.detectors.baseline import Baseline
 from app.detectors.base import Trade
 from app.eligibility import Eligibility
+from app.signals import SignalService
 from app.fmt import pad as _pad
 from app import orderbook
 from app.ta import ema
@@ -30,6 +32,17 @@ def eligible_stub():
     e = Eligibility(cfg_obj)
     e.check = lambda symbol: (True, None, {})
     return e
+
+
+def kesz_baseline(det, symbol, normal_pct=0.02, t0=900.0, db=70):
+    """A par normaljat kozvetlenul feltoltjuk, hogy a teszt ne varjon 1-2 percet.
+
+    Baseline nelkul a detektor szandekosan nem ad candidate-et.
+    """
+    for i in range(db):
+        det.baseline.add(symbol, t0 + i, normal_pct)
+    assert det.baseline.value(symbol) is not None
+    return det
 
 
 def feed(det, symbol, start_ts, prices, step=0.05, usd=3000.0):
@@ -72,6 +85,7 @@ def test_no_trigger_on_slow_drift():
 def test_trigger_on_steady_fast_move():
     """Valodi pump: 2 masodperc alatt egyenletes +0.4%."""
     det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "BBBUSDT")
     prices = [100.0] * 40 + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "BBBUSDT", 1000.0, prices)
     assert len(triggers) == 1, triggers
@@ -84,6 +98,7 @@ def test_trigger_on_steady_fast_move():
 
 def test_dump_direction():
     det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "CCCUSDT")
     prices = [100.0] * 40 + [100.0 * (1 - 0.004 * (i + 1) / 40) for i in range(40)]
     triggers = feed(det, "CCCUSDT", 1000.0, prices)
     assert len(triggers) == 1
@@ -111,6 +126,7 @@ def test_tiny_total_move_is_not_a_signal():
 
 def test_cooldown_suppresses_repeat():
     det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "FFF2USDT")
     prices = ([100.0] * 40
               + [100.0 * (1 + 0.004 * (i + 1) / 40) for i in range(40)]
               + [100.4 * (1 + 0.004 * (i + 1) / 40) for i in range(40)])
@@ -161,6 +177,8 @@ def rev_tape(micro, visszahuzas, belepo, tetlen_mp=0.0, csucs=CSUCS, mely=MELY):
 
 
 def rev_run(det, tape):
+    """Feltolti a par normaljat (baseline nelkul nincs alakzat), majd lejatssza."""
+    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
     return [s for s in (det.on_trade(t) for t in tape) if s]
 
 
@@ -204,6 +222,7 @@ def test_pullback_below_bounce_still_locks_the_micro_level():
     arhoz. Kulonben a visszahuzas kilokne az alakzatot, es a micro szint csak NAGY
     visszapattanasoknal rogzulne -- pontosan ez okozta a kesoi jelzeseket."""
     det = ReversalDetector(rev_cfg)
+    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
     for t in rev_tape(0.78380, 0.78330, 0.78450):
         det.on_trade(t)
         st = det.setups.get("CYSUSDT")
@@ -437,6 +456,7 @@ def test_detectors_build_state_even_for_ineligible_pairs():
     _book(e, "OTHERUSDT", 1.0000, 1.0001)
     _book(e, "CYSUSDT", 0.7800, 0.7830)            # szeles spread -> nem kereskedheto
     det = ReversalDetector(rev_cfg)
+    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
     mgr = DetectorManager(rev_cfg, [det], e)
     for t in rev_tape(0.78380, 0.78330, 0.78450):
         mgr.on_trade(t)
@@ -452,6 +472,61 @@ def test_readiness_shows_raw_numbers_not_just_a_ratio():
     sor = det.readiness()
     assert "normal kesz:" in sor
     assert "%" in sor and "kell" in sor, sor
+
+
+def test_touch_level_is_not_a_wall():
+    """Elesben a BTC/ETH sajat legjobb ajanlata szamitott 'falnak' (0.00% tavolsag,
+    1124x atlag), es emiatt minden jelzesuk elbukott. A touch nem akadaly: ott
+    lepsz be."""
+    # a touch hatalmas, a tobbi szint lapos
+    asks = [(100.01, 1000.0)] + [(100.02 + i * 0.01, 1.0) for i in range(19)]
+    assert orderbook._find_wall(asks, 100.0, 3.0, 1.5) is None
+
+    # de egy valodi fal a konyv belsejeben tovabbra is fal
+    asks[5] = (asks[5][0], 40.0)
+    w = orderbook._find_wall(asks, 100.0, 3.0, 1.5)
+    assert w is not None and w["distancePct"] > 0.0
+
+
+def test_no_candidate_without_a_baseline():
+    """Baseline nelkul a rendszer csak egy fix kuszob lenne -- epp az, amitol el
+    akartunk jutni. Elesben minden jelzes pontosan a 0.15%-os padlon szuletett."""
+    det = PumpDumpDetector(cfg_obj)
+    assert det.baseline.value("COLDUSDT") is None
+    # bőven a padlo folotti, tiszta mozgas -- megsem jelez, mert nincs meg normal
+    assert feed(det, "COLDUSDT", 1000.0,
+                [100.0 * (1 + 0.006 * (i + 1) / 40) for i in range(40)]) == []
+
+
+def test_target_must_beat_fees_and_spread():
+    """Egy 0.15%-os cel a taker dij (2x0.05%) es a spread levonasa utan nullat hoz."""
+    ob = {"spreadPct": 0.0192, "obstacleAhead": None}
+    gyenge = {"targetPct": 0.1487, "rewardRisk": 1.76}
+    assert SignalService._validate({"movePct": 0.36}, ob, gyenge, CFG) == "target_below_costs"
+    assert gyenge["netTargetPct"] < CFG["minNetTargetPct"]
+
+    jo = {"targetPct": 0.40, "rewardRisk": 1.76}
+    assert SignalService._validate({"movePct": 0.36}, ob, jo, CFG) is None
+    assert jo["netTargetPct"] > CFG["minNetTargetPct"]
+    assert jo["costPct"] == round(2 * CFG["takerFeePct"] + 0.0192, 4)
+
+
+def test_opposite_direction_signals_are_suppressed():
+    """Elesben UNIUSDT SHORT ment ki 12:52:26-kor, majd LONG 12:52:35-kor."""
+    from collections import deque
+    svc = SignalService.__new__(SignalService)
+    svc.recent = deque([(time.time(), "pump_dump", "UNIUSDT", "SHORT")])
+    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "LONG"},
+                                    CFG) == "contradicts_recent_signal"
+    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "SHORT"},
+                                    CFG) is None
+    assert svc._contradiction_check({"symbol": "MASUSDT", "direction": "LONG"},
+                                    CFG) is None
+    # a cooldown lejarta utan mar szabad
+    svc.recent = deque([(time.time() - CFG["oppositeCooldownSec"] - 1,
+                         "pump_dump", "UNIUSDT", "SHORT")])
+    assert svc._contradiction_check({"symbol": "UNIUSDT", "direction": "LONG"},
+                                    CFG) is None
 
 
 def test_outcome_is_off_by_default():
@@ -566,16 +641,19 @@ def test_eligibility_summary_aggregates_by_reason():
     assert "kizarva 3" in osszegzes and "spread_too_wide 2" in osszegzes, osszegzes
 
 
-def test_manager_blocks_ineligible_symbols_before_detectors():
+def test_ineligible_pair_builds_state_but_emits_nothing():
+    """A szuro a JELZESNEL all, nem a detektor elott: az allapot epul, de jelzes
+    nem megy ki -- igy egy par nem nullarol indul, amint kereskedhetove valik."""
     e = Eligibility(cfg_obj)
-    # van konyv-adat a rendszerben (tehat nincs rendszerszintu baj), de a CYSUSDT
-    # spreadje szeles -> mar a detektor elott kiesik
-    _book(e, "OTHERUSDT", 1.0000, 1.0001)
-    _book(e, "CYSUSDT", 0.7800, 0.7830)
-    mgr = DetectorManager(rev_cfg, [ReversalDetector(rev_cfg)], e)
+    _book(e, "OTHERUSDT", 1.0000, 1.0001)          # van konyv-adat a rendszerben
+    _book(e, "CYSUSDT", 0.7800, 0.7830)            # de EZ a par szeles spreadu
+    det = ReversalDetector(rev_cfg)
+    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
+    mgr = DetectorManager(rev_cfg, [det], e)
     assert [s for t in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(t)] == []
-    assert mgr.skipped > 0
-    assert mgr.total_candidates == 0
+    assert mgr.total_candidates == 0, "jelzes nem mehet ki"
+    assert mgr.skipped > 0, "de a detektor eljutott a candidate-ig"
+    assert det.trades["CYSUSDT"], "es az allapota epult"
 
 
 # ---------------------------------------------------------------- egyeb
@@ -661,8 +739,9 @@ class BoomDetector:
 
 
 def test_manager_fans_out_and_survives_a_broken_detector():
-    mgr = DetectorManager(rev_cfg, [BoomDetector(), ReversalDetector(rev_cfg)],
-                          eligible_stub())
+    rev = ReversalDetector(rev_cfg)
+    kesz_baseline(rev, "CYSUSDT", normal_pct=0.02)
+    mgr = DetectorManager(rev_cfg, [BoomDetector(), rev], eligible_stub())
     tape = rev_tape(0.78380, 0.78330, 0.78450)
     signals = [s for tr in tape for s in mgr.on_trade(tr)]
     assert len(signals) == 1, "a hibas detektor nem nyelheti el a masik jelzeset"
@@ -714,6 +793,7 @@ def test_cjk_symbol_column_alignment():
 def test_signal_detail_is_mongo_safe():
     """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
     det = PumpDumpDetector(cfg_obj)
+    kesz_baseline(det, "FFFUSDT")
     sig = feed(det, "FFFUSDT", 1000.0,
                [100.0] * 40 + [100.0 * (1 + 0.005 * (i + 1) / 40) for i in range(40)])[0]
 

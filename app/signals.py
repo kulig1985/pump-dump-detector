@@ -52,7 +52,7 @@ class SignalService:
         )
         terv = plan.build(raw, c)
 
-        ok = self._validate(raw, ob, terv, c)
+        ok = self._validate(raw, ob, terv, c) or self._contradiction_check(raw, c)
         if ok:
             await self._save_rejected(raw, ok, ob, terv, ta_result)
             return
@@ -77,6 +77,27 @@ class SignalService:
             return "no_usable_plan"
         if terv["rewardRisk"] < c["minRewardRisk"]:
             return "poor_reward_risk"
+
+        # Megeri-e egyaltalan, ha a cel TELJESUL? A taker dij oda-vissza es a spread
+        # levonasa utan kell maradnia valaminek. Enelkul egy 0.15%-os cel tokeletes
+        # kimenetel eseten is nullat hoz.
+        koltseg = 2 * c["takerFeePct"] + (ob.get("spreadPct") or 0.0 if ob else 0.0)
+        terv["costPct"] = round(koltseg, 4)
+        terv["netTargetPct"] = round(terv["targetPct"] - koltseg, 4)
+        if terv["netTargetPct"] < c["minNetTargetPct"]:
+            return "target_below_costs"
+        return None
+
+    def _contradiction_check(self, raw, c):
+        """Ne adjunk ELLENTETES iranyu jelzest ugyanarra a parra par masodpercen belul.
+
+        Elesben elofordult, hogy a pump/dump SHORT-ot, a reversal 9 masodperccel
+        kesobb LONG-ot jelzett ugyanarra a parra -- a ket uzenet egymas ellen dolgozott.
+        """
+        hatar = time.time() - c["oppositeCooldownSec"]
+        for ts, _, symbol, direction in self.recent:
+            if ts >= hatar and symbol == raw["symbol"] and direction != raw["direction"]:
+                return "contradicts_recent_signal"
         return None
 
     # ------------------------------------------------------------------ kimenet
@@ -96,7 +117,10 @@ class SignalService:
             reasons.append("nincs fal a mozgas iranyaban" if not ob.get("obstacleAhead")
                            else f"fal {ob['obstacleAhead']['distancePct']:.2f}%-ra")
         reasons.append(f"hozam/kockazat {terv['rewardRisk']}:1")
+        reasons.append(f"nettó cel {terv['netTargetPct']:.2f}% "
+                       f"(koltseg {terv['costPct']:.2f}% levonva)")
         metrics["rewardRisk"] = terv["rewardRisk"]
+        metrics["netTargetPct"] = terv["netTargetPct"]
 
         signal = {
             "timestamp": datetime.now(timezone.utc),
