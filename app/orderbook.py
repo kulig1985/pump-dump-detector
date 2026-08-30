@@ -7,6 +7,7 @@ Triggerkor nyitunk egy rovid eletu WS kapcsolatot a partial book depth streamre
 A wall relativ: egy arszint akkor wall, ha a rajta levo notional legalabb
 `wallSensitivity`-szerese az adott oldal atlagos szintjenek, es kozel van az arhoz.
 """
+import os
 import json
 import asyncio
 import logging
@@ -15,20 +16,36 @@ import websockets
 
 log = logging.getLogger("orderbook")
 
-WS_BASE = "wss://fstream.binance.com/ws"
+# A partial book depth a dokumentacioban a "public" csoportba tartozik, ezert az
+# utvonal-szegmense /public (az aggTrade-e /market). Elsonek a dokumentalt utvonalat
+# probaljuk, majd a regieket; az elsot, amelyik tenyleg kuld adatot, megjegyezzuk.
+WS_HOST = ("wss://stream.binancefuture.com" if os.getenv("FUTURES_TESTNET") == "1"
+           else "wss://fstream.binance.com")
+WS_BASES = [f"{WS_HOST}/public/ws", f"{WS_HOST}/market/ws", f"{WS_HOST}/ws"]
 SNAPSHOT_TIMEOUT = 3.0
+
+_working_base = None      # az elso utvonal, amelyik mukodott
 
 
 async def analyze(symbol, price, direction, cfg):
     """Visszaad egy dictet a wall elemzessel, vagy None-t ha nem sikerult a snapshot."""
+    global _working_base
     levels = cfg["orderBookLevels"]
-    url = f"{WS_BASE}/{symbol.lower()}@depth{levels}@100ms"
-    try:
-        async with asyncio.timeout(SNAPSHOT_TIMEOUT):
-            async with websockets.connect(url) as ws:
-                data = json.loads(await ws.recv())
-    except Exception as e:
-        log.warning("[%s] order book snapshot sikertelen: %s", symbol, e)
+    stream = f"{symbol.lower()}@depth{levels}@100ms"
+    data = None
+    for base in ([_working_base] if _working_base else WS_BASES):
+        try:
+            async with asyncio.timeout(SNAPSHOT_TIMEOUT):
+                async with websockets.connect(f"{base}/{stream}") as ws:
+                    data = json.loads(await ws.recv())
+            if _working_base is None:
+                _working_base = base
+                log.info("Order book utvonal: %s", base)
+            break
+        except Exception as e:
+            log.debug("[%s] order book %s utvonalon nem jott: %s", symbol, base, e)
+    if data is None:
+        log.warning("[%s] order book snapshot sikertelen minden utvonalon", symbol)
         return None
 
     bids = [(float(p), float(q)) for p, q in data.get("b", [])]

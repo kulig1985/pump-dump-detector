@@ -67,12 +67,14 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ## Binance API — mit használunk
 
 WebSocket (`wss://fstream.binance.com`):
-- `/ws` + `{"method":"SUBSCRIBE","params":["<sym>@aggTrade",...],"id":"<hex>"}` — árfolyam
-  tickek. Az `id` a hivatalos spec szerint **kötelező és string** típusú.
-  Szándékosan nem a `/stream?streams=...` URL-t használjuk: ott a stream nevek a query
-  stringben utaznának, és ha azt bármi levágja az úton, a Binance elfogadja a kapcsolatot,
-  de soha nem küld semmit. Futures-ön **max 200 subscription / kapcsolat**, ezért 150-esével bontjuk.
-- `/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
+- `/market/stream` + `{"method":"SUBSCRIBE","params":["<sym>@aggTrade",...],"id":"<hex>"}`
+  — árfolyam tickek. Az útvonalban lévő **`/market` szegmens kötelező**: a régi `/ws`
+  végpont elfogadja a kapcsolatot és nyugtázza a feliratkozást, de nem küld adatot.
+  Ha egy útvonalról 15 mp-en belül nem jön árfolyam, a kód a következőre vált.
+  Max 200 feliratkozás / kapcsolat, ezért 150-esével bontjuk.
+- `/public/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
+  A depth a doksiban a *public* csoportba tartozik, ezért `/public` a szegmense (az
+  aggTrade-é `/market`).
 
 WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/account.position`.
 
