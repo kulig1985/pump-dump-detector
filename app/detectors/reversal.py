@@ -53,11 +53,13 @@ class ReversalDetector(Detector):
         self.setups = {}                   # symbol -> Setup
         self.last_signal = {}              # symbol -> ts
         self.total_signals = 0
+        self.last_ts = 0.0                 # az utolso feldolgozott trade tozsdei ideje
 
     # ------------------------------------------------------------------ fo utvonal
 
     def on_trade(self, trade):
         c = self.cfg.reversal
+        self.last_ts = trade.ts
         w = self.trades[trade.symbol]
         w.append(trade)
         while w and w[0].ts < trade.ts - c["windowSeconds"]:
@@ -258,7 +260,7 @@ class ReversalDetector(Detector):
                 "extreme": setup.extreme,
                 "extremeAt": setup.extreme_ts,
                 "movePct": round(setup.move_pct, 4),
-                "bouncePct": round(bounce_pct, 4),
+                "bounceFromExtremePct": round(bounce_pct, 4),
                 "retracementPct": round(retrace, 2),
                 "extremeAgeSec": round(kor, 2),
                 "origin": setup.origin,
@@ -295,7 +297,8 @@ class ReversalDetector(Detector):
         """Mindig megmondja, mit csinal eppen: hany paron van adat, hany alakzat
         all, es azok melyik fazisban vannak."""
         c = self.cfg.reversal
-        now = time.time()
+        # tozsdei ido, nem helyi ora: a detektor is azzal szamol
+        now = self.last_ts or time.time()
         eleg_adat = sum(1 for w in self.trades.values()
                         if len(w) >= c["minTradesInFlowWindow"])
 
@@ -315,9 +318,11 @@ class ReversalDetector(Detector):
 
         fej = (f"  REVERSAL FIGYELO   {eleg_adat} paron van eleg adat   "
                f"{len(rows)} alakzat all   jelzes indulas ota: {self.total_signals}")
-        felt = (f"    kell hozza: {c['minMovePct']:.2f}% elozetes mozgas, "
-                f"{c['bouncePct']:.2f}% visszapattanas, {c['pullbackPct']:.2f}% visszahuzas, "
-                f"majd {c['minFlowRatio']:.1f}x flow + attores")
+        felt = (f"    kell hozza: {c['minMovePct']:.2f}% elozetes mozgas, majd a mozgas "
+                f"{c['bounceOfMovePct']:.0f}%-ig visszapattanas, "
+                f"{c['pullbackOfBouncePct']:.0f}% visszahuzas, "
+                f"{c['minFlowRatio']:.1f}x flow es attores -- de a belepes a mozgas "
+                f"{c['maxRetracementPct']:.0f}%-an belul")
         if not rows:
             return [fej, felt, "    -- eppen egyetlen par sem all fordulo-alakzatban --"]
 

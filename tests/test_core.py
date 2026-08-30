@@ -307,6 +307,41 @@ def test_reversal_cooldown():
 
 # ---------------------------------------------------------------- mozgasminoseg
 
+def test_every_config_key_read_by_the_code_exists():
+    """Ha atnevezunk egy beallitast, ne maradjon regi hivatkozas a kodban.
+
+    Egy ilyen elmaradt hivatkozas (c["bouncePct"]) a statusz blokkot dontotte el
+    futas kozben, es csak egy egysoros "statusz hiba" latszott belole.
+    """
+    import re
+    ismert = set().union(*(set(d) for d in (
+        C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS,
+        C_CFG.TRADING_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS)))
+    minta = re.compile(r'(?:c|cfg|own|shared|self\.cfg\.\w+)\[\s*["\'](\w+)["\']\s*\]')
+    hibas = []
+    for f in sorted((pathlib.Path(__file__).parent.parent / "app").rglob("*.py")):
+        src = f.read_text()
+        for m in minta.finditer(src):
+            if m.group(1) not in ismert:
+                sor = src[:m.start()].count("\n") + 1
+                hibas.append(f"{f.name}:{sor} -> {m.group(1)}")
+    assert not hibas, "nem letezo config kulcsra hivatkozunk: " + ", ".join(hibas)
+
+
+def test_detector_status_lines_render():
+    """A statusz blokkoknak hiba nelkul ki kell rajzolodniuk (ures allapotban is)."""
+    for det in (PumpDumpDetector(cfg_obj), ReversalDetector(rev_cfg)):
+        assert isinstance(det.status_lines(), list)
+    det = ReversalDetector(rev_cfg)
+    rev_run(det, rev_tape(0.78380, 0.78330, 0.78400))     # alakzat, attores nelkul
+    sorok = det.status_lines()
+    assert any("REVERSAL FIGYELO" in x for x in sorok), sorok
+    # a statusz a TOZSDEI idot hasznalja, nem a helyi orat -- kulonben a szintetikus
+    # (vagy elcsuszott oraju) idobelyegeknel minden alakzat "elavultnak" latszana
+    assert any("CYSUSDT" in x for x in sorok), sorok
+    assert det.last_ts > 0
+
+
 def test_choppy_symbol_is_excluded():
     """Ossze-vissza ugralo par: a hatekonysagi arany alacsony -> nem jelzunk ra."""
     from app.quality import SymbolQuality

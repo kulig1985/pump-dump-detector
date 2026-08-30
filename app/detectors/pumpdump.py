@@ -47,6 +47,7 @@ class PumpDumpDetector(Detector):
         self.ticks = 0
         self.total_triggers = 0
         self.latest = {}                    # symbol -> (ar, valtozasok, meredekseg)
+        self.last_ts = 0.0                  # az utolso feldolgozott trade tozsdei ideje
         self.vol = {}                       # symbol -> atlagos abszolut meredekseg
 
     def on_trade(self, trade):
@@ -64,6 +65,7 @@ class PumpDumpDetector(Detector):
             h.popleft()
 
         self.ticks += 1
+        self.last_ts = ts
         changes = {w: self._change(h, ts, w, price,
                                    c["maxRefAgeFactor"], c["minTicksInWindow"])
                    for w in WINDOWS}
@@ -233,7 +235,7 @@ class PumpDumpDetector(Detector):
 
     def snapshot(self, top=10):
         """Az aktualis allapot a statusz tablahoz. A tick szamlalot nullazza."""
-        now = time.time()
+        now = self.last_ts or time.time()   # tozsdei ido, nem helyi ora
         cooldown = self.cfg.detector["symbolCooldownSec"]
         min_cons = self.cfg.detector["minConsistency"]
         rows = []
