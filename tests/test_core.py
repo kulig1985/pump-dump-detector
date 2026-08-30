@@ -126,7 +126,7 @@ REV = {
     "windowSeconds": 20, "minTradesInFlowWindow": 5, "maxSetupAgeSec": 30,
     "minMovePct": 0.40, "bouncePct": 0.15, "pullbackPct": 0.08,
     "newExtremeTolerancePct": 0.05, "breakTolerancePct": 0.02,
-    "flowWindowSeconds": 3, "minFlowRatio": 1.6,
+    "flowWindowSeconds": 3, "minFlowRatio": 1.6, "minFlowVolumeFactor": 1.0,
 }
 rev_cfg = types.SimpleNamespace(detector=CFG, reversal=REV)
 
@@ -230,6 +230,28 @@ def test_reversal_cooldown():
     tape2 = _long_setup(Tape(t0=tape.t))
     tape2.ramp(99.60, 99.80, 8, buy=True, qty=500.0)
     assert tape2.run(det) == []
+
+
+def test_flow_needs_real_volume():
+    """Par szaz USDT-bol is kijon egy 1.9x arany -- az nem trade flow, hanem zaj."""
+    from app import binance_rest
+    binance_rest.SYMBOL_VOLUME["TUTUSDT"] = 110e6          # 3 mp atlaga ~3820 USDT
+    det = ReversalDetector(rev_cfg)
+
+    def ablak(usdt_osszesen):
+        db = 12
+        qty = usdt_osszesen / 0.03534 / db
+        return ([Trade("TUTUSDT", 0.03534, qty, 1000.0 + i * 0.2, True)
+                 for i in range(db // 2)] +
+                [Trade("TUTUSDT", 0.03534, qty * 2, 1000.0 + 1.2 + i * 0.1, False)
+                 for i in range(db // 2)])
+
+    assert det._flow(ablak(1500), 1002.0, REV, "TUTUSDT") is None, "1500 USDT keves"
+    eleg = det._flow(ablak(20000), 1002.0, REV, "TUTUSDT")
+    assert eleg is not None and eleg["ratio"] >= 1.6
+    # ismeretlen forgalmu parnal nincs mihez merni -- ilyenkor atengedjuk
+    assert det._flow(ablak(1500), 1002.0, REV, "ISMERETLENUSDT") is not None
+    binance_rest.SYMBOL_VOLUME.pop("TUTUSDT")
 
 
 def test_flow_ratio_is_finite_when_one_side_is_empty():

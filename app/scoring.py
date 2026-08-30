@@ -40,8 +40,11 @@ def score_signal(sig, ob, ta, cfg):
         reclaimed = ta["aboveFast"] == long_
         turned = ta["trend"] == ("bullish" if long_ else "bearish")
         parts["ema"] = 25.0 if (reclaimed and turned) else 18.0 if reclaimed else 5.0
-        reasons.append("ar visszavette az EMA9-et" if reclaimed
-                       else "ar meg az EMA9 rossz oldalan")
+        if reclaimed:
+            reasons.append("ar visszavette az EMA9-et" if long_
+                           else "ar az EMA9 ala esett")
+        else:
+            reasons.append("ar meg az EMA9 rossz oldalan")
     else:
         want = "bullish" if long_ else "bearish"
         if ta["trend"] == want:

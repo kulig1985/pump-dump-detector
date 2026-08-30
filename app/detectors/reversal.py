@@ -14,7 +14,7 @@ import time
 import logging
 from collections import deque, defaultdict
 
-from .. import events
+from .. import events, binance_rest
 from ..fmt import pad, price as fprice, money
 from .base import Detector, make_signal
 
@@ -77,7 +77,7 @@ class ReversalDetector(Detector):
             break_pct = (setup.micro - trade.price) / setup.micro * 100.0
 
         # 5. a trade flow a megfelelo oldal fele fordult
-        flow = self._flow(w, trade.ts, c)
+        flow = self._flow(w, trade.ts, c, trade.symbol)
         if flow is None or flow["ratio"] < c["minFlowRatio"]:
             return None
 
@@ -159,10 +159,12 @@ class ReversalDetector(Detector):
         return None
 
     @staticmethod
-    def _flow(window, now, c):
+    def _flow(window, now, c, symbol=None):
         """5. lepes: veteli / eladoi oldal aranya az utolso par masodpercben.
 
-        Quote (USDT) mennyiseggel szamolunk, nem darabszammal.
+        Quote (USDT) mennyiseggel szamolunk, nem darabszammal. Az arany onmagaban
+        nem eleg: par szaz USDT-bol is kijon egy 1.9x, ezert megkoveteljuk, hogy az
+        ablakban legalabb annyi forgalom legyen, amennyi a par atlaga ennyi ido alatt.
         """
         start = now - c["flowWindowSeconds"]
         buy = sell = 0.0
@@ -177,13 +179,20 @@ class ReversalDetector(Detector):
                 sell += t.price * t.qty
         if count < c["minTradesInFlowWindow"] or (buy == 0 and sell == 0):
             return None
+
+        total = buy + sell
+        vol24 = binance_rest.SYMBOL_VOLUME.get(symbol) if symbol else None
+        elvart = (vol24 / 86400.0 * c["flowWindowSeconds"] * c["minFlowVolumeFactor"]
+                  if vol24 else 0.0)
+        if total < elvart:
+            return None
         buy_dominant = buy >= sell
         strong, weak = (buy, sell) if buy_dominant else (sell, buy)
         # a masik oldal lehet pontosan nulla -- a vegtelen aranyt korlatozzuk,
         # kulonben inf kerulne a Mongo-ba es a score szamitasba
         ratio = min(strong / weak, MAX_FLOW_RATIO) if weak > 0 else MAX_FLOW_RATIO
-        return {"buy": buy, "sell": sell, "ratio": ratio,
-                "buyDominant": buy_dominant, "trades": count}
+        return {"buy": buy, "sell": sell, "total": total, "expected": elvart,
+                "ratio": ratio, "buyDominant": buy_dominant, "trades": count}
 
     # ------------------------------------------------------------------ signal
 
@@ -194,12 +203,14 @@ class ReversalDetector(Detector):
         micro_nev = "micro-high" if direction == "LONG" else "micro-low"
         oldal = "veteli" if direction == "LONG" else "eladoi"
 
-        log.warning("[%s] %s_REVERSAL | %s %.8g (%.1f mp-e) | mozgas %.2f%% | "
+        fordulo = "FORDULO FELFELE -> LONG" if direction == "LONG" else \
+                  "FORDULO LEFELE -> SHORT"
+        log.warning("[%s] %s | %s %.8g (%.1f mp-e) | mozgas %.2f%% | "
                     "visszapattanas %.2f%% | %s attores %.2f%% | flow %.1fx",
-                    trade.symbol, direction, szint, setup.extreme,
+                    trade.symbol, fordulo, szint, setup.extreme,
                     trade.ts - setup.extreme_ts, setup.move_pct, bounce_pct,
                     micro_nev, break_pct, flow["ratio"])
-        events.add(f"{trade.symbol:<14} REVERSAL {direction:<5} "
+        events.add(f"{trade.symbol:<14} {fordulo:<24} "
                    f"{szint} {fprice(setup.extreme)}  mozgas {setup.move_pct:.2f}%  "
                    f"flow {flow['ratio']:.1f}x")
 
@@ -219,6 +230,8 @@ class ReversalDetector(Detector):
                 "breakPct": round(break_pct, 4),
                 "buyVolume": round(flow["buy"], 2),
                 "sellVolume": round(flow["sell"], 2),
+                "flowVolume": round(flow["total"], 2),
+                "expectedFlowVolume": round(flow["expected"], 2),
                 "flowRatio": round(flow["ratio"], 3),
                 "tradesInFlow": flow["trades"],
             },
@@ -228,10 +241,12 @@ class ReversalDetector(Detector):
                 (szint, f"{fprice(setup.extreme)}   "
                         f"({trade.ts - setup.extreme_ts:.1f} mp-e)"),
                 ("visszafordulas", f"{bounce_pct:.2f}%"),
-                (f"{micro_nev} attores", f"{fprice(setup.micro)}   ({break_pct:+.2f}%)"),
+                (f"{micro_nev} attores",
+                 f"{fprice(setup.micro)}   "
+                 f"({'+' if direction == 'LONG' else '-'}{break_pct:.2f}%)"),
                 ("trade flow", f"{flow['ratio']:.1f}x {oldal}   "
                                f"(buy {money(flow['buy'])} / sell {money(flow['sell'])} "
-                               f"USDT, {c['flowWindowSeconds']} mp)"),
+                               f"USDT / {c['flowWindowSeconds']} mp)"),
             ],
             history=[(t.ts, t.price) for t in window],
         )
@@ -273,7 +288,7 @@ class ReversalDetector(Detector):
         rows.sort(reverse=True, key=lambda r: r[0])
         for _, symbol, st, fazis in rows[:top]:
             szint = "LOW " if st.side == "LONG" else "HIGH"
-            flow = self._flow(self.trades[symbol], now, c)
+            flow = self._flow(self.trades[symbol], now, c, symbol)
             kell_vetel = st.side == "LONG"
             if flow is None:
                 flow_txt, flow_jo = "n/a", False

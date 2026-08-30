@@ -62,6 +62,9 @@ REVERSAL_DEFAULTS = {
     # --- trade flow ---
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,               # buy/sell (vagy sell/buy) arany
+    "minFlowVolumeFactor": 1.0,        # a flow ablakban legalabb ennyiszer annyi forgalom
+                                       # legyen, mint a par atlaga ugyanennyi ido alatt.
+                                       # Enelkul par szaz USDT-bol is kijon egy 1.9x arany.
 }
 
 TRADING_DEFAULTS = {

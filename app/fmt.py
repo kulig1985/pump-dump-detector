@@ -33,7 +33,5 @@ def money(v):
     if v >= 1e9:
         return f"{v / 1e9:,.1f}Mrd"
     if v >= 1e6:
-        return f"{v / 1e6:,.0f}M"
-    if v >= 1e3:
-        return f"{v / 1e3:,.0f}e"
+        return f"{v / 1e6:,.1f}M"
     return f"{v:,.0f}"

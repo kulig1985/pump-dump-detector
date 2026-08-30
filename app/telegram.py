@@ -8,13 +8,20 @@ log = logging.getLogger("telegram")
 
 API = "https://api.telegram.org/bot{token}/sendMessage"
 
-# detektor + irany -> fejlec. Uj detektornal ha nincs bejegyzes, altalanos fejlecet
-# hasznalunk -- a rendszer akkor is mukodik.
+# detektor + irany -> (emoji, cim, mi tortent, mit jelent).
+# A "SHORT REVERSAL" onmagaban ketertelmu volt: olvashato ugy is, hogy egy short
+# fordul meg. Ezert kiirjuk, mi tortent es milyen poziciot jelent.
 HEADERS = {
-    ("pump_dump", "LONG"): ("🚨", "PUMP"),
-    ("pump_dump", "SHORT"): ("🔻", "DUMP"),
-    ("reversal", "LONG"): ("🟢", "LONG REVERSAL"),
-    ("reversal", "SHORT"): ("🔴", "SHORT REVERSAL"),
+    ("pump_dump", "LONG"): (
+        "🚨", "PUMP", "hirtelen, egyiranyu emelkedes", "LONG — veteli pozicio"),
+    ("pump_dump", "SHORT"): (
+        "🔻", "DUMP", "hirtelen, egyiranyu eses", "SHORT — eladasi pozicio"),
+    ("reversal", "LONG"): (
+        "🟢", "FORDULO FELFELE", "eses utan aljazott es visszapattant",
+        "LONG — veteli pozicio"),
+    ("reversal", "SHORT"): (
+        "🔴", "FORDULO LEFELE", "emelkedes utan tetozott es lefordult",
+        "SHORT — eladasi pozicio"),
 }
 
 
@@ -69,11 +76,15 @@ def format_signal(sig):
     """
     detector = sig.get("detector", "pump_dump")
     direction = sig["direction"]
-    emoji, cim = HEADERS.get((detector, direction), ("⚡", f"{detector} {direction}"))
+    emoji, cim, tortent, jelent = HEADERS.get(
+        (detector, direction),
+        ("⚡", f"{detector}", "", f"{direction} pozicio"))
 
     fej = (f"{emoji} <b>{cim}</b>  ·  <b>{esc(sig['symbol'])}</b>\n"
-           f"{direction}  ·  score <b>{sig['score']}/100</b>  ·  "
-           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC")
+           f"{esc(tortent)}\n"
+           f"➜ <b>{esc(jelent)}</b>\n"
+           f"score <b>{sig['score']}/100</b>  ·  "
+           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC  ·  {esc(detector)}")
 
     alap = [("ar", f"{sig['price']:.8g}")]
     if sig.get("quoteVolume24h"):
@@ -100,8 +111,7 @@ def format_signal(sig):
                           f"{r['marketLong']} LONG / {r['marketShort']} SHORT"))
 
     blokkok = [("", alap),
-               (cim.split()[0] if detector == "pump_dump" else "FORDULO",
-                [tuple(x) for x in sig.get("lines", [])]),
+               ("MIERT", [tuple(x) for x in sig.get("lines", [])]),
                ("KONTEXTUS", kontextus)]
 
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)

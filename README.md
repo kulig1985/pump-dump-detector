@@ -244,6 +244,33 @@ LEMOZGÁS -> LOKÁLIS MINIMUM -> VISSZAPATTANÁS -> NINCS ÚJ MINIMUM
          -> MICRO-HIGH RÖGZÜL -> VÉTELI FLOW -> MICRO-HIGH ÁTTÖRÉS -> LONG_REVERSAL
 ```
 
+### Melyik jelzés mit jelent
+
+A „SHORT REVERSAL" félreérthető lenne (egy short fordul meg? vagy short irányba fordult?),
+ezért a Telegram üzenet kiírja, mi történt és milyen pozíciót jelent:
+
+| fejléc | mi történt | mit jelent |
+|---|---|---|
+| 🚨 **PUMP** | hirtelen, egyirányú emelkedés | **LONG** — vételi pozíció |
+| 🔻 **DUMP** | hirtelen, egyirányú esés | **SHORT** — eladási pozíció |
+| 🟢 **FORDULO FELFELE** | esés után aljazott és visszapattant | **LONG** — vételi pozíció |
+| 🔴 **FORDULO LEFELE** | emelkedés után tetőzött és lefordult | **SHORT** — eladási pozíció |
+
+```
+🔴 FORDULO LEFELE  ·  TUTUSDT
+emelkedes utan tetozott es lefordult
+➜ SHORT — eladasi pozicio
+score 74/100  ·  08:03:37 UTC  ·  reversal
+```
+
+### A flow aránynak valódi pénz kell mögé
+
+Egy `1.9x eladoi` arány önmagában semmit nem mond, ha összesen 1500 USDT forgott — egy
+110M/napos páron az a 3 másodperces átlag 40%-a. Ezért a `minFlowVolumeFactor` megköveteli,
+hogy a flow ablakban legalább annyi forgalom legyen, amennyi a pár saját átlaga ugyanennyi
+idő alatt (`24h forgalom / 86400 × flowWindowSeconds`). Így a küszöb páronként automatikusan
+skálázódik.
+
 A buy/sell oldalt a Binance `aggTrade` `m` mezőjéből határozzuk meg: `m: true` esetén a
 vevő a maker, tehát az agresszor az eladó. A flow arány quote (USDT) mennyiséggel számol.
 
@@ -280,6 +307,7 @@ A státusz táblában mindig látod, mit csinál — akkor is, ha épp nincs ala
 | `breakTolerancePct` | `0.02` | ennyivel kell átütni a micro-szintet |
 | `flowWindowSeconds` | `3` | ekkora ablakon mérjük a trade flow-t |
 | `minFlowRatio` | `1.6` | buy/sell (vagy sell/buy) arány |
+| `minFlowVolumeFactor` | `1.0` | a flow ablakban legalább ennyiszer annyi forgalom legyen, mint a pár átlaga ugyanennyi idő alatt |
 | `minTradesInFlowWindow` | `5` | ennyi trade kell az ablakba |
 | `maxSetupAgeSec` | `30` | ennyi idő után elavul egy alakzat |
 
