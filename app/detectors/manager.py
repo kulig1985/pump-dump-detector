@@ -26,7 +26,6 @@ class DetectorManager:
     def on_trade(self, trade):
         """Az osszes detektor CANDIDATE-je erre a trade-re (altalaban ures lista)."""
         self.ticks += 1
-        self.eligibility.on_trade(trade)
 
         # A szuro NEM a detektor elott all meg, hanem a jelzes kiadasanal. Igy a
         # baseline minden figyelt paron epul, es amint egy par kereskedhetove valik,

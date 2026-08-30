@@ -357,48 +357,16 @@ def test_wall_is_measured_against_the_median_not_the_mean():
     assert w["ratio"] > atlaghoz + 2, (atlaghoz, w["ratio"])
 
 
-def test_depth_threshold_admits_a_realistic_altcoin():
-    """A 20,000 USDT-s kuszob 39 parbol 33-at zart ki: a top-of-book EGY szint."""
-    e = Eligibility(cfg_obj)
-    _book(e, "ALTUSDT", 0.3500, 0.35007, qty=8_000.0)       # ~8,000 USDT a szinten
-    _aktivitas(e, "ALTUSDT")
-    assert e.check("ALTUSDT")[0] is True, e.check("ALTUSDT")
-
-    szigoru = types.SimpleNamespace(detector={**CFG, "minTopDepthUSDT": 5_000})
-    e2 = Eligibility(szigoru)
-    _book(e2, "TINYUSDT", 0.3500, 0.35007, qty=300.0)
-    _aktivitas(e2, "TINYUSDT")
-    assert e2.check("TINYUSDT")[1] == "insufficient_depth"
-
-
 def test_distribution_block_is_safe_and_informative():
     e = Eligibility(cfg_obj)
     assert e.distribution([]) == [], "ures adaton se hibazzon"
-    for nev, ar, melyseg in (("A", 100.0, 150_000.0), ("B", 100.0, 9_000.0),
-                             ("C", 100.0, 400.0)):
-        _book(e, nev, ar, ar * 1.0001, qty=melyseg)
-        _aktivitas(e, nev)
+    for nev, bid, ask in (("A", 100.0, 100.001), ("B", 100.0, 100.01),
+                          ("C", 100.0, 100.2)):
+        _book(e, nev, bid, ask)
         e.check(nev)
     sorok = e.distribution(["A", "B", "C"])
-    assert len(sorok) == 2
-    assert "melyseg" in sorok[0] and "kuszob" in sorok[0] and "par alatta" in sorok[0]
-    assert "spread" in sorok[1]
-
-
-def test_depth_uses_median_of_recent_observations():
-    """A legjobb szinten allo mennyiseg masodpercenkent kiurul: a pillanatnyi ertek
-    11 es 30,000 USDT kozott ugral. Elesben ez 40 parbol 34-et zart ki."""
-    e = Eligibility(cfg_obj)
-    # valtakozva vekony es vastag pillanatkepek, median ~5,000 USDT
-    for i in range(40):
-        vastag = i % 2 == 0
-        qty = (10_000.0 if vastag else 30.0)
-        e.on_book_ticker({"e": "bookTicker", "s": "FLIPUSDT", "b": "1.0000",
-                          "B": str(qty), "a": "1.0001", "A": str(qty)})
-    m = e.metrics("FLIPUSDT")
-    assert 30.0 < m["topDepthUSDT"] < 10_000.0, m
-    _aktivitas(e, "FLIPUSDT")
-    assert e.check("FLIPUSDT")[0] is True, "a median alapjan atmegy, a pillanatkep alapjan nem"
+    assert len(sorok) == 1
+    assert "spread" in sorok[0] and "kuszob" in sorok[0] and "par felette" in sorok[0]
 
 
 def test_detectors_build_state_even_for_ineligible_pairs():
@@ -457,54 +425,24 @@ def _book(e, symbol, bid, ask, qty=100000.0):
                           "B": str(qty / bid), "a": str(ask), "A": str(qty / ask)})
 
 
-def _aktivitas(e, symbol, db=60, t0=1000.0):
-    for i in range(db):
-        e.on_trade(Trade(symbol, 100.0, 1.0, t0 + i * 0.5, True))
-
-
 def test_eligibility_accepts_a_liquid_pair():
     e = Eligibility(cfg_obj)
     _book(e, "BTCUSDT", 61000.0, 61000.6)
-    _aktivitas(e, "BTCUSDT")
     mehet, ok, m = e.check("BTCUSDT")
     assert mehet, (ok, m)
-    assert m["spreadPct"] < 0.01 and m["topDepthUSDT"] > 20_000
+    assert m["spreadPct"] < 0.01
 
 
 def test_eligibility_rejects_wide_spread():
     e = Eligibility(cfg_obj)
     _book(e, "WIDEUSDT", 1.000, 1.002)
-    _aktivitas(e, "WIDEUSDT")
     assert e.check("WIDEUSDT")[1] == "spread_too_wide"
-
-
-def test_depth_filter_is_off_by_default_but_works_when_enabled():
-    """Alapbol ki van kapcsolva: elesben a parok felet zarta ki. Bekapcsolva mukodik."""
-    assert C_CFG.DETECTOR_DEFAULTS["minTopDepthUSDT"] == 0, "alapbol ki"
-    e = Eligibility(cfg_obj)
-    _book(e, "THINUSDT", 1.0000, 1.0001, qty=500.0)
-    _aktivitas(e, "THINUSDT")
-    assert e.check("THINUSDT")[0] is True, "kikapcsolva atengedi"
-
-    bekapcsolva = types.SimpleNamespace(detector={**CFG, "minTopDepthUSDT": 5_000})
-    e2 = Eligibility(bekapcsolva)
-    _book(e2, "THINUSDT", 1.0000, 1.0001, qty=500.0)
-    _aktivitas(e2, "THINUSDT")
-    assert e2.check("THINUSDT")[1] == "insufficient_depth"
-
-
-def test_eligibility_rejects_low_activity():
-    e = Eligibility(cfg_obj)
-    _book(e, "SLOWUSDT", 1.0000, 1.0001)
-    _aktivitas(e, "SLOWUSDT", db=5)
-    assert e.check("SLOWUSDT")[1] == "low_activity"
 
 
 def test_eligibility_without_book_data_does_not_pass():
     """Van konyv-adat a rendszerben, de EZT a part meg nem lattuk -> varunk."""
     e = Eligibility(cfg_obj)
     _book(e, "OTHERUSDT", 1.0000, 1.0001)
-    _aktivitas(e, "UNKNOWNUSDT")
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
 
 
@@ -527,7 +465,6 @@ def test_total_book_outage_fails_open_and_says_so():
     hangosan szol rola. Kulonben orakig nem lenne jelzes, ok nelkul.
     """
     e = Eligibility(cfg_obj)
-    _aktivitas(e, "BTCUSDT")
     assert e.check("BTCUSDT")[0] is True
     assert "NEM ERKEZIK" in e.book_status()
 
@@ -540,14 +477,12 @@ def test_blacklist_and_whitelist():
     cfg = types.SimpleNamespace(detector={**CFG, "symbolBlacklist": ["BADUSDT"]})
     e = Eligibility(cfg)
     _book(e, "BADUSDT", 1.0000, 1.0001)
-    _aktivitas(e, "BADUSDT")
     assert e.check("BADUSDT")[1] == "blacklisted"
 
     cfg = types.SimpleNamespace(detector={**CFG, "symbolWhitelist": ["ONLYUSDT"]})
     e = Eligibility(cfg)
     for sym in ("ONLYUSDT", "OTHERUSDT"):
         _book(e, sym, 1.0000, 1.0001)
-        _aktivitas(e, sym)
     assert e.check("ONLYUSDT")[0] is True
     assert e.check("OTHERUSDT")[1] == "not_whitelisted"
 
@@ -557,7 +492,6 @@ def test_rejection_reasons_have_hungarian_text_and_machine_key():
     from app.eligibility import OKOK, szoveg
     e = Eligibility(cfg_obj)
     _book(e, "WIDE2USDT", 1.000, 1.002)
-    _aktivitas(e, "WIDE2USDT")
     kulcs = e.check("WIDE2USDT")[1]
     assert kulcs == "spread_too_wide", "a Mongo-ba gepi kulcs kerul"
     assert szoveg(kulcs) == "tul szeles a spread", "a logba magyar szoveg"
@@ -568,10 +502,9 @@ def test_eligibility_summary_aggregates_by_reason():
     e = Eligibility(cfg_obj)
     for sym in ("A_USDT", "B_USDT"):
         _book(e, sym, 1.000, 1.002)
-        _aktivitas(e, sym)
         e.check(sym)
+    e.cfg = types.SimpleNamespace(detector={**CFG, "symbolBlacklist": ["C_USDT"]})
     _book(e, "C_USDT", 1.0000, 1.0001)
-    _aktivitas(e, "C_USDT", db=5)                  # keves kotes
     e.check("C_USDT")
     osszegzes = e.summary()[0]
     assert "kizarva 3" in osszegzes, osszegzes

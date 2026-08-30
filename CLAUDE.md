@@ -21,7 +21,7 @@ Teszt hálózat nélkül: `python tests/test_core.py`
 
 ```
 Binance WebSocket (aggTrade + !bookTicker)
-   → eligibility (spread/mélység/aktivitás) → DetectorManager → CANDIDATE
+   → eligibility (spread, white/blacklist) → DetectorManager → CANDIDATE
    → validáció (spread, fal, hozam/kockázat) → SIGNAL vagy REJECTED
    → MongoDB → Telegram → [TradingService]
 ```
@@ -44,7 +44,7 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/detectors/reversal.py` | lokális árforduló állapotgép `aggTrade`-ből |
 | `app/orderbook.py` | rövid életű depth20 WS + relatív wall detektálás |
 | `app/ta.py` | 1m EMA9/EMA21 (cache-elve) |
-| `app/eligibility.py` | realtime kereskedhetőség (spread, mélység, aktivitás, white/blacklist) |
+| `app/eligibility.py` | realtime kereskedhetőség (spread, white/blacklist) |
 | `app/detectors/baseline.py` | páronkénti normál rövid mozgás |
 | `app/fmt.py` | közös formázók a logoláshoz |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |

@@ -8,7 +8,7 @@ gyors order book + EMA elemzést végez, pontoz, **Telegramra** küld, és opcio
 ```
 Binance WebSocket  (aggTrade + !bookTicker)
         ↓
-  KERESKEDHETOSÉG      spread / mélység / aktivitás / white- és blacklist
+  KERESKEDHETOSÉG      spread / white- és blacklist
         ↓
   DetectorManager  →  PumpDumpDetector,  ReversalDetector
         ↓
@@ -284,7 +284,7 @@ viszi, és minden elutasításnak gépi neve van:
 CANDIDATE  SOLUSDT  LONG  move +0.32% / 2.1s  baseline 4.1x
 REJECTED   SOLUSDT  LONG  spread_too_wide
 SIGNAL     BTCUSDT  LONG  move +0.24% / 2.1s  rr 2.4:1  https://www.binance.com/en/futures/BTCUSDT
-STATUS     136 par (kizarva 24 par: spread_too_wide: 18  low_activity: 6) | 1,932 tick/60s | 12 candidate, 3 jelzes, 9 elutasitva | Telegram: BE
+STATUS     136 par (kizarva 18 par: tul szeles a spread: 18) | 1,932 tick/60s | 12 candidate, 3 jelzes, 9 elutasitva | Telegram: BE
 ```
 
 A `REJECTED` dokumentumok is a `signals` collectionbe kerülnek, így egy lekérdezéssel

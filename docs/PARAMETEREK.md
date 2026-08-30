@@ -36,7 +36,7 @@ A medián azért jó, mert egyetlen kiugró érték nem viszi el. Amíg nincs el
 ```
 Binance WebSocket  (aggTrade  +  !bookTicker)
         ↓
-  KERESKEDHETOSÉG      spread / mélység / aktivitás / white- és blacklist
+  KERESKEDHETOSÉG      spread / white- és blacklist
         ↓              ha nem felel meg, a detektorokig el sem jut
   DetectorManager  →  PumpDumpDetector,  ReversalDetector      → CANDIDATE
         ↓
@@ -53,8 +53,6 @@ a MongoDB-be, hogy aggregálható legyen) és **magyar szövege** (ez megy a log
 | `blacklisted` / `not_whitelisted` | kézi kizárás |
 | `no_book_data` | még nem láttuk a pár order book tetejét |
 | `spread_too_wide` | a spread szélesebb, mint `maxSpreadPct` |
-| `insufficient_depth` | a legjobb áron kevesebb pénz áll, mint `minTopDepthUSDT`. **Alapból ki van kapcsolva** (`0`), mert a párok felét kizárta — a mért érték a `STATUS` sorban látszik, onnan állítható be, ha kell |
-| `low_activity` | kevesebb kötés percenként, mint `minTradesPerMinute` |
 
 ```js
 // mi miert esett ki?
@@ -85,14 +83,12 @@ bookTicker a `public` csoportba tartozik, és ez az URL szegmensben is megjeleni
 `/market/stream` illetve `/public/stream`. Rossz szegmensen a Binance nyugtázza a
 feliratkozást, de **nem küld adatot**.
 
-Ha egyáltalán nem érkezik könyv-adat, a rendszer nem némul el: a spread/mélység szűrés
+Ha egyáltalán nem érkezik könyv-adat, a rendszer nem némul el: a spread szűrés
 kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 
 | kulcs | alap | mit csinál | ha növeled |
 |---|---|---|---|
 | `maxSpreadPct` | 0.05 | ennél szélesebb spreadnél a be- és kiszállás felemészti a mozgást | több pár fér be |
-| `minTopDepthUSDT` | 0 (ki) | a legjobb szinten ennyi pénz legyen, a **friss megfigyelések mediánján** mérve. Ez egyetlen árszint, nem a teljes könyv, és másodpercenként kiürül — a pillanatnyi érték 11 és 30 000 USDT között ugrál, ezért median-alapú és alacsony. A STATUS percentilis sorából hangolható |
-| `minTradesPerMinute` | 30 | ritka kereskedésnél nincs mit megfogni | csak az aktív párok |
 
 ### Pump/dump
 
@@ -137,7 +133,6 @@ méretei pedig **a mozgás arányában** (0–100%) értendők:
 | `pullbackOfBouncePct` | 30 | a visszapattanásból ennyi visszahúzás rögzíti a micro szintet |
 | `breakOfMovePct` | 5 | az áttörés mérete |
 | **`maxRetracementPct`** | **25** | **a legfontosabb:** ennél többet ne jöjjön vissza az ár, amikor jelzünk — efölött a kereskedhető rész elfogyott |
-| `targetRetracementPct` | 61.8 | a cél a mozgás ennyi %-ánál |
 | `maxExtremeAgeSec` | 8 | a szélsőérték ennél frissebb legyen |
 | `newExtremeOfMovePct` | 2 | ennyivel mélyebb minimum indít új alakzatot |
 | `windowSeconds` | 20 | a rolling trade ablak |
@@ -187,13 +182,12 @@ db.config.updateOne({_id:"telegram"},
 
 ```
 STATUS  39 par | 14,113 tick/60s | konyv: 752 par | 0 candidate, 0 jelzes, 0 elutasitva | Telegram: BE
-   kizarva 35: insufficient_depth 30, spread_too_wide 5
-   melyseg  p10        900  p50      3,200  p90     48,000 USDT   kuszob 5,000  -> 12 par alatta
+   kizarva 5: tul szeles a spread: 5
    spread   p10      0.004%  p50      0.011%  p90      0.048%   kuszob 0.050%  -> 2 par felette
    baseline kesz: 31/39 par | legkozelebbi jelolt: SOLUSDT 1.8x normal (kell 4.0x)
 ```
 
-A percentilis sorokból **adatból** állítható a küszöb, nem vaktában: látod az eloszlást,
+A percentilis sorból **adatból** állítható a küszöb, nem vaktában: látod az eloszlást,
 a jelenlegi küszöböt, és hogy hány pár esik kívül. Az utolsó sor megmondja, hogy a
 detektor egyáltalán mennyire van közel jelzéshez.
 
@@ -204,20 +198,20 @@ hangolásodat) — csak a hiányzó kulcsokat veszi fel. Ezért ha egy alapérte
 megváltozik, az nem jut el egy már létező dokumentumba. Induláskor kiírjuk, mi tér el:
 
 ```
-INFO main  A DB-ben eltero beallitas: minTopDepthUSDT=20000 (alap 1000)
+INFO main  A DB-ben eltero beallitas: maxSpreadPct=0.1 (alap 0.05)
 ```
 
 Ha át akarod venni az új alapértelmezést, egy `$unset` elég — a következő indításnál
 visszakerül a friss defaulttal:
 
 ```js
-db.config.updateOne({_id:"detector"}, {$unset:{minTopDepthUSDT:""}})
+db.config.updateOne({_id:"detector"}, {$unset:{maxSpreadPct:""}})
 ```
 
 ## Hangolási sorrend
 
 1. **Előbb a kereskedhetőség.** A `STATUS` sor kiírja, hány pár esik ki és miért. Ha túl
-   sok, lazíts a `maxSpreadPct` / `minTopDepthUSDT` értéken.
+   sok, lazíts a `maxSpreadPct` értéken.
 2. **Aztán a `baselineRatio`.** Ez a fő érzékenység-kapcsoló: 4.0 → kevesebb és
    rendkívülibb, 3.0 → több.
 3. **Végül a validáció.** A Mongo aggregációból látod, melyik ok dominál a

@@ -96,10 +96,6 @@ class TradingService:
         if not t["autoTradingEnabled"]:
             log.info("[%s] auto trading KI -- nincs megbizas", symbol)
             return SKIPPED
-        if signal["score"] < t["minScoreForTrade"]:
-            log.info("[%s] score %d < trade kuszob %d -- nincs megbizas",
-                     symbol, signal["score"], t["minScoreForTrade"])
-            return SKIPPED
         if direction == "LONG" and not t["longEnabled"]:
             log.info("[%s] LONG letiltva", symbol)
             return SKIPPED

@@ -24,12 +24,6 @@ DETECTOR_DEFAULTS = {
 
     # ---- realtime kereskedhetoseg (a detektorok elott szur) ----
     "maxSpreadPct": 0.05,
-    # A legjobb aron allo penz USDT-ben (a friss megfigyelesek medianja). Ha egy
-    # piaci megbizas ennel nagyobb, azonnal atcsuszik a kovetkezo arszintekre.
-    # ALAPBOL KIKAPCSOLVA (0): a mert ertek latszik a STATUS sorban, es ha akarod,
-    # onnan tudod beallitani. A spread, a 24h forgalom es a kotesszam mar szur.
-    "minTopDepthUSDT": 0,
-    "minTradesPerMinute": 30,
 
     # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
     "moveWindowSec": 2.0,              # ekkora idoablakban merjuk az elmozdulast
@@ -64,7 +58,6 @@ REVERSAL_DEFAULTS = {
     # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
     #
     #   csucs  ─────────────────────  100%
-    #                                  61.8%  <- cel (targetRetracementPct)
     #                                  25%    <- max belepo (maxRetracementPct)
     #                                  12%    <- ide kell visszapattannia
     #   melypont ───────────────────   0%     <- stop ez ala
@@ -73,7 +66,6 @@ REVERSAL_DEFAULTS = {
     "pullbackOfBouncePct": 30,         # a visszapattanasbol ennyi visszahuzas -> micro szint
     "breakOfMovePct": 5,               # az attores merete
     "maxRetracementPct": 25,           # ennel tobb mar ne jojjon vissza, amikor jelzunk
-    "targetRetracementPct": 61.8,
     "newExtremeOfMovePct": 2,
 
     # ---- idozites es kotesaramlas ----
@@ -95,7 +87,6 @@ TRADING_DEFAULTS = {
     "maxOpenPositions": 3,
     "longEnabled": True,
     "shortEnabled": True,
-    "minScoreForTrade": 75,
 }
 
 TELEGRAM_DEFAULTS = {
