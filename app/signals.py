@@ -77,17 +77,29 @@ class SignalService:
                    f"{recent['windowMinutes']} percen belul)")
 
     async def _save(self, signal, trigger, ob, ta_result, parts):
+        symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
-        await self.db.snapshots.insert_one({
-            "timestamp": signal["timestamp"],
-            "signalId": result.inserted_id,
-            "symbol": signal["symbol"],
-            "price": signal["price"],
-            "priceHistory": [[ts, p] for ts, p in trigger["history"]],
-            "orderBook": ob["snapshot"] if ob else None,
-            "ema": ta_result,
-            "scoreInputs": parts,
-        })
+
+        # A snapshot mentese kulon van kezelve: ha ez elszall, a signal akkor is
+        # megmarad, es hangosan megmondjuk, mi a baj -- nem tunik el egy altalanos
+        # "feldolgozas hiba" sorban.
+        try:
+            snap = await self.db.snapshots.insert_one({
+                "timestamp": signal["timestamp"],
+                "signalId": result.inserted_id,
+                "symbol": symbol,
+                "price": signal["price"],
+                "priceHistory": [[ts, p] for ts, p in trigger["history"]],
+                "orderBook": ob["snapshot"] if ob else None,
+                "ema": ta_result,
+                "scoreInputs": parts,
+            })
+            log.info("[%s] elmentve: signals %s + market_snapshots %s",
+                     symbol, result.inserted_id, snap.inserted_id)
+        except Exception as e:
+            log.error("[%s] a market_snapshots mentese NEM sikerult: %s: %s",
+                      symbol, type(e).__name__, e)
+            events.add(f"{symbol:<14} market_snapshots mentes HIBA: {e}")
 
 
     def _count_recent(self, symbol, direction, window_minutes):
