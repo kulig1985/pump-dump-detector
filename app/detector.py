@@ -7,6 +7,8 @@ import time
 import logging
 from collections import deque, defaultdict
 
+from . import events
+
 log = logging.getLogger("detector")
 
 WINDOWS = (1, 3, 5)          # masodperc
@@ -62,6 +64,8 @@ class MovementDetector:
 
         log.warning("[%s] TRIGGER %s | 1s %s | 3s %s | 5s %s", symbol, direction,
                     _pct(changes[1]), _pct(changes[3]), _pct(changes[5]))
+        events.add(f"{symbol:<14} TRIGGER {direction:<5} "
+                   f"1s {_pct(changes[1])}  3s {_pct(changes[3])}  5s {_pct(changes[5])}")
         return {
             "symbol": symbol,
             "direction": direction,

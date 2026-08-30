@@ -6,7 +6,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.detector import MovementDetector
-from app.market_data import _mongo_row
+from app.market_data import _mongo_row, _pad
 from app import orderbook, scoring
 from app.ta import ema
 
@@ -89,6 +89,18 @@ def test_wall_outside_range_ignored():
     # a wall 5%-ra van, a max tavolsag 1.5% -> nem erdekel
     asks = [(100.0 + i * 0.01, 1.0) for i in range(20)] + [(105.0, 500.0)]
     assert orderbook._find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
+
+
+def test_cjk_symbol_column_alignment():
+    """A CJK karakter ket oszlop szeles -- kulonben szetcsuszik a tabla."""
+    assert _pad("NEARUSDT", 15) == "NEARUSDT" + " " * 7      # 8 karakter, 8 oszlop
+    assert _pad("龙虾USDT", 15) == "龙虾USDT" + " " * 7        # 6 karakter, de 8 oszlop
+    assert _pad("MAGMAUSDT", 15) == "MAGMAUSDT" + " " * 6
+    # a kirajzolt szelesseg legyen azonos
+    def width(t):
+        import unicodedata
+        return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in t)
+    assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
 def test_status_row_is_mongo_safe():

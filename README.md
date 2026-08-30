@@ -222,6 +222,7 @@ db.signals.find().sort({timestamp:-1}).limit(5)
 | `minSignalScore` | `60` | ez alatt csak mentünk, nem küldünk |
 | `symbolCooldownSec` | `60` | ugyanarra a párra ennyi ideig nincs új jelzés |
 | `statusIntervalSec` | `5` | ilyen sűrűn írja ki, mi történik az árakkal |
+| `signalWindowMinutes` | `10` | ekkora visszatekintéssel számolja, hányadik a jelzés |
 | `orderBookLevels` | `20` | vizsgált árszintek (5 / 10 / 20) |
 | `wallSensitivity` | `3.0` | wall = szint ≥ 3× az oldal átlaga |
 | `wallMaxDistancePct` | `1.5` | ennél távolabbi wall már nem érdekes |

@@ -20,6 +20,7 @@ eseten) -- a _stream ciklus ezt automatikusan ujraepiti.
 """
 import os
 import json
+import unicodedata
 import time
 import uuid
 import asyncio
@@ -29,7 +30,7 @@ import websockets
 
 from datetime import datetime, timezone
 
-from . import binance_rest
+from . import binance_rest, events
 from .detector import MovementDetector
 
 log = logging.getLogger("market")
@@ -55,6 +56,8 @@ class MarketDataService:
         self.connected = 0
         self.messages = 0        # minden beerkezett WS uzenet
         self.ignored = 0         # uzenet, ami nem arfolyam volt
+        self.cycle = 0           # hanyadik statusz tabla
+        self.cycle_start = time.time()
 
     async def run(self):
         asyncio.create_task(self._status_loop())
@@ -158,40 +161,62 @@ class MarketDataService:
             interval = self.cfg.detector["statusIntervalSec"]
             await asyncio.sleep(interval)
             snap = self.detector.snapshot()
+            self.cycle += 1
             level = logging.ERROR if snap["ticks"] == 0 else logging.INFO
             log.log(level, "\n%s", self._render(snap, interval))
+            self.cycle_start = time.time()
             await self._save_status(snap, interval)
 
     def _render(self, snap, interval):
         th = self.detector.thresholds()
-        head = (f"  {'─' * 78}\n"
-                f"  MI TORTENIK MOST   {len(self.symbols)} par figyelese   "
-                f"jelzes indulas ota: {snap['totalTriggers']}\n")
+        line = "  " + "─" * 84
+        now = time.time()
+        head = [
+            line,
+            f"  #{self.cycle}   {_clock(self.cycle_start)} - {_clock(now)}   "
+            f"{len(self.symbols)} par figyelese   jelzes indulas ota: {snap['totalTriggers']}",
+        ]
 
         if snap["ticks"] == 0:
             if self.messages == 0:
-                baj = ("A Binance kapcsolat all, de EGYETLEN UZENET SEM erkezett.\n"
-                       "  Meg a feliratkozas nyugtaja sem -- ellenorizd a kimeno halozatot\n"
-                       "  a fstream.binance.com:443 fele.")
+                head.append("  A Binance kapcsolat all, de EGYETLEN UZENET SEM erkezett.")
+                head.append("  Meg a feliratkozas nyugtaja sem -- ellenorizd a kimeno halozatot")
+                head.append("  a fstream.binance.com:443 fele.")
             else:
-                baj = (f"Erkezett {self.messages:,} uzenet, de egyetlen arfolyam sem.\n"
-                       f"  Valoszinuleg rossz WebSocket utvonalon vagyunk -- a program\n"
-                       f"  a kovetkezo ujracsatlakozaskor masikkal probalkozik.")
-            return head + f"  {baj}\n  {'─' * 78}"
+                head.append(f"  Erkezett {self.messages:,} uzenet, de egyetlen arfolyam sem.")
+                head.append("  Valoszinuleg rossz WebSocket utvonalon vagyunk -- a kovetkezo")
+                head.append("  ujracsatlakozaskor masikkal probalkozunk.")
+            return "\n".join(head + [line])
 
-        head += (f"  az elmult {interval} masodpercben {snap['ticks']:,} arvaltozas erkezett   "
-                 f"({self.connected}/{self._chunk_count()} kapcsolat el)\n"
-                 f"  jelzes kell hozza: 1 mp alatt {th[1]:.2f}%, 3 mp alatt {th[3]:.2f}%, "
-                 f"5 mp alatt {th[5]:.2f}%\n"
-                 f"  {'─' * 78}\n"
-                 f"  {'par':<13}{'arfolyam':>13}{'1 mp':>9}{'3 mp':>9}{'5 mp':>9}   mi van vele\n")
+        head += [
+            f"  {snap['ticks']:,} arvaltozas erkezett {interval} mp alatt   "
+            f"({self.connected}/{self._chunk_count()} kapcsolat el)",
+            f"  jelzes kell hozza: 1 mp {th[1]:.2f}%  |  3 mp {th[3]:.2f}%  |  5 mp {th[5]:.2f}%",
+            line,
+        ]
 
-        lines = []
+        head += self._events_section()
+        head += [
+            line,
+            f"  {_pad('par', 15)}{'arfolyam':>13}{'1 mp':>9}{'3 mp':>9}{'5 mp':>9}   mi van vele",
+        ]
         for r in snap["rows"]:
             c = r["changes"]
-            lines.append(f"  {r['symbol']:<13}{_price(r['price']):>13}"
-                         f"{_pct(c[1]):>9}{_pct(c[3]):>9}{_pct(c[5]):>9}   {_verdict(r)}")
-        return head + "\n".join(lines) + f"\n  {'─' * 78}"
+            head.append(f"  {_pad(r['symbol'], 15)}{_price(r['price']):>13}"
+                        f"{_pct(c[1]):>9}{_pct(c[3]):>9}{_pct(c[5]):>9}   {_verdict(r)}")
+        return "\n".join(head + [line])
+
+    @staticmethod
+    def _events_section(limit=12):
+        items = events.drain()
+        if not items:
+            return ["  AZ ELOZO TABLA OTA: nem tortent semmi"]
+        out = [f"  AZ ELOZO TABLA OTA TORTENT ({len(items)}):"]
+        for ts, text in items[-limit:]:
+            out.append(f"    {_clock(ts)}  {text}")
+        if len(items) > limit:
+            out.insert(1, f"    ... {len(items) - limit} korabbi esemeny kihagyva")
+        return out
 
     async def _save_status(self, snap, interval):
         try:
@@ -213,13 +238,23 @@ class MarketDataService:
         return max(1, -(-len(self.symbols) // STREAMS_PER_CONNECTION))
 
 
+def _clock(ts):
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
 def _mongo_row(r):
     """A changes kulcsai egesz szamok (1/3/5 mp) -- a Mongo csak string kulcsot fogad."""
     return {**r, "changes": {f"s{w}": v for w, v in r["changes"].items()}}
 
 
 def _pct(v):
-    return "  --  " if v is None else f"{v:+.2f}%"
+    return "--" if v is None else f"{v:+.2f}%"
+
+
+def _pad(text, width):
+    """Balra igazitas kijelzesi szelesseg szerint -- a CJK karakter ket oszlop szeles."""
+    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return text + " " * max(0, width - w)
 
 
 def _price(p):

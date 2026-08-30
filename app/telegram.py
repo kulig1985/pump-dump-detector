@@ -50,6 +50,7 @@ def format_signal(sig):
     ch = sig["priceChange"]
     lines = [
         "🚨 FUTURES PUMP DETECTED" if pump else "🔻 FUTURES DUMP DETECTED",
+        sig["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC"),
         "",
         sig["symbol"],
         f"Direction: {sig['direction']}",
@@ -69,6 +70,16 @@ def format_signal(sig):
     lines.append(f"{label}: {wall['distancePct']:.2f}% away" if wall else f"{label}: none nearby")
 
     lines.append(f"Signal score: {sig['score']}/100")
+
+    r = sig.get("recent")
+    if r:
+        lines.append("")
+        lines.append(f"Ez a(z) {r['sameSymbolSameDirection']}. {sig['direction']} jelzes "
+                     f"{sig['symbol']}-re {r['windowMinutes']} percen belul")
+        lines.append(f"A teljes piacon {r['windowMinutes']} perc alatt: "
+                     f"{r['marketLong']} LONG / {r['marketShort']} SHORT")
+
+    lines.append("")
     lines.append(f"Reason: {sig['reason']}")
     if sig.get("trade", {}).get("executed"):
         lines.append(f"Trade: OPENED (order {sig['trade']['orderId']})")

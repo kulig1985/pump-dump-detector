@@ -3,11 +3,13 @@
 trigger -> OrderBookAnalyzer + TAAnalyzer (parhuzamosan) -> score -> MongoDB
         -> Telegram -> opcionalisan TradingService
 """
+import time
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
-from . import orderbook, ta, scoring, telegram
+from . import orderbook, ta, scoring, telegram, events
 
 log = logging.getLogger("signal")
 
@@ -18,6 +20,7 @@ class SignalService:
         self.db = db
         self.notifier = notifier
         self.trader = trader
+        self.recent = deque()      # (ts, symbol, direction) a friss jelzesekrol
 
     async def handle_trigger(self, trigger):
         symbol = trigger["symbol"]
@@ -35,6 +38,7 @@ class SignalService:
             ta.analyze(symbol, trigger["price"], c),
         )
         score, reason, parts = scoring.score_signal(trigger, ob, ta_result, c)
+        recent = self._count_recent(symbol, trigger["direction"], c["signalWindowMinutes"])
 
         ch = trigger["changes"]
         signal = {
@@ -47,13 +51,16 @@ class SignalService:
             "orderBook": _without_snapshot(ob),
             "score": score,
             "reason": reason,
+            "recent": recent,
             "telegram": {"sent": False, "error": None},
             "trade": {"executed": False, "orderId": None, "error": None},
         }
 
         if score < c["minSignalScore"]:
-            log.info("[%s] SCORE %d/100 -- kuszob (%d) alatt, csak mentjuk | %s",
+            log.info("[%s] SCORE %d/100 -- kuszob (%d) alatt, nem kuldjuk | %s",
                      symbol, score, c["minSignalScore"], reason)
+            events.add(f"{symbol:<14} score {score:>3}/100 -- kuszob ({c['minSignalScore']}) "
+                       f"alatt, nem kuldtuk")
             await self._save(signal, trigger, ob, ta_result, parts)
             return
 
@@ -62,6 +69,12 @@ class SignalService:
         signal["trade"] = await self.trader.maybe_open(signal)
         signal["telegram"] = await self.notifier.send(symbol, telegram.format_signal(signal))
         await self._save(signal, trigger, ob, ta_result, parts)
+
+        kimenet = "TELEGRAM ELKULDVE" if signal["telegram"]["sent"] else \
+                  f"Telegram NEM ment ki ({signal['telegram']['error']})"
+        events.add(f"{symbol:<14} score {score:>3}/100 -- {kimenet}  "
+                   f"({recent['sameSymbolSameDirection']}. {trigger['direction']} "
+                   f"{recent['windowMinutes']} percen belul)")
 
     async def _save(self, signal, trigger, ob, ta_result, parts):
         result = await self.db.signals.insert_one(signal)
@@ -75,6 +88,22 @@ class SignalService:
             "ema": ta_result,
             "scoreInputs": parts,
         })
+
+
+    def _count_recent(self, symbol, direction, window_minutes):
+        """Hanyadik ez a jelzes az adott iranyban az elmult ablakban."""
+        now = time.time()
+        cutoff = now - window_minutes * 60
+        while self.recent and self.recent[0][0] < cutoff:
+            self.recent.popleft()
+        self.recent.append((now, symbol, direction))
+        return {
+            "windowMinutes": window_minutes,
+            "sameSymbolSameDirection": sum(1 for _, s, d in self.recent
+                                           if s == symbol and d == direction),
+            "marketLong": sum(1 for _, _, d in self.recent if d == "LONG"),
+            "marketShort": sum(1 for _, _, d in self.recent if d == "SHORT"),
+        }
 
 
 def _without_snapshot(ob):

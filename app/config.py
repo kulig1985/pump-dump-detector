@@ -25,6 +25,7 @@ DETECTOR_DEFAULTS = {
     "minSignalScore": 60,
     "symbolCooldownSec": 60,
     "statusIntervalSec": 5,           # ilyen surun irja ki, mi tortenik az arakkal
+    "signalWindowMinutes": 10,        # ennyi idore visszamenoleg szamoljuk a jelzeseket
     # --- order book ---
     "orderBookLevels": 20,             # 5 / 10 / 20 (Binance partial depth stream)
     "wallSensitivity": 3.0,            # szint >= N * a tobbi szint atlaga => wall
