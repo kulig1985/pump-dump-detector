@@ -25,14 +25,18 @@ MARKET_DEFAULTS = {
 
     # ---- melyik parokat nezzuk egyaltalan ----
     "quoteAssets": ["USDT", "USDC"],
-    "minQuoteVolume24h": 100_000_000,
-    "maxSymbols": 120,
+    "minQuoteVolume24h": 200_000_000,
+    "maxSymbols": 60,
     "symbolRefreshMinutes": 60,
     "symbolWhitelist": [],             # ha nem ures, CSAK ezeket figyeljuk
     "symbolBlacklist": [],
 
     # ---- realtime kereskedhetoseg (a jelzes kiadasanal szur) ----
     "maxSpreadPct": 0.05,
+
+    # ---- eredmenymeres: a jelzes UTAN ennyi perccel jegyezzuk fel az arat ----
+    # Nem kapuz semmit, nem backteszt. Ebbol derul ki, tartos-e egy jelzes.
+    "outcomeMinutes": [1, 5, 15],
 
     # ---- megjelenites ----
     "statusIntervalSec": 60,
@@ -46,12 +50,12 @@ DETECTOR_DEFAULTS = {
     "moveWindowSec": 2.0,              # ekkora idoablakban merjuk az elmozdulast
     "minTradesInWindow": 10,           # ennyi kotes kell bele, kulonben nem merheto
     "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
-    "baselineRatio": 6.0,              # a mozgas a par normaljanak ennyiszerese legyen
-    "minMovePct": 0.50,                # abszolut padlo
-    "maxSingleStepPct": 40,            # ennel nagyobb reszt egyetlen arlepes ne adjon
-    "confirmSec": 10.0,                # ennyivel kesobb megnezzuk, megvan-e meg
-    "confirmHoldPct": 70,              # es a mozgas ennyi szazaleka legyen meg
-    "symbolCooldownSec": 300,
+    "baselineRatio": 8.0,              # a mozgas a par normaljanak ennyiszerese legyen
+    "minMovePct": 0.80,                # abszolut padlo
+    "maxSingleStepPct": 35,            # ennel nagyobb reszt egyetlen arlepes ne adjon
+    "confirmSec": 15.0,                # ennyivel kesobb megnezzuk, megvan-e meg
+    "confirmHoldPct": 80,              # es a mozgas ennyi szazaleka legyen meg
+    "symbolCooldownSec": 900,
 
     # ---- order book es EMA: CSAK INFORMACIO a jelzesben, semmit nem kapuznak ----
     "orderBookLevels": 20,
@@ -65,11 +69,11 @@ DETECTOR_DEFAULTS = {
 REVERSAL_DEFAULTS = {
     "_id": "reversal",
     "enabled": True,
-    "cooldownSec": 600,
+    "cooldownSec": 1800,
 
     # ---- mekkora elozetes mozgas utan keresunk fordulot ----
-    "baselineRatio": 6.0,              # a par normaljanak ennyiszerese
-    "minMovePct": 1.20,                # abszolut padlo
+    "baselineRatio": 8.0,              # a par normaljanak ennyiszerese
+    "minMovePct": 2.00,                # abszolut padlo
     "wickSliceSec": 0.5,               # ekkora szeletek kozeparan keressuk a szelsoerteket
 
     # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
@@ -87,8 +91,8 @@ REVERSAL_DEFAULTS = {
 
     # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
-    "maxExtremeAgeSec": 8,
-    "confirmSec": 10.0,                # ennyivel kesobb: tartja-e meg az attorest
+    "maxExtremeAgeSec": 6,
+    "confirmSec": 15.0,                # ennyivel kesobb: tartja-e meg az attorest
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,
     "minTradesInFlowWindow": 5,

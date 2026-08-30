@@ -16,6 +16,7 @@ from .market_data import MarketDataService
 from .detectors import DetectorManager, PumpDumpDetector, ReversalDetector
 from .detectors.baseline import Baseline
 from .eligibility import Eligibility
+from .outcome import OutcomeTracker
 from .signals import SignalService
 from .telegram import TelegramNotifier
 from .trading import TradingService
@@ -84,7 +85,8 @@ async def main():
 
     notifier = TelegramNotifier(cfg)
     trader = TradingService(cfg, db)
-    signals = SignalService(cfg, db, notifier, trader)
+    outcome = OutcomeTracker(cfg, db)
+    signals = SignalService(cfg, db, notifier, trader, outcome)
 
     # A baseline-t a ket detektor megosztva hasznalja: ugyanaz a "mi normalis
     # ezen a paron" mertek all mindketto mogott.
@@ -100,9 +102,10 @@ async def main():
     market = MarketDataService(cfg, db, detectors, eligibility,
                                on_signal=signals.handle_trigger)
     market.signal_service = signals
+    market.outcome = outcome
 
     try:
-        await asyncio.gather(cfg.refresh_loop(), market.run())
+        await asyncio.gather(cfg.refresh_loop(), market.run(), outcome.run())
     finally:
         await notifier.close()
         await trader.close()

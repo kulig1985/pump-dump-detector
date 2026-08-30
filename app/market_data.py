@@ -57,6 +57,7 @@ class MarketDataService:
         self.eligibility = eligibility
         self.on_signal = on_signal
         self.signal_service = None      # a STATUS sorhoz, a main koti be
+        self.outcome = None             # OutcomeTracker, a main koti be
         self.symbols = []
         self.started = time.time()
         self.connected = 0
@@ -208,6 +209,8 @@ class MarketDataService:
         # m=true -> az agresszor az elado; m=false -> az agresszor a vevo.
         trade = Trade(symbol=data["s"], price=float(data["p"]), qty=float(data["q"]),
                       ts=data["T"] / 1000.0, buy_taker=not data["m"])
+        if self.outcome:
+            self.outcome.on_trade(trade)
         for sig in self.detectors.on_trade(trade):
             # a reszletes elemzes lassu (order book + klines), nem blokkolhatja a stream olvasast
             asyncio.create_task(self.on_signal(sig))
@@ -243,6 +246,8 @@ class MarketDataService:
             for d in self.detectors.detectors:
                 if hasattr(d, "readiness"):
                     sorok.append(f"   {d.readiness()}")
+            if self.outcome:
+                sorok += [f"   {x}" for x in self.outcome.status_lines()]
             log.log(logging.ERROR if ticks == 0 else logging.INFO,
                     "%s", "\n".join(sorok))
 

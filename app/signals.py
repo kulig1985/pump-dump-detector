@@ -20,8 +20,9 @@ log = logging.getLogger("signal")
 
 
 class SignalService:
-    def __init__(self, cfg, db, notifier, trader):
+    def __init__(self, cfg, db, notifier, trader, outcome=None):
         self.cfg = cfg
+        self.outcome = outcome
         self.db = db
         self.notifier = notifier
         self.trader = trader
@@ -93,6 +94,10 @@ class SignalService:
     async def _save(self, signal, raw, ob, ta_result):
         symbol = signal["symbol"]
         result = await self.db.signals.insert_one(signal)
+        # a jelzes utani arat kesobb jegyezzuk fel ugyanebbe a dokumentumba
+        if self.outcome:
+            self.outcome.track(result.inserted_id, symbol, signal["detector"],
+                               signal["direction"], signal["price"])
         try:
             await self.db.snapshots.insert_one({
                 "timestamp": signal["timestamp"],

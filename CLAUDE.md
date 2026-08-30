@@ -48,6 +48,7 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/detectors/baseline.py` | páronkénti normál rövid mozgás |
 | `app/fmt.py` | közös formázók a logoláshoz |
 | `app/signals.py` | elemzés összefogása, mentés, továbbítás |
+| `app/outcome.py` | a jelzés UTÁNI ár feljegyzése (+1/+5/+15 perc), semmit nem kapuz |
 | `app/telegram.py` | Bot API sendMessage + üzenetformázás |
 | `app/trading.py` | WS API `order.place`, TP/SL, pozíciólimitek |
 
@@ -75,7 +76,7 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ## Collectionök
 
 - `config` — a fenti öt dokumentum
-- `signals` — minden detektált signal (score, EMA, order book összefoglaló, Telegram és trade státusz)
+- `signals` — minden detektált signal (az `outcome` mezőben a jelzés utáni ár) (score, EMA, order book összefoglaló, Telegram és trade státusz)
 - `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
 - `status` — 5 mp-enként frissülő élő állapot (uptime, tick/s, WS kapcsolatok, top 10 mozgó pár)

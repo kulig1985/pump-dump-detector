@@ -19,17 +19,28 @@ from app.ta import ema
 from app import events
 import app.config as C_CFG
 
-CFG = dict(C_CFG.DETECTOR_DEFAULTS)
-REV = dict(C_CFG.REVERSAL_DEFAULTS)
-MARKET = dict(C_CFG.MARKET_DEFAULTS)
+# A TESZTEK FIX PROFILT hasznalnak, nem az eles alapertekeket. Kulonben minden
+# erzekenyseg-hangolas atirna a fixture-oket (mekkora mozgas, milyen hosszu tape),
+# es a tesztek arrol szolnanak, hogy epp mi az alapertek -- nem arrol, hogy jol
+# mukodik-e a logika. Az eles alapertekekre kulon teszt van (lasd lentebb).
+TESZT_PROFIL = {
+    "detector": {"moveWindowSec": 2.0, "minTradesInWindow": 10, "baselineMinutes": 5,
+                 "baselineRatio": 6.0, "minMovePct": 0.50, "maxSingleStepPct": 40,
+                 "confirmSec": 10.0, "confirmHoldPct": 70, "symbolCooldownSec": 300},
+    "reversal": {"baselineRatio": 6.0, "minMovePct": 0.50, "confirmSec": 10.0,
+                 "cooldownSec": 600, "maxExtremeAgeSec": 8, "windowSeconds": 20,
+                 "bounceOfMovePct": 12, "pullbackOfBouncePct": 30, "breakOfMovePct": 5,
+                 "maxRetracementPct": 25, "wickSliceSec": 0.5},
+    "market": {"maxSpreadPct": 0.05},
+}
+
+CFG = {**C_CFG.DETECTOR_DEFAULTS, **TESZT_PROFIL["detector"]}
+REV = {**C_CFG.REVERSAL_DEFAULTS, **TESZT_PROFIL["reversal"]}
+MARKET = {**C_CFG.MARKET_DEFAULTS, **TESZT_PROFIL["market"]}
 TG = dict(C_CFG.TELEGRAM_DEFAULTS)
 cfg_obj = types.SimpleNamespace(detector=CFG, reversal=REV, market=MARKET, telegram=TG)
 
-# A fordulo-fixture egy 1.27%-os mozgas (a valodi CYSUSDT esetbol). Az ALAKZAT
-# tesztjei ne az eles minMovePct padlotol fuggjenek -- arra kulon teszt van
-# (test_slow_drift..., test_instant_wick...), azok a REV eles ertekeit hasznaljak.
-rev_cfg = types.SimpleNamespace(detector=CFG, market=MARKET, telegram=TG,
-                                reversal={**REV, "minMovePct": 0.5})
+rev_cfg = types.SimpleNamespace(detector=CFG, market=MARKET, telegram=TG, reversal=REV)
 
 
 def eligible_stub():
@@ -652,6 +663,66 @@ def test_config_split_moves_your_existing_values():
     assert store.telegram["enabled"] is False, "a telegramEnabled=false nem veszhet el"
     assert store.detector["baselineRatio"] == 9.0, "a sajat detector ertek marad"
     assert "minQuoteVolume24h" not in coll.docs["detector"], "a regi kulcs kikerult"
+
+
+def test_outcome_records_what_happened_after_the_signal():
+    """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat.
+
+    Elojelhelyesen: pozitiv = a jelzes iranyaba ment az ar, SHORT-nal is.
+    """
+    import asyncio
+    from app.outcome import OutcomeTracker
+
+    class FakeSignals:
+        def __init__(self): self.updates = []
+        async def update_one(self, q, u): self.updates.append((q, u))
+
+    coll = FakeSignals()
+    cfg = types.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
+    o = OutcomeTracker(cfg, types.SimpleNamespace(signals=coll))
+
+    o.track("id-long", "AUSDT", "pump_dump", "LONG", 100.0)
+    o.track("id-short", "BUSDT", "reversal", "SHORT", 100.0)
+    for x in o.varolista:
+        x["esedekes"] = 0                      # jarjon le azonnal
+    o.on_trade(Trade("AUSDT", 101.0, 1.0, 0.0, True))   # LONG: +1% -> jo irany
+    o.on_trade(Trade("BUSDT", 101.0, 1.0, 0.0, True))   # SHORT: +1% -> ROSSZ irany
+    asyncio.run(o._kiertekel())
+
+    assert len(coll.updates) == 2, coll.updates
+    ertekek = {q["_id"]: u["$set"]["outcome.m1"]["pct"] for q, u in coll.updates}
+    assert abs(ertekek["id-long"] - 1.0) < 0.01, ertekek
+    assert abs(ertekek["id-short"] + 1.0) < 0.01, "SHORT-nal a foleme a jo irany"
+    assert o.varolista == [], "a lejart merespont kikerult a sorbol"
+
+    sorok = o.status_lines()
+    assert any("pump_dump" in x and "jo iranyba" in x for x in sorok), sorok
+
+    # amirol nem erkezik kotes, arrol nem talalunk ki adatot
+    o2 = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals()))
+    o2.track("id-nema", "CUSDT", "reversal", "LONG", 100.0)
+    for x in o2.varolista:
+        x["esedekes"] = 0
+    asyncio.run(o2._kiertekel())
+    assert o2.status_lines() == [], "nema paron nincs mert eredmeny"
+
+
+def test_live_defaults_are_at_least_as_strict_as_the_test_profile():
+    """A tesztek fix profilon futnak, hogy a hangolas ne torje oket. Cserebe ITT
+    orizzuk, hogy az ELES alapertekek ne legyenek lazabbak a profilnal."""
+    szigorubb_ha_nagyobb = {
+        "detector": ("baselineRatio", "minMovePct", "confirmSec", "confirmHoldPct",
+                     "symbolCooldownSec"),
+        "reversal": ("baselineRatio", "minMovePct", "confirmSec", "cooldownSec"),
+    }
+    elesek = {"detector": C_CFG.DETECTOR_DEFAULTS, "reversal": C_CFG.REVERSAL_DEFAULTS}
+    for doksi, kulcsok in szigorubb_ha_nagyobb.items():
+        for k in kulcsok:
+            assert elesek[doksi][k] >= TESZT_PROFIL[doksi][k], (
+                f"{doksi}.{k}: az eles alapertek ({elesek[doksi][k]}) lazabb, "
+                f"mint a teszt profil ({TESZT_PROFIL[doksi][k]})")
+    assert C_CFG.DETECTOR_DEFAULTS["maxSingleStepPct"] <= \
+        TESZT_PROFIL["detector"]["maxSingleStepPct"], "itt a KISEBB a szigorubb"
 
 
 def test_every_config_key_is_documented():
