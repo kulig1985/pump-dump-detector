@@ -40,7 +40,11 @@ WS_HOST = ("wss://stream.binancefuture.com" if os.getenv("FUTURES_TESTNET") == "
            else "wss://fstream.binance.com")
 # elso a dokumentalt utvonal, utana a regebbiek -- ha az elso nem kuld adatot,
 # a kovetkezo ujracsatlakozas mar a kovetkezot probalja
+# Az aggTrade a "market", a bookTicker a "public" csoportba tartozik, es ez az
+# URL szegmensben is megjelenik -- ezert kell nekik KULON kapcsolat. A !bookTicker
+# a /market/stream vegponton nem erkezik meg (a feliratkozast nyugtazza, de nem kuld).
 WS_BASES = [f"{WS_HOST}/market/stream", f"{WS_HOST}/stream", f"{WS_HOST}/ws"]
+BOOK_BASES = [f"{WS_HOST}/public/stream", f"{WS_HOST}/stream", f"{WS_HOST}/ws"]
 STREAMS_PER_CONNECTION = 150
 SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvonalon)
 
@@ -63,6 +67,7 @@ class MarketDataService:
 
     async def run(self):
         asyncio.create_task(self._status_loop())
+        asyncio.create_task(self._book_stream())
         while True:
             c = self.cfg.detector
             self.symbols = await binance_rest.load_symbols(
@@ -87,10 +92,6 @@ class MarketDataService:
 
     async def _stream(self, index, symbols):
         streams = [f"{s.lower()}@aggTrade" for s in symbols]
-        if index == 1:
-            # EGYETLEN feliratkozas az egesz piac legjobb bid/ask arara es
-            # mennyisegere -- ebbol megy a spread/melyseg alapu kereskedhetoseg
-            streams.append("!bookTicker")
         backoff = 1
         attempt = 0
         while True:
@@ -130,6 +131,54 @@ class MarketDataService:
                 raise
             except Exception as e:
                 log.warning("WS #%d szakadas: %s -- ujracsatlakozas %ds mulva", index, e, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+
+    async def _book_stream(self):
+        """A teljes piac legjobb bid/ask ara es mennyisege, egyetlen feliratkozassal.
+
+        Kulon kapcsolat, mert a bookTicker a "public" csoportba tartozik: a
+        /market/stream vegponton a feliratkozas nyugtazva lesz, de adat nem jon.
+        Ugyanaz az utvonal-visszalepes, mint a fo streamnel.
+        """
+        backoff, attempt = 1, 0
+        while True:
+            base = BOOK_BASES[attempt % len(BOOK_BASES)]
+            attempt += 1
+            try:
+                async with websockets.connect(base, ping_interval=20,
+                                              ping_timeout=20) as ws:
+                    await ws.send(json.dumps({"method": "SUBSCRIBE",
+                                              "params": ["!bookTicker"],
+                                              "id": uuid.uuid4().hex}))
+                    log.info("Order book stream csatlakozva: %s", base)
+                    backoff = 1
+                    kapott = False
+                    try:
+                        while True:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=SILENCE_SEC)
+                            msg = json.loads(raw)
+                            if "result" in msg or "error" in msg:
+                                if msg.get("error"):
+                                    log.error("A !bookTicker feliratkozast a Binance "
+                                              "elutasitotta: %s", msg["error"])
+                                continue
+                            adat = msg.get("data", msg)
+                            # a !bookTicker kombinalt streamen tombot is kuldhet
+                            for x in (adat if isinstance(adat, list) else [adat]):
+                                if isinstance(x, dict) and "b" in x and "a" in x:
+                                    self.eligibility.on_book_ticker(x)
+                                    if not kapott:
+                                        kapott = True
+                                        attempt -= 1        # ez az utvonal jo
+                                        log.info("Order book adat erkezik innen: %s", base)
+                    except asyncio.TimeoutError:
+                        log.error("Order book stream: %s utvonalrol nem jott adat "
+                                  "%ds alatt -- atvaltas a kovetkezore", base, SILENCE_SEC)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Order book stream szakadas: %s -- ujra %ds mulva", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
 

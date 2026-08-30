@@ -319,8 +319,12 @@ Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 ## Binance API — mit használunk
 
 WebSocket (`wss://fstream.binance.com`):
-- `/market/stream` + `SUBSCRIBE` üzenet — árfolyam tickek. A `/market` szegmens
-  kötelező (lásd `app/market_data.py` fejlécét). Max 200 feliratkozás / kapcsolat.
+- `/market/stream` + `SUBSCRIBE` — árfolyam tickek (`<sym>@aggTrade`). Max 200
+  feliratkozás / kapcsolat, ezért 150-esével bontjuk.
+- `/public/stream` + `SUBSCRIBE ["!bookTicker"]` — **külön kapcsolat**, egyetlen
+  feliratkozás az egész piac legjobb bid/ask árára és mennyiségére. Az aggTrade a
+  `market`, a bookTicker a `public` csoportba tartozik, és ez az URL szegmensben is
+  megjelenik — rossz szegmensen a Binance nyugtáz, de nem küld adatot.
 - `/public/ws/<sym>@depth20@100ms` — csak triggerkor, első üzenet után azonnal bontunk.
   A depth a doksiban a *public* csoportba tartozik, ezért `/public` a szegmense (az
   aggTrade-é `/market`).

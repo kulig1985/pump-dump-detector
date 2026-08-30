@@ -84,7 +84,13 @@ db.signals.aggregate([{$match:{status:"rejected"}},
 ### Realtime kereskedhetőség — a detektorok előtt szűr
 
 Az adat egyetlen `!bookTicker` feliratkozásból jön, ami az egész piac legjobb bid/ask
-árát és mennyiségét adja.
+árát és mennyiségét adja — **külön WebSocket kapcsolaton**. Az aggTrade a `market`, a
+bookTicker a `public` csoportba tartozik, és ez az URL szegmensben is megjelenik:
+`/market/stream` illetve `/public/stream`. Rossz szegmensen a Binance nyugtázza a
+feliratkozást, de **nem küld adatot**.
+
+Ha egyáltalán nem érkezik könyv-adat, a rendszer nem némul el: a spread/mélység szűrés
+kikapcsol, és a `STATUS` sor kiírja, hogy `KONYV-ADAT NEM ERKEZIK`.
 
 | kulcs | alap | mit csinál | ha növeled |
 |---|---|---|---|

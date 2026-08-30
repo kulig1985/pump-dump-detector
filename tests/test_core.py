@@ -359,6 +359,18 @@ def test_eligibility_without_book_data_does_not_pass():
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
 
 
+def test_book_and_trade_streams_use_different_url_segments():
+    """Regresszio: a !bookTicker a /market/stream vegponton NEM erkezik meg (a
+    feliratkozast nyugtazza, de nem kuld adatot) -- ezert kell kulon kapcsolat a
+    "public" szegmensre. Elesben ez 39 parbol 39-et zart ki no_book_data-val."""
+    from app import market_data as MD
+    assert MD.WS_BASES[0].endswith("/market/stream")
+    assert MD.BOOK_BASES[0].endswith("/public/stream")
+    assert MD.WS_BASES[0] != MD.BOOK_BASES[0]
+    # mindketto vegigprobalja a regi utvonalakat is, ha az elso nem kuld adatot
+    assert MD.BOOK_BASES[1:] == MD.WS_BASES[1:]
+
+
 def test_total_book_outage_fails_open_and_says_so():
     """Ha SEMMILYEN konyv-adat nem erkezik, az rendszerszintu baj (rossz WS utvonal).
 
@@ -405,7 +417,11 @@ def test_eligibility_summary_aggregates_by_reason():
 
 
 def test_manager_blocks_ineligible_symbols_before_detectors():
-    e = Eligibility(cfg_obj)                       # nincs book adat -> minden kiesik
+    e = Eligibility(cfg_obj)
+    # van konyv-adat a rendszerben (tehat nincs rendszerszintu baj), de a CYSUSDT
+    # spreadje szeles -> mar a detektor elott kiesik
+    _book(e, "OTHERUSDT", 1.0000, 1.0001)
+    _book(e, "CYSUSDT", 0.7800, 0.7830)
     mgr = DetectorManager(rev_cfg, [ReversalDetector(rev_cfg)], e)
     assert [s for t in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(t)] == []
     assert mgr.skipped > 0
