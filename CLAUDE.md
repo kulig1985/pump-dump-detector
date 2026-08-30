@@ -67,7 +67,8 @@ db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
 ## Binance API — mit használunk
 
 WebSocket (`wss://fstream.binance.com`):
-- `/ws` + `{"method":"SUBSCRIBE","params":["<sym>@aggTrade",...]}` — árfolyam tickek.
+- `/ws` + `{"method":"SUBSCRIBE","params":["<sym>@aggTrade",...],"id":"<hex>"}` — árfolyam
+  tickek. Az `id` a hivatalos spec szerint **kötelező és string** típusú.
   Szándékosan nem a `/stream?streams=...` URL-t használjuk: ott a stream nevek a query
   stringben utaznának, és ha azt bármi levágja az úton, a Binance elfogadja a kapcsolatot,
   de soha nem küld semmit. Futures-ön **max 200 subscription / kapcsolat**, ezért 150-esével bontjuk.
@@ -80,5 +81,5 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 - `/fapi/v1/klines` — EMA
 - `/fapi/v1/leverage`, `/fapi/v1/marginType` — **a WS API-ban nincs rájuk metódus**
 
-Testnet: `FUTURES_TESTNET=1` (REST és WS API is átáll a `testnet.binancefuture.com`-ra;
-a market stream marad az éles, mert az publikus adat).
+Testnet: `FUTURES_TESTNET=1` — REST és WS API a `testnet.binancefuture.com`-ra,
+a market stream a `stream.binancefuture.com`-ra vált (a hivatalos spec `servers` listája szerint).

@@ -12,8 +12,10 @@ SUBSCRIBE eseten a nevek az uzenet torzseben mennek, es nyugtat is kapunk rola.
 
 A futures WS kapcsolatonkent max 200 subscription-t enged, ezert 150-es chunkokra bontjuk.
 """
+import os
 import json
 import time
+import uuid
 import asyncio
 import logging
 
@@ -26,7 +28,9 @@ from .detector import MovementDetector
 
 log = logging.getLogger("market")
 
-WS_BASE = "wss://fstream.binance.com/ws"
+# a hivatalos spec servers listaja: eles + testnet
+WS_BASE = ("wss://stream.binancefuture.com/ws" if os.getenv("FUTURES_TESTNET") == "1"
+           else "wss://fstream.binance.com/ws")
 STREAMS_PER_CONNECTION = 150
 STALL_SEC = 30          # ennyi nemasag utan halottnak tekintjuk a kapcsolatot
 
@@ -74,10 +78,13 @@ class MarketDataService:
             try:
                 async with websockets.connect(WS_BASE, ping_interval=20,
                                               ping_timeout=20) as ws:
+                    # a spec szerint az id KOTELEZO es string tipusu
+                    req_id = uuid.uuid4().hex
                     await ws.send(json.dumps({"method": "SUBSCRIBE",
-                                              "params": streams, "id": index}))
+                                              "params": streams, "id": req_id}))
                     self.connected += 1
-                    log.info("WS #%d csatlakozva, %d stream feliratkozva", index, len(streams))
+                    log.info("WS #%d csatlakozva, %d stream feliratkozva (id %s)",
+                             index, len(streams), req_id[:8])
                     backoff = 1
                     first = True
                     try:
@@ -107,8 +114,12 @@ class MarketDataService:
         if not self.cfg.detector["enabled"]:
             return
         msg = json.loads(raw)
-        if "result" in msg:          # a SUBSCRIBE nyugtaja: {"result": null, "id": 1}
-            log.info("WS #%s feliratkozas nyugtazva", msg.get("id"))
+        if "result" in msg or "error" in msg:
+            # {"result": null, "id": "..."} = nyugta, {"error": {...}} = elutasitas
+            if msg.get("error"):
+                log.error("A Binance ELUTASITOTTA a feliratkozast: %s", msg["error"])
+            else:
+                log.info("Feliratkozas nyugtazva (id %s)", str(msg.get("id"))[:8])
             return
         # /ws vegponton a payload csupaszon jon, /stream eseten "data" ala csomagolva
         data = msg.get("data", msg)
