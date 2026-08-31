@@ -107,6 +107,13 @@ async def main():
 
     try:
         await asyncio.gather(cfg.refresh_loop(), market.run(), outcome.run())
+    except Exception:
+        # A docker azonnal ujrainditja a konteneret. Ha szorosan pergunk, minden
+        # inditas lo egy exchangeInfo + egy ticker/24hr hivast (utobbi 40 sulyu),
+        # es percek alatt osszejon a Binance 429 -> 418 IP tiltas. Ezert varunk.
+        log.exception("Vegzetes hiba -- varakozas ujrainditas elott")
+        await asyncio.sleep(60)
+        raise
     finally:
         await notifier.close()
         await trader.close()

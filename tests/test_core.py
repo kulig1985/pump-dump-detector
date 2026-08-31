@@ -528,6 +528,50 @@ def test_eligibility_without_book_data_does_not_pass():
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
 
 
+def test_rate_limit_is_recognised_and_never_crashes_the_app():
+    """A Binance 429-cel jelzi a tullepest, 418-cal KITILTJA az IP-t.
+
+    Elesben ez tortent: az indulasi hiba kiloti a processzt, a docker azonnal
+    ujrainditja, es minden inditas lo egy exchangeInfo + egy ticker/24hr hivast
+    (utobbi 40 sulyu). A crash-loop percek alatt osszehozta a 418-at.
+    """
+    import asyncio
+    from app import binance_rest as BR
+
+    assert BR.ban_seconds(418, {"Retry-After": "120"}) == 120.0
+    assert BR.ban_seconds(429, {}) == 60.0, "fejlec nelkul is varunk"
+    assert BR.ban_seconds(429, {"Retry-After": "x"}) == 60.0, "hibas fejlec"
+    assert BR.ban_seconds(200, {}) is None and BR.ban_seconds(404, {}) is None
+
+    # tiltas eseten a mentett listaval futunk tovabb, kivetel nelkul
+    from app.market_data import MarketDataService
+
+    class FakeStatus:
+        def __init__(self, symbols): self.doc = {"_id": "symbols", "symbols": symbols}
+        async def find_one(self, q): return dict(self.doc)
+        async def update_one(self, q, u, upsert=False): self.doc.update(u["$set"])
+
+    db = types.SimpleNamespace(status=FakeStatus(["BTCUSDT", "ETHUSDT"]))
+    m = MarketDataService(cfg_obj, db, None, None, None)
+    eredeti = BR.load_symbols
+
+    async def tiltva(*a, **k):
+        raise BR.RateLimited(418, 120)
+
+    BR.load_symbols = tiltva
+    try:
+        symbols = asyncio.run(m._load_symbols())
+    finally:
+        BR.load_symbols = eredeti
+    assert symbols == ["BTCUSDT", "ETHUSDT"], symbols
+    assert m.stale_symbols is True, "jelezzuk, hogy regi listaval futunk"
+
+    # a main sem lephet ki azonnal egy vegzetes hiban: az adna a szoros hurkot
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "main.py").read_text()
+    assert "await asyncio.sleep(60)" in forras and "raise" in forras, \
+        "a main varjon, mielott kilep -- kulonben szoros ujrainditasi hurok"
+
+
 def test_book_and_trade_streams_use_different_url_segments():
     """Regresszio: a !bookTicker a /market/stream vegponton NEM erkezik meg (a
     feliratkozast nyugtazza, de nem kuld adatot) -- ezert kell kulon kapcsolat a

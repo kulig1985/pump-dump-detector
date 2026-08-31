@@ -31,6 +31,30 @@ SYMBOL_VOLUME = {}
 
 _session = None
 
+# A Binance 429-cel jelzi a tullepest, es ha nem allsz le, 418-cal KITILTJA az IP-t
+# (a bantartam 2 perctol 3 napig no). A valaszban jon egy Retry-After fejlec.
+BAN_STATUSZOK = (418, 429)
+MAX_VARAKOZAS = 300.0
+
+
+class RateLimited(Exception):
+    """A Binance rate limit / IP tiltas. A retry_after masodpercben ertendo."""
+
+    def __init__(self, status, retry_after):
+        self.status = status
+        self.retry_after = retry_after
+        super().__init__(f"Binance {status}, ujraprobalas {retry_after:.0f} mp mulva")
+
+
+def ban_seconds(status, headers, alap=60.0):
+    """Hany masodpercet kell varni. None, ha ez nem rate limit valasz."""
+    if status not in BAN_STATUSZOK:
+        return None
+    try:
+        return max(1.0, float(headers.get("Retry-After", alap)))
+    except (TypeError, ValueError):
+        return alap
+
 
 async def session():
     global _session
@@ -47,6 +71,13 @@ async def close():
 async def _get(path, params=None):
     s = await session()
     async with s.get(BASE_URL + path, params=params) as r:
+        var = ban_seconds(r.status, r.headers)
+        if var is not None:
+            log.error("A Binance %s valaszt adott a %s hivasra: %s. "
+                      "Varakozas %.0f mp.", r.status, path,
+                      "TULLEPTUK A KERESLIMITET" if r.status == 429
+                      else "AZ IP-T IDEIGLENESEN KITILTOTTA", var)
+            raise RateLimited(r.status, var)
         r.raise_for_status()
         return await r.json()
 

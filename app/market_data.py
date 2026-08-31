@@ -66,6 +66,7 @@ class MarketDataService:
         self.ignored = 0         # uzenet, ami nem arfolyam volt
         self.cycle = 0           # hanyadik statusz tabla
         self.cycle_start = time.time()
+        self.stale_symbols = False   # mentett listaval futunk-e (REST nem elerheto)
 
     async def run(self):
         asyncio.create_task(self._status_loop())
@@ -73,9 +74,10 @@ class MarketDataService:
         asyncio.create_task(self._book_stream())
         while True:
             c = self.cfg.market
-            self.symbols = await binance_rest.load_symbols(
-                c["minQuoteVolume24h"], c["maxSymbols"], c["symbolBlacklist"],
-                c["quoteAssets"])
+            self.symbols = await self._load_symbols()
+            if not self.symbols:
+                await asyncio.sleep(30)
+                continue
             chunks = [self.symbols[i:i + STREAMS_PER_CONNECTION]
                       for i in range(0, len(self.symbols), STREAMS_PER_CONNECTION)]
             log.info("Indul %d WebSocket kapcsolat, osszesen %d symbol",
@@ -86,12 +88,68 @@ class MarketDataService:
                      for i, ch in enumerate(chunks)]
             try:
                 # a symbol univerzumot idonkent ujraepitjuk (uj listing, kiszaradt par)
-                await asyncio.sleep(c["symbolRefreshMinutes"] * 60)
+                # -- ha epp mentett listaval futunk, hamarabb probaljuk ujra
+                await asyncio.sleep(600 if self.stale_symbols
+                                    else c["symbolRefreshMinutes"] * 60)
                 log.info("Symbol lista frissitese...")
             finally:
                 for t in tasks:
                     t.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _load_symbols(self):
+        """Symbol lista REST-bol. HIBA ESETEN SEM DOBUNK KIVETELT.
+
+        Ha a folyamat elszall, a docker ujrainditja, es minden inditas lo egy
+        exchangeInfo + egy ticker/24hr hivast (utobbi 40 sulyu). Egy crash-loop
+        igy percek alatt osszehozza a 429-et, majd a 418-as IP tiltast -- pontosan
+        ezert nem szabad kivetellel kilepni innen.
+
+        Amig a REST nem elerheto, a legutobb ELMENTETT listaval dolgozunk: a
+        WebSocket folyam nincs tiltva, tehat a detektor tovabb tud futni.
+        """
+        c = self.cfg.market
+        varakozas = 5.0
+        while True:
+            try:
+                symbols = await binance_rest.load_symbols(
+                    c["minQuoteVolume24h"], c["maxSymbols"], c["symbolBlacklist"],
+                    c["quoteAssets"])
+                await self._save_symbols(symbols)
+                self.stale_symbols = False
+                return symbols
+            except binance_rest.RateLimited as e:
+                varakozas = max(varakozas, e.retry_after)
+            except Exception as e:
+                log.error("A symbol lista lekerese nem sikerult: %s: %s",
+                          type(e).__name__, e)
+
+            mentett = await self._cached_symbols()
+            if mentett:
+                self.stale_symbols = True
+                log.warning("A legutobb mentett %d symbollal futunk tovabb, "
+                            "ujraprobalas %.0f mp mulva.", len(mentett), varakozas)
+                return mentett
+            log.warning("Nincs mentett symbol lista, varakozas %.0f mp.", varakozas)
+            await asyncio.sleep(varakozas)
+            varakozas = min(varakozas * 2, binance_rest.MAX_VARAKOZAS)
+
+    async def _save_symbols(self, symbols):
+        try:
+            await self.db.status.update_one(
+                {"_id": "symbols"},
+                {"$set": {"symbols": symbols, "updated": datetime.now(timezone.utc)}},
+                upsert=True)
+        except Exception as e:
+            log.warning("a symbol lista mentese nem sikerult: %s", e)
+
+    async def _cached_symbols(self):
+        try:
+            doc = await self.db.status.find_one({"_id": "symbols"})
+            return (doc or {}).get("symbols") or []
+        except Exception as e:
+            log.warning("a mentett symbol lista olvasasa nem sikerult: %s", e)
+            return []
 
     async def _stream(self, index, symbols):
         streams = [f"{s.lower()}@aggTrade" for s in symbols]

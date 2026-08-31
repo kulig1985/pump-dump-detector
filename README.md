@@ -339,6 +339,7 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 |---|---|
 | `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
 | a detector csendben áll, nincs `MongoDB kapcsolat kesz` sor | nem éri el a Mongo-t — lásd a 3/a pont `bindIp` részét |
+| `A Binance 418 valaszt adott ... AZ IP-T IDEIGLENESEN KITILTOTTA` | rate limit miatti IP-tiltás (429-ek után jön). A rendszer **nem áll le**: a legutóbb mentett symbol listával fut tovább (a WebSocket nincs tiltva), és a `Retry-After` szerint próbálkozik újra. Ha gyakran előfordul, nézd meg, nem crash-loopol-e a konténer (`docker compose logs --tail 100 detector`) |
 | `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. |
 | nincs jelzés órák óta | normális nyugodt piacon — a `MI TORTENIK MOST` tábla `mi van vele` oszlopa megmondja, mennyi hiányzik a jelzéshez. Ha tartósan „alig mozdul", vedd lejjebb a küszöböt |
 | `EGY symbol sem felel meg a ... forgalmi kuszobnek` | vedd lejjebb a `minQuoteVolume24h` értéket |
