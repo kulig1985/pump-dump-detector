@@ -145,10 +145,10 @@ def format_status(info):
 
     meres = ""
     if info.get("utolso"):
-        meres += ("\nUTOLSO JELZESEK  (tipusonkent az utolso 3, merre indult el az ar)\n"
+        meres += ("\nUTOLSO JELZESEK  (+ = JO IRANY: LONG-nal fel, SHORT-nal le ment az ar)\n"
                   + "\n".join(esc(x) for x in info["utolso"]))
     if info.get("talalat"):
-        meres += ("\n\nOSSZESITES  (+ = a jelzes iranyaba ment)\n"
+        meres += ("\n\nOSSZESITES  (+ = jo irany, dij nelkul szamolva)\n"
                   + "\n".join(esc(x) for x in info["talalat"]))
     if meres:
         veg += f"\n\n<pre>{meres.strip()}</pre>"

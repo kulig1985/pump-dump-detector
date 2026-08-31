@@ -147,7 +147,7 @@ class OutcomeTracker:
         osszes = self.summary_lines()
         if not osszes:
             return []
-        return (["OSSZESITES  (+ = a jelzes iranyaba ment az ar)"]
+        return (["OSSZESITES  (+ = jo irany: LONG-nal fel, SHORT-nal le ment az ar)"]
                 + [f"  {x}" for x in osszes]
                 + ["UTOLSO JELZESEK"]
                 + [f"  {x}" for x in self.recent_lines()])

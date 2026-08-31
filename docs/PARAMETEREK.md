@@ -370,7 +370,7 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > LEGKOZELEBB A JELZESHEZ
 >   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
 >
-> UTOLSO JELZESEK  (tipusonkent az utolso 3, merre indult el az ar)
+> UTOLSO JELZESEK  (+ = JO IRANY: LONG-nal fel, SHORT-nal le ment az ar)
 > ido   par          tipus irany      +1p     +5p    +15p
 > 04:54 XRPUSDT      rev   LONG    +0.12%  -0.30%  +0.44%
 > 04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
@@ -379,7 +379,7 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > 04:34 龙虾USDT     pump  SHORT   +0.44%  +0.90%  -0.12%
 > 04:29 ZKCUSDT      rev   LONG    +0.59%  +1.15%  +1.75%
 >
-> OSSZESITES  (+ = a jelzes iranyaba ment)
+> OSSZESITES  (+ = jo irany, dij nelkul szamolva)
 > tipus   ido   db    atlag  talalat
 > pump    +1p   13   -0.31%      23%
 > pump    +5p   13   -0.40%      46%
@@ -473,7 +473,7 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
    kizarva 2: tul szeles a spread: 2
    spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
    normal kesz: 58/60 par | legkozelebb: SKRUSDT 0.283% (kell 0.80%, normalja 0.038%)
-   OSSZESITES  (+ = a jelzes iranyaba ment az ar)
+   OSSZESITES  (+ = jo irany: LONG-nal fel, SHORT-nal le ment az ar)
      tipus   ido   db    atlag  talalat
      pump    +1p   13   -0.31%      23%
      pump    +5p   13   -0.40%      46%
@@ -489,9 +489,11 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
 - **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
 - **`OSSZESITES`** — táblázat, soronként egy típus és egy mérési pont:
   `db` = hány jelzés van lemérve addig a pontig, `atlag` = az átlagos változás,
-  `talalat` = hány százalékuk ment jó irányba. Irányhelyesen: `+` = LONG után
-  felfelé ment az ár, vagy SHORT után lefelé. `...` = még nincs lemért jelzés
-  arra a pontra.
+  `talalat` = hány százalékuk ment jó irányba. **A `+` mindig azt jelenti, hogy jól
+  jártál volna:** LONG jelzésnél felment az ár, SHORT jelzésnél lement. A `-2.75%`
+  egy SHORT jelzésnél azt jelenti, hogy az ár 2.75%-kal **feljebb** ment, tehát bukó.
+  Bruttó számok: a taker díj (oda-vissza ~0.10%) és a tőkeáttét nincs bennük.
+  `...` = még nincs lemért jelzés arra a pontra.
 - **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
   `rev`), milyen irányba jelzett, és merre indult el az ár. **Típusonként** az
   utolsó `statusRecentSignals` darab (alapon 3 pump és 3 forduló), időrendben.
