@@ -27,6 +27,7 @@ import logging
 
 import websockets
 
+from collections import deque
 from datetime import datetime, timezone
 
 from . import binance_rest, events, telegram
@@ -48,6 +49,52 @@ BOOK_BASES = [f"{WS_HOST}/public/stream", f"{WS_HOST}/stream", f"{WS_HOST}/ws"]
 STREAMS_PER_CONNECTION = 150
 SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvonalon)
 
+# A Binance az IP-t tiltja ki (429 -> 418), ha tul suru a kapcsolodasi kiserlet.
+# Egy szakadozo halozat (VPN / alagut a VPS fele) mellett a naiv "azonnal probald
+# ujra" logika percek alatt osszehozza ezt -- ezert van globalis korlat MINDEN
+# ujracsatlakozasra, es minden bontas utan varunk.
+MIN_CONNECT_GAP = 2.0       # ket kapcsolodasi kiserlet kozott legalabb ennyi
+MAX_CONNECTS_5MIN = 40      # osszesen ennyi kiserlet 5 percenkent
+MAX_BACKOFF = 120.0
+EGESZSEGES_SEC = 60.0       # ennyi ideig elo kapcsolat utan nullazzuk a backoffot
+
+
+class ConnectLimiter:
+    """Globalis korlat az ujracsatlakozasokra -- az OSSZES kapcsolatra egyutt.
+
+    Nem per-kapcsolat: a tiltas az IP-re szol, tehat a 6 stream + a konyv-stream
+    egyutt szamit. Ha a keret elfogy, varunk, amig az 5 perces ablak felszabadul.
+    """
+
+    def __init__(self, min_gap=MIN_CONNECT_GAP, max_per_5min=MAX_CONNECTS_5MIN):
+        self.min_gap = min_gap
+        self.max_per_5min = max_per_5min
+        self.kiserletek = deque()       # a legutobbi kapcsolodasok idopontjai
+        self.lock = asyncio.Lock()
+
+    async def wait(self):
+        async with self.lock:
+            while True:
+                most = time.time()
+                while self.kiserletek and self.kiserletek[0] < most - 300:
+                    self.kiserletek.popleft()
+                keses = 0.0
+                if self.kiserletek:
+                    keses = max(0.0, self.kiserletek[-1] + self.min_gap - most)
+                if len(self.kiserletek) >= self.max_per_5min:
+                    keses = max(keses, self.kiserletek[0] + 300 - most)
+                    log.warning("Tul sok ujracsatlakozas (%d / 5 perc) -- varakozas "
+                                "%.0f mp, hogy a Binance ne tiltsa ki az IP-t",
+                                len(self.kiserletek), keses)
+                if keses <= 0:
+                    self.kiserletek.append(most)
+                    return
+                await asyncio.sleep(keses)
+
+    def utolso_5_perc(self):
+        most = time.time()
+        return sum(1 for t in self.kiserletek if t > most - 300)
+
 
 class MarketDataService:
     def __init__(self, cfg, db, detectors, eligibility, on_signal):
@@ -67,6 +114,8 @@ class MarketDataService:
         self.cycle = 0           # hanyadik statusz tabla
         self.cycle_start = time.time()
         self.stale_symbols = False   # mentett listaval futunk-e (REST nem elerheto)
+        self.limiter = ConnectLimiter()
+        self.reconnects = 0
 
     async def run(self):
         asyncio.create_task(self._status_loop())
@@ -153,11 +202,14 @@ class MarketDataService:
 
     async def _stream(self, index, symbols):
         streams = [f"{s.lower()}@aggTrade" for s in symbols]
-        backoff = 1
+        backoff = 1.0
         attempt = 0
         while True:
+            await self.limiter.wait()
             base = WS_BASES[attempt % len(WS_BASES)]
             attempt += 1
+            self.reconnects += 1
+            nyitva = time.time()
             try:
                 async with websockets.connect(base, ping_interval=20,
                                               ping_timeout=20) as ws:
@@ -168,7 +220,6 @@ class MarketDataService:
                     self.connected += 1
                     log.info("WS #%d csatlakozva: %s | %d stream feliratkozva",
                              index, base, len(streams))
-                    backoff = 1
                     got_price = False
                     try:
                         while True:
@@ -177,23 +228,32 @@ class MarketDataService:
                             self.messages += 1
                             if self._handle(raw) and not got_price:
                                 got_price = True
-                                log.info("WS #%d elso arfolyam megjott innen: %s", index, base)
+                                log.info("WS #%d elso arfolyam megjott innen: %s",
+                                         index, base)
                                 attempt -= 1        # ez az utvonal jo, maradjunk rajta
                     except asyncio.TimeoutError:
                         if got_price:
                             log.warning("WS #%d %ds-ig nema -- ujracsatlakozas",
                                         index, SILENCE_SEC)
                         else:
-                            log.error("WS #%d: a(z) %s utvonalrol nem jott arfolyam %ds alatt "
-                                      "-- atvaltas a kovetkezo utvonalra", index, base, SILENCE_SEC)
+                            log.error("WS #%d: a(z) %s utvonalrol nem jott arfolyam "
+                                      "%ds alatt -- atvaltas a kovetkezo utvonalra",
+                                      index, base, SILENCE_SEC)
                     finally:
                         self.connected -= 1
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.warning("WS #%d szakadas: %s -- ujracsatlakozas %ds mulva", index, e, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30)
+                log.warning("WS #%d szakadas: %s", index, e)
+
+            # MINDEN bontas utan varunk -- a nemasag-timeout utan is. Enelkul egy
+            # szakadozo alagut mellett 15 masodpercenkent ujracsatlakoznank, ami
+            # egyenes ut a 418-as IP tiltashoz.
+            if time.time() - nyitva >= EGESZSEGES_SEC:
+                backoff = 1.0                       # a kapcsolat elt, tiszta lappal
+            log.info("WS #%d ujracsatlakozas %.0f mp mulva", index, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF)
 
     async def _book_stream(self):
         """A teljes piac legjobb bid/ask ara es mennyisege, egyetlen feliratkozassal.
@@ -202,10 +262,13 @@ class MarketDataService:
         /market/stream vegponton a feliratkozas nyugtazva lesz, de adat nem jon.
         Ugyanaz az utvonal-visszalepes, mint a fo streamnel.
         """
-        backoff, attempt = 1, 0
+        backoff, attempt = 1.0, 0
         while True:
+            await self.limiter.wait()
             base = BOOK_BASES[attempt % len(BOOK_BASES)]
             attempt += 1
+            self.reconnects += 1
+            nyitva = time.time()
             try:
                 async with websockets.connect(base, ping_interval=20,
                                               ping_timeout=20) as ws:
@@ -213,7 +276,6 @@ class MarketDataService:
                                               "params": ["!bookTicker"],
                                               "id": uuid.uuid4().hex}))
                     log.info("Order book stream csatlakozva: %s", base)
-                    backoff = 1
                     kapott = False
                     try:
                         while True:
@@ -239,9 +301,13 @@ class MarketDataService:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.warning("Order book stream szakadas: %s -- ujra %ds mulva", e, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30)
+                log.warning("Order book stream szakadas: %s", e)
+
+            # ugyanaz, mint a fo streamnel: minden bontas utan varunk
+            if time.time() - nyitva >= EGESZSEGES_SEC:
+                backoff = 1.0
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF)
 
     def _handle(self, raw):
         """True, ha ez egy feldolgozott arfolyam volt."""
@@ -295,6 +361,7 @@ class MarketDataService:
             sorok = [
                 f"STATUS     {len(self.symbols)} par | {ticks:,} tick/{interval}s | "
                 f"{self.eligibility.book_status()} | "
+                f"ujracsatlakozas {self.limiter.utolso_5_perc()}/5perc | "
                 f"{self.detectors.total_candidates} candidate, "
                 f"{svc.signals_today if svc else 0} jelzes, "
                 f"{self.detectors.skipped} kihagyva (nem kereskedheto) | "
@@ -351,6 +418,7 @@ class MarketDataService:
             "symbols": len(self.symbols),
             "wsConnected": self.connected,
             "wsTotal": self._chunk_count(),
+            "reconnects5min": self.limiter.utolso_5_perc(),
             "ticksPerMin": self.detectors.osszes_tick / max(1, eltelt / 60),
             "signals": self.signal_service.signals_today if self.signal_service else 0,
             "kizarva": (self.eligibility.summary() or [""])[0],

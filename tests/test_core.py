@@ -528,6 +528,39 @@ def test_eligibility_without_book_data_does_not_pass():
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
 
 
+def test_reconnect_storm_is_rate_limited():
+    """A Binance az IP-t tiltja ki, ha tul suru a kapcsolodasi kiserlet.
+
+    Elesben ez tortent: szakadozo alagut a VPS fele -> a nemasag-timeout utan a
+    kod VARAKOZAS NELKUL ujracsatlakozott, minden 15 masodpercben, minden
+    kapcsolaton. A korlat az OSSZES kapcsolatra egyutt szamol, mert a tiltas az
+    IP-re szol.
+    """
+    import asyncio
+    from app.market_data import ConnectLimiter
+
+    async def probal():
+        lim = ConnectLimiter(min_gap=0.01, max_per_5min=5)
+        # az elso 5 kiserlet atmegy
+        for _ in range(5):
+            await lim.wait()
+        assert lim.utolso_5_perc() == 5
+        # a 6. mar var -- az ablak legregebbi elemenek lejartaig
+        lim.kiserletek[0] = time.time() - 299.95      # 0.05 mp mulva szabadul fel
+        t0 = time.time()
+        await lim.wait()
+        assert time.time() - t0 >= 0.04, "varnia kellett a keret felszabadulasara"
+
+    asyncio.run(probal())
+
+    # es a stream minden bontas utan var -- a nemasag-timeout utan is
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
+    stream = forras[forras.index("async def _stream"):forras.index("async def _book_stream")]
+    assert "await self.limiter.wait()" in stream, "globalis korlat a csatlakozas elott"
+    assert stream.count("await asyncio.sleep(backoff)") == 1, "bontas utan mindig var"
+    assert "EGESZSEGES_SEC" in stream, "a backoff csak elo kapcsolat utan nullazodik"
+
+
 def test_rate_limit_is_recognised_and_never_crashes_the_app():
     """A Binance 429-cel jelzi a tullepest, 418-cal KITILTJA az IP-t.
 
@@ -779,7 +812,8 @@ def test_telegram_heartbeat_renders():
 
     ures = {"ido": "14:20:03", "uptime": "0h 1p", "symbols": 0, "wsConnected": 0,
             "wsTotal": 1, "ticksPerMin": 0, "signals": 0, "kizarva": "",
-            "movers": [], "kozel": "", "talalat": [], "utolso": []}
+            "movers": [], "kozel": "", "talalat": [], "utolso": [],
+            "reconnects5min": 0}
     szoveg = format_status(ures)
     assert "ELETJEL" in szoveg and "Meg nincs lemert jelzes" in szoveg
 

@@ -129,6 +129,7 @@ def format_status(info):
         ("figyelt par", f"{info['symbols']} db"),
         ("WS kapcsolat", f"{info['wsConnected']}/{info['wsTotal']}"),
         ("kotes / perc", f"{info['ticksPerMin']:,.0f}"),
+        ("ujracsatlakozas", f"{info.get('reconnects5min', 0)} / 5 perc"),
         ("jelzes indulas ota", f"{info['signals']} db"),
     ]
     if info.get("kizarva"):
