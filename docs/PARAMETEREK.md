@@ -1,28 +1,38 @@
 # Paraméterek — mit jelent, és mi történik, ha átállítod
 
-Minden beállítás a MongoDB `config` collectionben van, öt dokumentumban:
+## Hol állítod: `app/config.py`
+
+**Az alapértékek a kódban vannak, és hidegindítással minden beállítás felépül.**
+A MongoDB `config` collection csak egy másolat, amit induláskor a kód hoz létre:
 
 ```
-config
- ├── market     KÖZÖS: melyik párokat figyeljük egyáltalán (mindkét detektorra hat)
- ├── detector   CSAK a pump/dump detektor
- ├── reversal   CSAK a forduló detektor
- ├── trading    a pozíciónyitás (alapból kikapcsolva)
- └── telegram   a bot és az üzenet
+app/config.py            ->  config collection (MongoDB)
+  MARKET_DEFAULTS              market     KÖZÖS: melyik párokat figyeljük
+  DETECTOR_DEFAULTS            detector   CSAK a pump/dump
+  REVERSAL_DEFAULTS            reversal   CSAK a forduló
+  TRADING_DEFAULTS             trading    pozíciónyitás (alapból KI)
+  TELEGRAM_DEFAULTS            telegram   a bot és az üzenet
 ```
+
+A hangolás **mindig a kódban** történik:
+
+```bash
+# 1. atirod az erteket az app/config.py-ban
+# 2. ujrainditas
+git pull && docker compose up -d --build
+```
+
+A `config` collectiont bármikor törölheted: a következő induláskor **minden
+beállítás újra létrejön** a kódban lévő alapértékekkel. Ezt teszt őrzi
+(`test_cold_start_creates_every_setting`) — egyetlen beállítás sem maradhat ki
+hidegindításnál, és semmi nem várhat kézi beavatkozásra.
+
+Megnézni, mi fut épp:
 
 ```js
 use("pump-dump")
 db.config.findOne({_id: "detector"})
 ```
-
-A módosítás **30 másodpercen belül** életbe lép, újraindítás nélkül.
-
-> **A DB az igazság.** Az induláskori seed a meglévő értékeket **sosem írja felül**,
-> csak a hiányzó kulcsokat veszi fel. Ha a kódban változik egy alapérték, a te
-> dokumentumodba nem jut el — a log induláskor kiírja:
-> `A DB-ben eltero beallitas: minMovePct=0.3 (alap 0.5)`.
-> Átvenni: `db.config.updateOne({_id:"detector"}, {$unset:{minMovePct:""}})` + újraindítás.
 
 ---
 
@@ -105,8 +115,7 @@ Ez az egyetlen módja megtudni, hogy egy forduló vagy egy dump tartós-e.
 > **Példa:** egy LONG jelzés 100.00-nál. 5 perc múlva az ár 100.62 →
 > `outcome.m5 = {price: 100.62, pct: +0.62}`. SHORT jelzésnél az előjel meg van
 > fordítva: **pozitív mindig azt jelenti, hogy a jelzés irányába ment az ár.**
-> A STATUS blokkban összegezve is látod:
-> `EREDMENY  reversal   + 5 perc:  63 merve,  41% jo iranyba, median -0.05%, legjobb +1.80%, legrosszabb -2.10%`
+> A STATUS blokkban és a Telegram életjelben összegezve is látod (lásd lentebb).
 >
 > Az árat a már futó kötésfolyamból vesszük (utolsó ár páronként) — nulla extra
 > hálózati kérés. Ha egy párról épp nem érkezik kötés, azt a mérést kihagyjuk,
@@ -361,13 +370,20 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > LEGKOZELEBB A JELZESHEZ
 >   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
 >
-> TALALATI ARANY  (a jelzes iranyaba ment-e az ar)
->   pump_dump  +1p  23% (3/13)   +5p  46% (6/13)   +15p  54% (7/13)
->   reversal   +1p  75% (3/4)    +5p  75% (3/4)    +15p  75% (3/4)
+> UTOLSO JELZESEK  (merre indult el az ar)
+> ido   par          tipus irany      +1p     +5p    +15p
+> 04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
+> 04:44 BTCUSDT      pump  SHORT   +0.08%  +0.31%     ...
+> 04:39 ENAUSDT      pump  LONG    -1.54%  -4.67%  -4.77%
 >
-> UTOLSO JELZESEK  (mi tortent volna)
->   04:02 SKRUSDT      LONG   +1p  -0.31%  +5p  +0.12%  +15p  +1.02%
->   03:57 ZKCUSDT      SHORT  +1p  +0.44%  +5p  +0.90%  +15p  -0.12%
+> OSSZESITES  (+ = a jelzes iranyaba ment)
+>                        +1p     +5p    +15p
+> pump_dump   13 jelzes
+>   atlag             -0.31%  -0.40%  +0.02%
+>   talalat              23%     46%     54%
+> reversal     4 jelzes
+>   atlag             +0.59%  +1.15%  +1.75%
+>   talalat              75%     75%     75%
 > ```
 > A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
 > küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
@@ -392,27 +408,33 @@ Extra link az üzenet aljára, `{symbol}` helyettesítéssel — mobil app deep 
 
 # Recept: kevesebb, de kereskedhető jelzés
 
-Egyszerre **csak egyet** állíts, hogy tudd, mi okozta a változást.
+Egyszerre **csak egyet** állíts, hogy tudd, mi okozta a változást. Mind az
+`app/config.py`-ban, utána `docker compose up -d --build`.
 
-```js
-// 1. csak a legforgalmasabb parok
-db.config.updateOne({_id:"market"}, {$set:{minQuoteVolume24h: 300000000, maxSymbols: 50}})
+```python
+# 1. csak a legforgalmasabb parok            MARKET_DEFAULTS
+"minQuoteVolume24h": 300_000_000,
+"maxSymbols": 50,
 
-// 2. PUMP/DUMP: csak a rendkivuli mozgas
-db.config.updateOne({_id:"detector"}, {$set:{baselineRatio: 10.0, minMovePct: 1.2}})
+# 2. PUMP/DUMP: csak a rendkivuli mozgas     DETECTOR_DEFAULTS
+"baselineRatio": 10.0,
+"minMovePct": 1.20,
 
-// 3. PUMP/DUMP: csak az, ami 2 percig VEGIG all
-db.config.updateOne({_id:"detector"}, {$set:{confirmSec: 120.0, confirmHoldPct: 90}})
+# 3. PUMP/DUMP: csak az, ami 2 percig VEGIG all
+"confirmSec": 120.0,
+"confirmHoldPct": 90,
 
-// 4. REVERSAL: csak nagy mozgas utan
-db.config.updateOne({_id:"reversal"}, {$set:{minMovePct: 3.0, baselineRatio: 10.0}})
+# 4. REVERSAL: csak nagy mozgas utan         REVERSAL_DEFAULTS
+"minMovePct": 3.00,
+"baselineRatio": 10.0,
 
-// 5. REVERSAL: korai belepo, friss szelsoertek
-db.config.updateOne({_id:"reversal"}, {$set:{maxRetracementPct: 20, maxExtremeAgeSec: 5}})
+# 5. REVERSAL: korai belepo, friss szelsoertek
+"maxRetracementPct": 20,
+"maxExtremeAgeSec": 5,
 
-// 6. ritkabban ugyanarrol a parrol
-db.config.updateOne({_id:"detector"}, {$set:{symbolCooldownSec: 900}})
-db.config.updateOne({_id:"reversal"}, {$set:{cooldownSec: 1800}})
+# 6. ritkabban ugyanarrol a parrol
+"symbolCooldownSec": 900,      # DETECTOR_DEFAULTS
+"cooldownSec": 1800,           # REVERSAL_DEFAULTS
 ```
 
 Több jelzés kell? Ugyanezek lefelé: `baselineRatio` 4.0, kisebb `minMovePct`,
@@ -429,14 +451,14 @@ db.signals.aggregate([
 ])
 ```
 
-Csak nézni akarod, Telegram nélkül:
-```js
-db.config.updateOne({_id:"telegram"}, {$set:{enabled: false}})
+Csak nézni akarod, Telegram nélkül — `TELEGRAM_DEFAULTS`:
+```python
+"enabled": False,
 ```
 
-Csak néhány páron tesztelni:
-```js
-db.config.updateOne({_id:"market"}, {$set:{symbolWhitelist: ["BTCUSDT","ETHUSDT"]}})
+Csak néhány páron tesztelni — `MARKET_DEFAULTS`:
+```python
+"symbolWhitelist": ["BTCUSDT", "ETHUSDT"],
 ```
 
 ---
@@ -448,22 +470,27 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
    kizarva 2: tul szeles a spread: 2
    spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
    normal kesz: 58/60 par | legkozelebb: SKRUSDT 0.283% (kell 0.80%, normalja 0.038%)
-   TALALATI ARANY (a jelzes iranyaba ment-e az ar)
-     pump_dump  +1p  23% (3/13)   +5p  46% (6/13)   +15p  54% (7/13)
-     reversal   +1p  75% (3/4)    +5p  75% (3/4)    +15p  75% (3/4)
+   OSSZESITES  (+ = a jelzes iranyaba ment az ar)
+                            +1p     +5p    +15p
+     pump_dump   13 jelzes
+       atlag             -0.31%  -0.40%  +0.02%
+       talalat              23%     46%     54%
    UTOLSO JELZESEK
-     04:02 SKRUSDT      LONG   +1p  -0.31%  +5p  +0.12%  +15p  +1.02%
+     ido   par          tipus irany      +1p     +5p    +15p
+     04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
 ```
 
 - **`normal kesz`** — hány párnak épült már fel a normálja. Amíg nem kész, az a pár nem jelezhet.
 - **`legkozelebb`** — a mezőny legjobbja épp mennyire van a küszöbtől. Ha itt tartósan
   0.05%-os mozgások vannak 0.50% mellett, akkor a piac áll — nem a beállítás rossz.
 - **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
-- **`TALALATI ARANY`** — a lemért jelzések hány százalékában ment az ár a jelzés
-  irányába (LONG után fel, SHORT után le), detektoronként és mérési pontonként.
-  `54% (7/13)` = 13 lemért jelzésből 7 ment jó irányba. Csak akkor jelenik meg,
-  ha már van lemért jelzés.
-- **`UTOLSO JELZESEK`** — jelzésenként egy sor: mi történt volna, ha beszállsz. **Ez az egyetlen visszajelzés arról, hogy a
+- **`OSSZESITES`** — detektoronként (`pump_dump` / `reversal`) két sor: az **átlagos**
+  változás és a **találati arány** mérési pontonként. Irányhelyesen: `+` = LONG után
+  felfelé ment az ár, vagy SHORT után lefelé. `talalat 54%` = a lemért jelzések
+  54%-a ment jó irányba.
+- **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
+  `rev`), milyen irányba jelzett, és merre indult el az ár. `...` = az a mérési
+  pont még nem járt le. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

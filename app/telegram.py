@@ -144,12 +144,12 @@ def format_status(info):
         veg += f"\n\n<b>LEGKOZELEBB A JELZESHEZ</b>\n  • {esc(info['kozel'])}"
 
     meres = ""
-    if info.get("talalat"):
-        meres += ("\nTALALATI ARANY  (a jelzes iranyaba ment-e az ar)\n"
-                  + "\n".join(f"  {esc(x)}" for x in info["talalat"]))
     if info.get("utolso"):
-        meres += ("\n\nUTOLSO JELZESEK  (mi tortent volna)\n"
-                  + "\n".join(f"  {esc(x)}" for x in info["utolso"]))
+        meres += ("\nUTOLSO JELZESEK  (merre indult el az ar)\n"
+                  + "\n".join(esc(x) for x in info["utolso"]))
+    if info.get("talalat"):
+        meres += ("\n\nOSSZESITES  (+ = a jelzes iranyaba ment)\n"
+                  + "\n".join(esc(x) for x in info["talalat"]))
     if meres:
         veg += f"\n\n<pre>{meres.strip()}</pre>"
     else:

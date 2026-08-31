@@ -625,6 +625,45 @@ def test_status_line_only_uses_existing_attributes():
             f"DetectorManager.{attr} nem letezik"
 
 
+def test_cold_start_creates_every_setting():
+    """HIDEGINDITAS: a config collection URES. A rendszernek minden beallitassal
+    egyutt fel kell allnia -- semmi nem varhat kezi mongo parancsra.
+
+    A user minden ujrainditasnal torli a configot, tehat ez a normal eset,
+    nem a kivetel.
+    """
+    import asyncio
+
+    class FakeCollection:
+        def __init__(self): self.docs = {}
+        async def find_one(self, q):
+            d = self.docs.get(q["_id"])
+            return dict(d) if d else None
+        async def insert_one(self, doc): self.docs[doc["_id"]] = dict(doc)
+        async def update_one(self, q, update, upsert=False):
+            doc = self.docs.setdefault(q["_id"], {"_id": q["_id"]})
+            doc.update(update.get("$set", {}))
+            for k in update.get("$unset", {}):
+                doc.pop(k, None)
+
+    coll = FakeCollection()
+    store = C_CFG.ConfigStore(types.SimpleNamespace(config=coll))
+    asyncio.run(store.load())
+
+    for defaults, attr in C_CFG.ConfigStore.DOCS:
+        doc = coll.docs.get(defaults["_id"])
+        assert doc, f"a '{defaults['_id']}' dokumentum nem jott letre hidegindulaskor"
+        hianyzo = [k for k in defaults if k not in doc]
+        assert not hianyzo, f"{defaults['_id']}: hianyzo beallitas {hianyzo}"
+        betoltve = getattr(store, attr)
+        for k, v in defaults.items():
+            assert betoltve[k] == v, f"{defaults['_id']}.{k}: {betoltve[k]!r} != {v!r}"
+
+    # es a startup osszefoglalo se hasaljon el a friss configon
+    from app.main import startup_summary
+    assert startup_summary(store)
+
+
 def test_config_split_moves_your_existing_values():
     """A kozos beallitasok kikerultek a 'detector'-bol egy uj 'market' dokumentumba.
 
@@ -709,11 +748,12 @@ def test_telegram_heartbeat_renders():
     teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
             "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
             "movers": movers, "kozel": det.readiness(),
-            "talalat": ["pump_dump  +1p  57% (4/7)   +5p  71% (5/7)"],
-            "utolso": ["04:02 SKRUSDT      LONG  +1p  -0.31%  +5p  +0.12%"]}
+            "talalat": ["pump_dump    7 jelzes", "  atlag    -0.31%", "  talalat     57%"],
+            "utolso": ["ido   par          tipus irany      +1p",
+                       "04:02 SKRUSDT      pump  LONG    -0.31%"]}
     szoveg = format_status(teli)
-    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57% (4/7)",
-                 "TALALATI ARANY", "UTOLSO JELZESEK", "-0.31%"):
+    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57%",
+                 "OSSZESITES", "UTOLSO JELZESEK", "-0.31%", "atlag"):
         assert kell in szoveg, (kell, szoveg)
     assert "Meg nincs lemert jelzes" not in szoveg
 
@@ -749,13 +789,19 @@ def test_outcome_records_what_happened_after_the_signal():
     assert o.varolista == [], "a lejart merespont kikerult a sorbol"
 
     talalat = o.summary_lines()
-    assert any("pump_dump" in x and "100% (1/1)" in x for x in talalat), talalat
-    assert any("reversal" in x and "0% (0/1)" in x for x in talalat), talalat
+    szoveg = "\n".join(talalat)
+    assert "pump_dump" in szoveg and "reversal" in szoveg, talalat
+    assert "atlag" in szoveg and "talalat" in szoveg, talalat
+    assert "+1.00%" in szoveg and "-1.00%" in szoveg, "iranyhelyes atlag"
+    assert "100%" in szoveg and "0%" in szoveg, "talalati arany"
 
     utolso = o.recent_lines()
-    assert len(utolso) == 2, utolso
-    assert any("AUSDT" in x and "LONG" in x and "+1p  +1.00%" in x for x in utolso), utolso
-    assert any("BUSDT" in x and "SHORT" in x and "+1p  -1.00%" in x for x in utolso), utolso
+    assert len(utolso) == 3, "fejlec + 2 jelzes"
+    assert utolso[0].startswith("ido") and "+1p" in utolso[0], utolso[0]
+    assert any("AUSDT" in x and "pump" in x and "LONG" in x and "+1.00%" in x
+               for x in utolso[1:]), utolso
+    assert any("BUSDT" in x and "rev" in x and "SHORT" in x and "-1.00%" in x
+               for x in utolso[1:]), utolso
 
     # amirol nem erkezik kotes, arrol nem talalunk ki adatot
     o2 = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals()))

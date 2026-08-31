@@ -60,17 +60,24 @@ pumpot, a dumpot és a fordulót, és megmondja, miből gondolja.
 
 ## Konfiguráció
 
-Minden a MongoDB `config` collectionben, öt dokumentumban: `market` (közös: melyik
-párokat figyeljük egyáltalán), `detector` (pump/dump), `reversal`, `trading`, `telegram`. Első indulásnál a defaultok bekerülnek, utána **a DB az igazság** — menet
-közbeni módosítás 30 mp-en belül életbe lép, újraindítás nélkül.
+Az alapértékek `app/config.py`-ban, a MongoDB `config` collection ezek másolata,
+öt dokumentumban: `market` (közös: melyik
+párokat figyeljük egyáltalán), `detector` (pump/dump), `reversal`, `trading`, `telegram`. Induláskor a defaultok bekerülnek (hidegindítással is teljesen), és a futó rendszer
+30 mp-enként újratölti őket a DB-ből.
 
 Az API kulcsok környezeti változóban maradnak, nem a DB-ben.
 
-```js
-// pl. érzékenyebb detektor, tesztre (részletek: docs/PARAMETEREK.md)
-db.config.updateOne({_id: "detector"}, {$set: {baselineRatio: 4.0, minMovePct: 0.2}})
-// auto trading bekapcsolása (előbb testneten!)
-db.config.updateOne({_id: "trading"}, {$set: {autoTradingEnabled: true}})
+**A hangolás a kódban történik**, nem a DB-ben: az érték `app/config.py`-ban, utána
+`docker compose up -d --build`. A `config` collection bármikor törölhető — induláskor
+minden beállítás újra létrejön (`test_cold_start_creates_every_setting` őrzi).
+Soha ne adj a felhasználónak `db.config.updateOne` parancsot: minden indulásnál törli
+a configot, tehát a DB-be írt érték elveszne.
+
+```python
+# app/config.py -- pl. erzekenyebb detektor tesztre (reszletek: docs/PARAMETEREK.md)
+"baselineRatio": 4.0,
+"minMovePct": 0.20,
+"autoTradingEnabled": True,     # TRADING_DEFAULTS, elobb testneten!
 ```
 
 ## Collectionök

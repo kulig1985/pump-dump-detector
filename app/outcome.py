@@ -88,39 +88,55 @@ class OutcomeTracker:
     def _percek(self):
         return sorted(self.cfg.market["outcomeMinutes"])
 
+    def _fejlec(self, bal):
+        """Oszlopfejlec: a bal oldali resz + egy oszlop merespontonkent."""
+        return bal + "".join(f"{'+' + str(p) + 'p':>8}" for p in self._percek())
+
     def recent_lines(self, n=5):
-        """Az utolso n jelzes: mi tortent VOLNA, ha beszallsz. Legfrissebb elol."""
+        """Az utolso n jelzes TABLAZATBAN: mit jelzett, mikor, es merre indult az ar.
+
+        Elso sor a fejlec, legfrissebb jelzes elol. A tipus is latszik, hogy a
+        pump/dump es a fordulo jelzesek kulon ertelmezhetok legyenek.
+        """
         kesz = [j for j in self.jelzesek.values() if j["m"]]
-        sorok = []
+        if not kesz:
+            return []
+        sorok = [self._fejlec(f"{'ido':<6}{'par':<13}{'tipus':<6}{'irany':<6}")]
         for j in sorted(kesz, key=lambda x: -x["ts"])[:n]:
-            reszek = []
+            tipus = "pump" if j["detector"] == "pump_dump" else "rev"
+            sor = (f"{time.strftime('%H:%M', time.gmtime(j['ts'])):<6}"
+                   f"{pad(j['symbol'], 13)}{pad(tipus, 6)}{pad(j['direction'], 6)}")
             for perc in self._percek():
                 v = j["m"].get(perc)
-                reszek.append(f"+{perc}p {v:+6.2f}%" if v is not None else f"+{perc}p    ...")
-            sorok.append(f"{time.strftime('%H:%M', time.gmtime(j['ts']))} "
-                         f"{pad(j['symbol'], 12)} {pad(j['direction'], 5)} "
-                         + "  ".join(reszek))
+                sor += f"{v:>+7.2f}%" if v is not None else f"{'...':>8}"
+            sorok.append(sor)
         return sorok
 
     def summary_lines(self):
-        """Talalati arany: LONG utan felfele ment-e, SHORT utan lefele.
+        """Osszesites detektoronkent: ATLAG valtozas es talalati arany.
 
-        Detektoronkent es merespontonkent: hany szazalekban ment a jelzes iranyaba.
+        Iranyhelyesen: pozitiv = LONG utan felfele ment az ar, vagy SHORT utan
+        lefele. A talalat az, hogy a jelzesek hany szazaleka ilyen.
         """
         percek = self._percek()
         detektorok = sorted({j["detector"] for j in self.jelzesek.values() if j["m"]})
-        sorok = []
+        if not detektorok:
+            return []
+        sorok = [self._fejlec(" " * 18)]
         for det in detektorok:
-            reszek = []
+            sajat = [j for j in self.jelzesek.values() if j["detector"] == det and j["m"]]
+            sorok.append(f"{pad(det, 11)}{len(sajat):>3} jelzes")
+            atlag, talalat = pad("  atlag", 18), pad("  talalat", 18)
             for perc in percek:
-                ertekek = [j["m"][perc] for j in self.jelzesek.values()
-                           if j["detector"] == det and perc in j["m"]]
-                if not ertekek:
-                    continue
-                jo = sum(1 for v in ertekek if v > 0)
-                reszek.append(f"+{perc}p {jo / len(ertekek) * 100:>3.0f}% ({jo}/{len(ertekek)})")
-            if reszek:
-                sorok.append(f"{pad(det, 10)} " + "   ".join(reszek))
+                ertekek = [j["m"][perc] for j in sajat if perc in j["m"]]
+                if ertekek:
+                    jo = sum(1 for v in ertekek if v > 0)
+                    atlag += f"{sum(ertekek) / len(ertekek):>+7.2f}%"
+                    talalat += f"{jo / len(ertekek) * 100:>7.0f}%"
+                else:
+                    atlag += f"{'...':>8}"
+                    talalat += f"{'...':>8}"
+            sorok += [atlag, talalat]
         return sorok
 
     def status_lines(self):
@@ -128,7 +144,7 @@ class OutcomeTracker:
         osszes = self.summary_lines()
         if not osszes:
             return []
-        return (["TALALATI ARANY (a jelzes iranyaba ment-e az ar)"]
+        return (["OSSZESITES  (+ = a jelzes iranyaba ment az ar)"]
                 + [f"  {x}" for x in osszes]
                 + ["UTOLSO JELZESEK"]
                 + [f"  {x}" for x in self.recent_lines()])

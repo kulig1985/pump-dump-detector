@@ -245,7 +245,7 @@ Nyugodt piacon órákig nem jön jelzés. Ideiglenesen vedd le a küszöböt:
 
 ```bash
 docker compose exec mongo mongosh pumpdump --eval \
-  'db.config.updateOne({_id:"detector"},{$set:{priceChangeThreshold1s:0.05}})'
+  'app/config.py -> DETECTOR_DEFAULTS, majd docker compose up -d --build'
 ```
 
 Percen belül jönnie kell triggernek. A config 30 másodpercen belül magától újratöltődik,
@@ -339,7 +339,7 @@ REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 |---|---|
 | `TimeoutError` a `rest` loggerben | a Binance API nem érhető el a hálózatodról (tűzfal, régiókorlát) |
 | a detector csendben áll, nincs `MongoDB kapcsolat kesz` sor | nem éri el a Mongo-t — lásd a 3/a pont `bindIp` részét |
-| `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. Vagy közvetlenül: `db.config.updateOne({_id:"telegram"},{$set:{botToken:"...",chatId:"..."}})` |
+| `hianyzik a Telegram token vagy chatId` | töltsd ki a `.env`-et és `docker compose up -d --force-recreate` — az üres DB-értéket felülírja az env. |
 | nincs jelzés órák óta | normális nyugodt piacon — a `MI TORTENIK MOST` tábla `mi van vele` oszlopa megmondja, mennyi hiányzik a jelzéshez. Ha tartósan „alig mozdul", vedd lejjebb a küszöböt |
 | `EGY symbol sem felel meg a ... forgalmi kuszobnek` | vedd lejjebb a `minQuoteVolume24h` értéket |
 | kevés symbolt figyel | a `Legnagyobb / legkisebb bevalasztott` log sor mutatja, hol húz a szűrő |
