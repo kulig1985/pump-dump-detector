@@ -748,7 +748,8 @@ def test_telegram_heartbeat_renders():
     teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
             "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
             "movers": movers, "kozel": det.readiness(),
-            "talalat": ["pump_dump    7 jelzes", "  atlag    -0.31%", "  talalat     57%"],
+            "talalat": ["tipus   ido   db    atlag  talalat",
+                        "pump    +1p    7   -0.31%      57%"],
             "utolso": ["ido   par          tipus irany      +1p",
                        "04:02 SKRUSDT      pump  LONG    -0.31%"]}
     szoveg = format_status(teli)
@@ -814,11 +815,10 @@ def test_outcome_records_what_happened_after_the_signal():
     assert o.varolista == [], "a lejart merespont kikerult a sorbol"
 
     talalat = o.summary_lines()
-    szoveg = "\n".join(talalat)
-    assert "pump_dump" in szoveg and "reversal" in szoveg, talalat
-    assert "atlag" in szoveg and "talalat" in szoveg, talalat
-    assert "+1.00%" in szoveg and "-1.00%" in szoveg, "iranyhelyes atlag"
-    assert "100%" in szoveg and "0%" in szoveg, "talalati arany"
+    assert talalat[0].split() == ["tipus", "ido", "db", "atlag", "talalat"], talalat[0]
+    sorok = {x.split()[0] + x.split()[1]: x.split() for x in talalat[1:]}
+    assert sorok["pump+1p"][2:] == ["1", "+1.00%", "100%"], sorok["pump+1p"]
+    assert sorok["rev+1p"][2:] == ["1", "-1.00%", "0%"], sorok["rev+1p"]
 
     utolso = o.recent_lines()
     assert len(utolso) == 3, "fejlec + 2 jelzes"

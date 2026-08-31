@@ -380,13 +380,13 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > 04:29 ZKCUSDT      rev   LONG    +0.59%  +1.15%  +1.75%
 >
 > OSSZESITES  (+ = a jelzes iranyaba ment)
->                        +1p     +5p    +15p
-> pump_dump   13 jelzes
->   atlag             -0.31%  -0.40%  +0.02%
->   talalat              23%     46%     54%
-> reversal     4 jelzes
->   atlag             +0.59%  +1.15%  +1.75%
->   talalat              75%     75%     75%
+> tipus   ido   db    atlag  talalat
+> pump    +1p   13   -0.31%      23%
+> pump    +5p   13   -0.40%      46%
+> pump   +15p   13   +0.02%      54%
+> rev     +1p    4   +0.59%      75%
+> rev     +5p    4   +1.15%      75%
+> rev    +15p    4   +1.75%      75%
 > ```
 > A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
 > küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
@@ -474,10 +474,10 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
    spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
    normal kesz: 58/60 par | legkozelebb: SKRUSDT 0.283% (kell 0.80%, normalja 0.038%)
    OSSZESITES  (+ = a jelzes iranyaba ment az ar)
-                            +1p     +5p    +15p
-     pump_dump   13 jelzes
-       atlag             -0.31%  -0.40%  +0.02%
-       talalat              23%     46%     54%
+     tipus   ido   db    atlag  talalat
+     pump    +1p   13   -0.31%      23%
+     pump    +5p   13   -0.40%      46%
+     pump   +15p   13   +0.02%      54%
    UTOLSO JELZESEK
      ido   par          tipus irany      +1p     +5p    +15p
      04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
@@ -487,10 +487,11 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
 - **`legkozelebb`** — a mezőny legjobbja épp mennyire van a küszöbtől. Ha itt tartósan
   0.05%-os mozgások vannak 0.50% mellett, akkor a piac áll — nem a beállítás rossz.
 - **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
-- **`OSSZESITES`** — detektoronként (`pump_dump` / `reversal`) két sor: az **átlagos**
-  változás és a **találati arány** mérési pontonként. Irányhelyesen: `+` = LONG után
-  felfelé ment az ár, vagy SHORT után lefelé. `talalat 54%` = a lemért jelzések
-  54%-a ment jó irányba.
+- **`OSSZESITES`** — táblázat, soronként egy típus és egy mérési pont:
+  `db` = hány jelzés van lemérve addig a pontig, `atlag` = az átlagos változás,
+  `talalat` = hány százalékuk ment jó irányba. Irányhelyesen: `+` = LONG után
+  felfelé ment az ár, vagy SHORT után lefelé. `...` = még nincs lemért jelzés
+  arra a pontra.
 - **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
   `rev`), milyen irányba jelzett, és merre indult el az ár. **Típusonként** az
   utolsó `statusRecentSignals` darab (alapon 3 pump és 3 forduló), időrendben.

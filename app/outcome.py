@@ -118,30 +118,28 @@ class OutcomeTracker:
         return sorok
 
     def summary_lines(self):
-        """Osszesites detektoronkent: ATLAG valtozas es talalati arany.
+        """Osszesites TABLAZATBAN: soronkent egy tipus + egy merespont.
 
         Iranyhelyesen: pozitiv = LONG utan felfele ment az ar, vagy SHORT utan
         lefele. A talalat az, hogy a jelzesek hany szazaleka ilyen.
         """
-        percek = self._percek()
         detektorok = sorted({j["detector"] for j in self.jelzesek.values() if j["m"]})
         if not detektorok:
             return []
-        sorok = [self._fejlec(" " * 18)]
+        sorok = [f"{'tipus':<6}{'ido':>5}{'db':>5}{'atlag':>9}{'talalat':>9}"]
         for det in detektorok:
+            tipus = "pump" if det == "pump_dump" else "rev"
             sajat = [j for j in self.jelzesek.values() if j["detector"] == det and j["m"]]
-            sorok.append(f"{pad(det, 11)}{len(sajat):>3} jelzes")
-            atlag, talalat = pad("  atlag", 18), pad("  talalat", 18)
-            for perc in percek:
+            for perc in self._percek():
                 ertekek = [j["m"][perc] for j in sajat if perc in j["m"]]
+                sor = f"{tipus:<6}{'+' + str(perc) + 'p':>5}{len(ertekek):>5}"
                 if ertekek:
                     jo = sum(1 for v in ertekek if v > 0)
-                    atlag += f"{sum(ertekek) / len(ertekek):>+7.2f}%"
-                    talalat += f"{jo / len(ertekek) * 100:>7.0f}%"
+                    sor += (f"{sum(ertekek) / len(ertekek):>+8.2f}%"
+                            f"{jo / len(ertekek) * 100:>8.0f}%")
                 else:
-                    atlag += f"{'...':>8}"
-                    talalat += f"{'...':>8}"
-            sorok += [atlag, talalat]
+                    sor += f"{'...':>9}{'...':>9}"
+                sorok.append(sor)
         return sorok
 
     def status_lines(self):
