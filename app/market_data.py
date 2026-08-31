@@ -299,7 +299,6 @@ class MarketDataService:
             "movers": pump.top_movers() if pump else [],
             "kozel": pump.readiness() if pump else "",
             "talalat": self.outcome.summary_lines() if self.outcome else [],
-            "paronkent": self.outcome.per_symbol_lines() if self.outcome else [],
             "utolso": self.outcome.recent_lines(
                 self.cfg.telegram.get("statusRecentSignals", 3)) if self.outcome else [],
         }

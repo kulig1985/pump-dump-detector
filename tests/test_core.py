@@ -750,41 +750,13 @@ def test_telegram_heartbeat_renders():
             "movers": movers, "kozel": det.readiness(),
             "talalat": ["tipus   ido   db    atlag  talalat",
                         "pump    +1p    7   -0.31%      57%"],
-            "paronkent": ["par          tipus   db       +1p",
-                          "SKRUSDT      pump     3    -0.38%"],
             "utolso": ["ido   par          tipus irany      +1p",
                        "04:02 SKRUSDT      pump  LONG    -0.31%"]}
     szoveg = format_status(teli)
     for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57%", "OSSZESITES",
-                 "UTOLSO JELZESEK", "-0.31%", "atlag", "PARONKENT", "-0.38%"):
+                 "UTOLSO JELZESEK", "-0.31%", "atlag"):
         assert kell in szoveg, (kell, szoveg)
     assert "Meg nincs lemert jelzes" not in szoveg
-
-
-def test_per_symbol_table_shows_which_pairs_deliver():
-    """Paronkenti bontas: a tipusonkenti atlag elfedi, hogy egy-ket par viszi
-    az egeszet."""
-    import types as _t
-    from app.outcome import OutcomeTracker
-    cfg = _t.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1, 5]})
-    o = OutcomeTracker(cfg, None)
-    minta = [("SKRUSDT", "pump_dump", {1: -1.0, 5: -2.0}),
-             ("SKRUSDT", "pump_dump", {1: +0.4, 5: +1.0}),
-             ("ZKCUSDT", "reversal", {1: +0.6, 5: +1.2}),
-             ("SKRUSDT", "reversal", {1: +0.2, 5: +0.4})]
-    for i, (sym, det, m) in enumerate(minta):
-        o.jelzesek[f"id{i}"] = {"ts": 1000.0 + i, "symbol": sym, "detector": det,
-                                "direction": "LONG", "price": 100.0, "m": m}
-    sorok = o.per_symbol_lines()
-    assert sorok[0].startswith("par") and "+1p" in sorok[0], sorok[0]
-    torzs = sorok[1:]
-    # ugyanaz a par ket detektornal KULON sor
-    assert len(torzs) == 3, torzs
-    pump_skr = next(x for x in torzs if "SKRUSDT" in x and "pump" in x)
-    assert pump_skr.split()[2] == "2", pump_skr
-    assert "-0.30%" in pump_skr, f"a ket pump jelzes atlaga +1p-nel: {pump_skr}"
-    assert any("SKRUSDT" in x and " rev " in x for x in torzs), torzs
-    assert any("ZKCUSDT" in x for x in torzs), torzs
 
 
 def test_recent_table_shows_three_of_each_type():

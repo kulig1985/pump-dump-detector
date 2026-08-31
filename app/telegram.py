@@ -145,14 +145,11 @@ def format_status(info):
 
     meres = ""
     if info.get("utolso"):
-        meres += ("\nUTOLSO JELZESEK  (merre indult el az ar -- tipusonkent az utolso par)\n"
+        meres += ("\nUTOLSO JELZESEK  (tipusonkent az utolso 3, merre indult el az ar)\n"
                   + "\n".join(esc(x) for x in info["utolso"]))
     if info.get("talalat"):
         meres += ("\n\nOSSZESITES  (+ = a jelzes iranyaba ment)\n"
                   + "\n".join(esc(x) for x in info["talalat"]))
-    if info.get("paronkent"):
-        meres += ("\n\nPARONKENT  (melyik paron mit hoztak)\n"
-                  + "\n".join(esc(x) for x in info["paronkent"]))
     if meres:
         veg += f"\n\n<pre>{meres.strip()}</pre>"
     else:
