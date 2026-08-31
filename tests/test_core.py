@@ -748,46 +748,45 @@ def test_telegram_heartbeat_renders():
     teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
             "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
             "movers": movers, "kozel": det.readiness(),
-            "talalat": ["tipus   ido   db    atlag  talalat",
-                        "pump    +1p    7   -0.31%      57%"],
-            "utolso": ["ido   par          tipus irany      +1p",
-                       "04:02 SKRUSDT      pump  LONG    -0.31%"]}
+            "talalat": ["tipus    ido   nyero   buko   arany",
+                        "pump     +1p       4      3     57%"],
+            "utolso": ["UTOLSO 3 PUMP/DUMP JELZES",
+                       "SKRUSDT     LONG  04:02   jelzes aron 100.00",
+                       "   + 1 perc   ar 99.69        -0.31%"]}
     szoveg = format_status(teli)
-    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57%", "OSSZESITES",
-                 "UTOLSO JELZESEK", "-0.31%", "atlag"):
+    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57%", "nyero",
+                 "UTOLSO 3 PUMP/DUMP JELZES", "-0.31%", "jelzes aron"):
         assert kell in szoveg, (kell, szoveg)
     assert "Meg nincs lemert jelzes" not in szoveg
 
 
-def test_recent_table_shows_three_of_each_type():
+def test_recent_shows_three_of_each_type():
     """Tipusonkent az utolso n jelzes -- kulonben egy sokat jelzo detektor
-    kiszoritana a masikat a listarol."""
+    kiszoritana a masikat."""
     import types as _t
     from app.outcome import OutcomeTracker
     cfg = _t.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
     o = OutcomeTracker(cfg, None)
-    # 6 pump es 2 reversal, novekvo idoben
     minta = [("P1", "pump_dump"), ("P2", "pump_dump"), ("R1", "reversal"),
              ("P3", "pump_dump"), ("P4", "pump_dump"), ("P5", "pump_dump"),
              ("R2", "reversal"), ("P6", "pump_dump")]
     for i, (sym, det) in enumerate(minta):
         o.jelzesek[sym] = {"ts": 1000.0 + i, "symbol": sym, "detector": det,
-                           "direction": "LONG", "price": 100.0, "m": {1: 0.5}}
-    sorok = o.recent_lines(3)
-    torzs = sorok[1:]
-    assert len(torzs) == 5, "3 pump + a ket letezo reversal"
-    assert sum(1 for x in torzs if " pump " in x) == 3, torzs
-    assert sum(1 for x in torzs if " rev " in x) == 2, torzs
-    assert "P6" in torzs[0] and "P4" in "".join(torzs), "a legfrissebb pumpok"
-    assert not any("P1" in x or "P2" in x for x in torzs), "a regiek kimaradnak"
-    idok = [x[:5] for x in torzs]
-    assert idok == sorted(idok, reverse=True), "idorendben, legfrissebb elol"
+                           "direction": "LONG", "price": 100.0,
+                           "m": {1: {"ar": 100.5, "valt": 0.5, "nyero": True}}}
+    szoveg = "\n".join(o.recent_lines(3))
+    assert "UTOLSO 3 PUMP/DUMP JELZES" in szoveg and "UTOLSO 2 FORDULO JELZES" in szoveg
+    for kell in ("P6", "P5", "P4", "R1", "R2"):
+        assert kell in szoveg, (kell, szoveg)
+    for nem in ("P1", "P2", "P3"):
+        assert nem not in szoveg, (nem, szoveg)
 
 
 def test_outcome_records_what_happened_after_the_signal():
     """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat.
 
-    Elojelhelyesen: pozitiv = a jelzes iranyaba ment az ar, SHORT-nal is.
+    A szazalek a NYERS arvaltozas (fel = +, le = -), a "nyero" mezo mondja meg,
+    hogy ez a jelzes iranyaban jo volt-e. SHORT-nal a leeso ar a nyero.
     """
     import asyncio
     from app.outcome import OutcomeTracker
@@ -803,30 +802,25 @@ def test_outcome_records_what_happened_after_the_signal():
     o.track("id-long", "AUSDT", "pump_dump", "LONG", 100.0)
     o.track("id-short", "BUSDT", "reversal", "SHORT", 100.0)
     for x in o.varolista:
-        x["esedekes"] = 0                      # jarjon le azonnal
-    o.on_trade(Trade("AUSDT", 101.0, 1.0, 0.0, True))   # LONG: +1% -> jo irany
-    o.on_trade(Trade("BUSDT", 101.0, 1.0, 0.0, True))   # SHORT: +1% -> ROSSZ irany
+        x["esedekes"] = 0
+    o.on_trade(Trade("AUSDT", 101.0, 1.0, 0.0, True))    # LONG: felment  -> nyero
+    o.on_trade(Trade("BUSDT", 101.0, 1.0, 0.0, True))    # SHORT: felment -> buko
     asyncio.run(o._kiertekel())
 
-    assert len(coll.updates) == 2, coll.updates
-    ertekek = {q["_id"]: u["$set"]["outcome.m1"]["pct"] for q, u in coll.updates}
-    assert abs(ertekek["id-long"] - 1.0) < 0.01, ertekek
-    assert abs(ertekek["id-short"] + 1.0) < 0.01, "SHORT-nal a foleme a jo irany"
-    assert o.varolista == [], "a lejart merespont kikerult a sorbol"
+    mentett = {q["_id"]: u["$set"]["outcome.m1"] for q, u in coll.updates}
+    assert mentett["id-long"] == {"price": 101.0, "changePct": 1.0, "win": True}
+    assert mentett["id-short"] == {"price": 101.0, "changePct": 1.0, "win": False}, \
+        "SHORT-nal a felfele mozgas buko, de a szazalek marad +1.00%"
 
-    talalat = o.summary_lines()
-    assert talalat[0].split() == ["tipus", "ido", "db", "atlag", "talalat"], talalat[0]
-    sorok = {x.split()[0] + x.split()[1]: x.split() for x in talalat[1:]}
-    assert sorok["pump+1p"][2:] == ["1", "+1.00%", "100%"], sorok["pump+1p"]
-    assert sorok["rev+1p"][2:] == ["1", "-1.00%", "0%"], sorok["rev+1p"]
+    fej, *sorok = o.summary_lines()
+    assert fej.split() == ["tipus", "ido", "nyero", "buko", "arany"], fej
+    ertekek = {x.split()[0]: x.split()[1:] for x in sorok}
+    assert ertekek["pump"] == ["+1p", "1", "0", "100%"], ertekek
+    assert ertekek["rev"] == ["+1p", "0", "1", "0%"], ertekek
 
-    utolso = o.recent_lines()
-    assert len(utolso) == 3, "fejlec + 2 jelzes"
-    assert utolso[0].startswith("ido") and "+1p" in utolso[0], utolso[0]
-    assert any("AUSDT" in x and "pump" in x and "LONG" in x and "+1.00%" in x
-               for x in utolso[1:]), utolso
-    assert any("BUSDT" in x and "rev" in x and "SHORT" in x and "-1.00%" in x
-               for x in utolso[1:]), utolso
+    szoveg = "\n".join(o.recent_lines())
+    assert "AUSDT" in szoveg and "LONG" in szoveg and "jelzes aron 100.00" in szoveg
+    assert "ar 101.00" in szoveg and "+1.00%" in szoveg, szoveg
 
     # amirol nem erkezik kotes, arrol nem talalunk ki adatot
     o2 = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals()))
@@ -834,8 +828,7 @@ def test_outcome_records_what_happened_after_the_signal():
     for x in o2.varolista:
         x["esedekes"] = 0
     asyncio.run(o2._kiertekel())
-    assert o2.status_lines() == [], "nema paron nincs mert eredmeny"
-    assert o2.recent_lines() == [] and o2.summary_lines() == []
+    assert o2.status_lines() == [] and o2.recent_lines() == []
 
 
 def test_live_defaults_are_at_least_as_strict_as_the_test_profile():

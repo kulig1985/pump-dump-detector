@@ -113,14 +113,15 @@ A jelzés **után** ennyi perccel jegyezzük fel, hol áll az ár, és beírjuk 
 signal dokumentumba. **Semmit nem kapuz** — nem backteszt, nem jelző, nem nyit pozíciót.
 Ez az egyetlen módja megtudni, hogy egy forduló vagy egy dump tartós-e.
 > **Példa:** egy LONG jelzés 100.00-nál. 5 perc múlva az ár 100.62 →
-> `outcome.m5 = {price: 100.62, pct: +0.62}`. SHORT jelzésnél az előjel meg van
-> fordítva: **pozitív mindig azt jelenti, hogy a jelzés irányába ment az ár.**
+> `outcome.m5 = {price: 100.62, changePct: +0.62, win: true}`. A `changePct` a nyers
+> árváltozás (felfelé `+`, lefelé `-`), a `win` mondja meg, hogy a jelzés irányában
+> ez nyerő volt-e — SHORT jelzésnél a leeső ár a nyerő.
 > A STATUS blokkban és a Telegram életjelben összegezve is látod (lásd lentebb).
 >
 > Az árat a már futó kötésfolyamból vesszük (utolsó ár páronként) — nulla extra
 > hálózati kérés. Ha egy párról épp nem érkezik kötés, azt a mérést kihagyjuk,
 > nem találunk ki adatot.
-> Lekérdezés: `db.signals.find({"outcome.m5.pct": {$lt: 0}})` — ami rossz irányba ment.
+> Lekérdezés: `db.signals.find({"outcome.m5.win": false})` — ami rossz irányba ment.
 
 ### `statusIntervalSec` — alap: `60`
 Ennyi másodpercenként egy STATUS sor a logba.
@@ -168,8 +169,8 @@ A mozgás a pár normáljának ennyiszerese legyen.
 ### `minMovePct` — alap: `0.80`  ⭐
 Abszolút padló: ennél kisebb mozgás **sosem** jelzés, akármilyen nyugodt a pár.
 Ez véd a hidegindulástól is (amikor a normál még 0.001%, és minden „266×"-nek látszik).
-> **Példa:** BTC normálja 0.012% → a `baselineRatio` csak 0.072%-ot követelne, ami
-> díjjal (oda-vissza 0.10%) veszteséges. A `0.50` padló emiatt van.
+> **Példa:** BTC normálja 0.012% → a `baselineRatio` önmagában csak 0.072%-ot
+> követelne, ami már nem mozgás, csak zaj. A `0.50` padló emiatt van.
 
 ### `maxSingleStepPct` — alap: `35`
 Ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés.
@@ -370,23 +371,22 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > LEGKOZELEBB A JELZESHEZ
 >   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
 >
-> UTOLSO JELZESEK  (+ = JO IRANY: LONG-nal fel, SHORT-nal le ment az ar)
-> ido   par          tipus irany      +1p     +5p    +15p
-> 04:54 XRPUSDT      rev   LONG    +0.12%  -0.30%  +0.44%
-> 04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
-> 04:44 BTCUSDT      pump  SHORT   +0.08%  +0.31%     ...
-> 04:39 ENAUSDT      pump  LONG    -1.54%  -4.67%  -4.77%
-> 04:34 龙虾USDT     pump  SHORT   +0.44%  +0.90%  -0.12%
-> 04:29 ZKCUSDT      rev   LONG    +0.59%  +1.15%  +1.75%
+> NYERO / BUKO JELZESEK
+> tipus    ido   nyero   buko   arany
+> pump     +1p       1      1     50%
+> pump     +5p       1      1     50%
+> pump    +15p       2      0    100%
+> rev      +1p       2      0    100%
 >
-> OSSZESITES  (+ = jo irany, dij nelkul szamolva)
-> tipus   ido   db    atlag  talalat
-> pump    +1p   13   -0.31%      23%
-> pump    +5p   13   -0.40%      46%
-> pump   +15p   13   +0.02%      54%
-> rev     +1p    4   +0.59%      75%
-> rev     +5p    4   +1.15%      75%
-> rev    +15p    4   +1.75%      75%
+> UTOLSO 2 PUMP/DUMP JELZES
+> ZECUSDT     LONG  09:52   jelzes aron 860.34
+>    + 1 perc   ar 855.78        -0.53%
+>    + 5 perc   ar 853.03        -0.85%
+>    +15 perc   ar 861.97        +0.19%
+> BTRUSDT     SHORT 09:42   jelzes aron 0.09123000
+>    + 1 perc   ar 0.09079210    -0.48%
+>    + 5 perc   ar 0.09064613    -0.64%
+>    +15 perc   ar 0.09041805    -0.89%
 > ```
 > A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
 > küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
@@ -449,8 +449,8 @@ Több jelzés kell? Ugyanezek lefelé: `baselineRatio` 4.0, kisebb `minMovePct`,
 db.signals.aggregate([
   {$match: {"outcome.m5": {$exists: true}}},
   {$group: {_id: "$detector", n: {$sum: 1},
-            jo: {$sum: {$cond: [{$gt: ["$outcome.m5.pct", 0]}, 1, 0]}},
-            atlag: {$avg: "$outcome.m5.pct"}}}
+            nyero: {$sum: {$cond: ["$outcome.m5.win", 1, 0]}},
+            atlag: {$avg: "$outcome.m5.changePct"}}}
 ])
 ```
 
@@ -473,31 +473,28 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
    kizarva 2: tul szeles a spread: 2
    spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
    normal kesz: 58/60 par | legkozelebb: SKRUSDT 0.283% (kell 0.80%, normalja 0.038%)
-   OSSZESITES  (+ = jo irany: LONG-nal fel, SHORT-nal le ment az ar)
-     tipus   ido   db    atlag  talalat
-     pump    +1p   13   -0.31%      23%
-     pump    +5p   13   -0.40%      46%
-     pump   +15p   13   +0.02%      54%
-   UTOLSO JELZESEK
-     ido   par          tipus irany      +1p     +5p    +15p
-     04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
+   NYERO / BUKO JELZESEK
+     tipus    ido   nyero   buko   arany
+     pump     +1p       1      1     50%
+     pump     +5p       1      1     50%
+     pump    +15p       2      0    100%
+     UTOLSO 2 PUMP/DUMP JELZES
+     ZECUSDT     LONG  09:52   jelzes aron 860.34
+        + 1 perc   ar 855.78        -0.53%
 ```
 
 - **`normal kesz`** — hány párnak épült már fel a normálja. Amíg nem kész, az a pár nem jelezhet.
 - **`legkozelebb`** — a mezőny legjobbja épp mennyire van a küszöbtől. Ha itt tartósan
   0.05%-os mozgások vannak 0.50% mellett, akkor a piac áll — nem a beállítás rossz.
 - **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
-- **`OSSZESITES`** — táblázat, soronként egy típus és egy mérési pont:
-  `db` = hány jelzés van lemérve addig a pontig, `atlag` = az átlagos változás,
-  `talalat` = hány százalékuk ment jó irányba. **A `+` mindig azt jelenti, hogy jól
-  jártál volna:** LONG jelzésnél felment az ár, SHORT jelzésnél lement. A `-2.75%`
-  egy SHORT jelzésnél azt jelenti, hogy az ár 2.75%-kal **feljebb** ment, tehát bukó.
-  Bruttó számok: a taker díj (oda-vissza ~0.10%) és a tőkeáttét nincs bennük.
-  `...` = még nincs lemért jelzés arra a pontra.
-- **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
-  `rev`), milyen irányba jelzett, és merre indult el az ár. **Típusonként** az
-  utolsó `statusRecentSignals` darab (alapon 3 pump és 3 forduló), időrendben.
-  `...` = az a mérési pont még nem járt le. **Ez az egyetlen visszajelzés arról, hogy a
+- **`NYERO / BUKO JELZESEK`** — kategóriánként (`pump` / `rev`) és mérési pontonként:
+  hány jelzés lett volna nyerő és hány bukó. **Nyerő** = LONG jelzés után feljebb,
+  SHORT jelzés után lejjebb állt az ár.
+- **`UTOLSO ... JELZES`** — típusonként az utolsó `statusRecentSignals` darab
+  (alapon 3 pump és 3 forduló). Jelzésenként: a pár, LONG/SHORT, a jelzés
+  időpontja, a **jelzett árfolyam**, majd mérési pontonként a **tényleges árfolyam**
+  és a **százalékos változás**. A százalék a nyers árváltozás: felfelé `+`,
+  lefelé `-`, függetlenül attól, hogy LONG vagy SHORT volt a jelzés. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

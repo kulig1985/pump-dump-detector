@@ -17,7 +17,7 @@ import time
 import asyncio
 import logging
 
-from .fmt import pad
+from .fmt import pad, price as fprice
 
 log = logging.getLogger("outcome")
 
@@ -75,71 +75,71 @@ class OutcomeTracker:
             ar = self.last_price.get(j["symbol"])
             if not ar:
                 continue            # nem erkezik kotes errol a parrol -- nem talalunk ki adatot
-            valt = (ar - j["price"]) / j["price"] * 100.0
-            if j["direction"] == "SHORT":
-                valt = -valt        # elojelhelyesen: pozitiv = a jelzes iranyaba ment
-            j["m"][x["perc"]] = valt
+            valt = (ar - j["price"]) / j["price"] * 100.0     # NYERS arvaltozas
+            nyero = valt > 0 if j["direction"] == "LONG" else valt < 0
+            j["m"][x["perc"]] = {"ar": ar, "valt": valt, "nyero": nyero}
             await self.db.signals.update_one(
                 {"_id": x["id"]},
-                {"$set": {f"outcome.m{x['perc']}": {"price": ar, "pct": round(valt, 4)}}})
+                {"$set": {f"outcome.m{x['perc']}": {"price": ar,
+                                                    "changePct": round(valt, 4),
+                                                    "win": nyero}}})
 
     # ---------------------------------------------------------------- kijelzes
 
     def _percek(self):
         return sorted(self.cfg.market["outcomeMinutes"])
 
-    def _fejlec(self, bal):
-        """Oszlopfejlec: a bal oldali resz + egy oszlop merespontonkent."""
-        return bal + "".join(f"{'+' + str(p) + 'p':>8}" for p in self._percek())
-
     def recent_lines(self, n=3):
-        """TIPUSONKENT az utolso n jelzes tablazatban: mit jelzett mikor, es merre
-        indult el az ar.
+        """Tipusonkent az utolso n jelzes: mit jelzett, milyen aron, es hol allt
+        az ar 1 / 5 / 15 perccel kesobb -- konkret arral es szazalekos valtozassal.
 
-        Tipusonkent kulon valogatunk, kulonben egy sokat jelzo detektor kiszoritana
-        a masikat a listarol. A tablazat idorendben, a legfrissebb elol.
+        A szazalek a NYERS arvaltozas: felfele + , lefele - , fuggetlenul attol,
+        hogy LONG vagy SHORT volt a jelzes.
         """
-        kesz = []
-        for det in {j["detector"] for j in self.jelzesek.values() if j["m"]}:
+        out = []
+        for det, cim in (("pump_dump", "PUMP/DUMP"), ("reversal", "FORDULO")):
             sajat = [j for j in self.jelzesek.values()
                      if j["detector"] == det and j["m"]]
-            kesz += sorted(sajat, key=lambda x: -x["ts"])[:n]
-        if not kesz:
-            return []
-        sorok = [self._fejlec(f"{'ido':<6}{'par':<13}{'tipus':<6}{'irany':<6}")]
-        for j in sorted(kesz, key=lambda x: -x["ts"]):
-            tipus = "pump" if j["detector"] == "pump_dump" else "rev"
-            sor = (f"{time.strftime('%H:%M', time.gmtime(j['ts'])):<6}"
-                   f"{pad(j['symbol'], 13)}{pad(tipus, 6)}{pad(j['direction'], 6)}")
-            for perc in self._percek():
-                v = j["m"].get(perc)
-                sor += f"{v:>+7.2f}%" if v is not None else f"{'...':>8}"
-            sorok.append(sor)
-        return sorok
+            if not sajat:
+                continue
+            out.append(f"UTOLSO {min(n, len(sajat))} {cim} JELZES")
+            for j in sorted(sajat, key=lambda x: -x["ts"])[:n]:
+                out.append(f"{pad(j['symbol'], 12)}{pad(j['direction'], 6)}"
+                           f"{time.strftime('%H:%M', time.gmtime(j['ts']))}"
+                           f"   jelzes aron {fprice(j['price'])}")
+                for perc in self._percek():
+                    e = j["m"].get(perc)
+                    if e:
+                        out.append(f"   +{perc:>2} perc   ar {pad(fprice(e['ar']), 12)}"
+                                   f"{e['valt']:>+7.2f}%")
+                    else:
+                        out.append(f"   +{perc:>2} perc   meg nincs lemerve")
+            out.append("")
+        return out[:-1] if out else []
 
     def summary_lines(self):
-        """Osszesites TABLAZATBAN: soronkent egy tipus + egy merespont.
+        """Kategoriankent: hany jelzes lett volna NYERO es hany BUKO.
 
-        Iranyhelyesen: pozitiv = LONG utan felfele ment az ar, vagy SHORT utan
-        lefele. A talalat az, hogy a jelzesek hany szazaleka ilyen.
+        Nyero = LONG jelzes utan feljebb, SHORT jelzes utan lejjebb allt az ar.
         """
-        detektorok = sorted({j["detector"] for j in self.jelzesek.values() if j["m"]})
+        detektorok = [d for d in ("pump_dump", "reversal")
+                      if any(j["detector"] == d and j["m"]
+                             for j in self.jelzesek.values())]
         if not detektorok:
             return []
-        sorok = [f"{'tipus':<6}{'ido':>5}{'db':>5}{'atlag':>9}{'talalat':>9}"]
+        sorok = [f"{'tipus':<7}{'ido':>5}{'nyero':>8}{'buko':>7}{'arany':>8}"]
         for det in detektorok:
             tipus = "pump" if det == "pump_dump" else "rev"
-            sajat = [j for j in self.jelzesek.values() if j["detector"] == det and j["m"]]
+            sajat = [j for j in self.jelzesek.values()
+                     if j["detector"] == det and j["m"]]
             for perc in self._percek():
-                ertekek = [j["m"][perc] for j in sajat if perc in j["m"]]
-                sor = f"{tipus:<6}{'+' + str(perc) + 'p':>5}{len(ertekek):>5}"
-                if ertekek:
-                    jo = sum(1 for v in ertekek if v > 0)
-                    sor += (f"{sum(ertekek) / len(ertekek):>+8.2f}%"
-                            f"{jo / len(ertekek) * 100:>8.0f}%")
-                else:
-                    sor += f"{'...':>9}{'...':>9}"
-                sorok.append(sor)
+                merve = [j["m"][perc] for j in sajat if perc in j["m"]]
+                if not merve:
+                    continue
+                nyero = sum(1 for e in merve if e["nyero"])
+                sorok.append(f"{tipus:<7}{'+' + str(perc) + 'p':>5}{nyero:>8}"
+                             f"{len(merve) - nyero:>7}"
+                             f"{nyero / len(merve) * 100:>7.0f}%")
         return sorok
 
     def status_lines(self):
@@ -147,7 +147,5 @@ class OutcomeTracker:
         osszes = self.summary_lines()
         if not osszes:
             return []
-        return (["OSSZESITES  (+ = jo irany: LONG-nal fel, SHORT-nal le ment az ar)"]
-                + [f"  {x}" for x in osszes]
-                + ["UTOLSO JELZESEK"]
+        return (["NYERO / BUKO JELZESEK"] + [f"  {x}" for x in osszes]
                 + [f"  {x}" for x in self.recent_lines()])
