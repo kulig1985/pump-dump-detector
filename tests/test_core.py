@@ -758,6 +758,31 @@ def test_telegram_heartbeat_renders():
     assert "Meg nincs lemert jelzes" not in szoveg
 
 
+def test_recent_table_shows_three_of_each_type():
+    """Tipusonkent az utolso n jelzes -- kulonben egy sokat jelzo detektor
+    kiszoritana a masikat a listarol."""
+    import types as _t
+    from app.outcome import OutcomeTracker
+    cfg = _t.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
+    o = OutcomeTracker(cfg, None)
+    # 6 pump es 2 reversal, novekvo idoben
+    minta = [("P1", "pump_dump"), ("P2", "pump_dump"), ("R1", "reversal"),
+             ("P3", "pump_dump"), ("P4", "pump_dump"), ("P5", "pump_dump"),
+             ("R2", "reversal"), ("P6", "pump_dump")]
+    for i, (sym, det) in enumerate(minta):
+        o.jelzesek[sym] = {"ts": 1000.0 + i, "symbol": sym, "detector": det,
+                           "direction": "LONG", "price": 100.0, "m": {1: 0.5}}
+    sorok = o.recent_lines(3)
+    torzs = sorok[1:]
+    assert len(torzs) == 5, "3 pump + a ket letezo reversal"
+    assert sum(1 for x in torzs if " pump " in x) == 3, torzs
+    assert sum(1 for x in torzs if " rev " in x) == 2, torzs
+    assert "P6" in torzs[0] and "P4" in "".join(torzs), "a legfrissebb pumpok"
+    assert not any("P1" in x or "P2" in x for x in torzs), "a regiek kimaradnak"
+    idok = [x[:5] for x in torzs]
+    assert idok == sorted(idok, reverse=True), "idorendben, legfrissebb elol"
+
+
 def test_outcome_records_what_happened_after_the_signal():
     """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat.
 

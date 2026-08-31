@@ -300,7 +300,7 @@ class MarketDataService:
             "kozel": pump.readiness() if pump else "",
             "talalat": self.outcome.summary_lines() if self.outcome else [],
             "utolso": self.outcome.recent_lines(
-                self.cfg.telegram.get("statusRecentSignals", 5)) if self.outcome else [],
+                self.cfg.telegram.get("statusRecentSignals", 3)) if self.outcome else [],
         }
 
     @staticmethod

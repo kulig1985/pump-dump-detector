@@ -145,7 +145,7 @@ def format_status(info):
 
     meres = ""
     if info.get("utolso"):
-        meres += ("\nUTOLSO JELZESEK  (merre indult el az ar)\n"
+        meres += ("\nUTOLSO JELZESEK  (merre indult el az ar -- tipusonkent az utolso par)\n"
                   + "\n".join(esc(x) for x in info["utolso"]))
     if info.get("talalat"):
         meres += ("\n\nOSSZESITES  (+ = a jelzes iranyaba ment)\n"

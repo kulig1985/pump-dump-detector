@@ -370,11 +370,14 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > LEGKOZELEBB A JELZESHEZ
 >   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
 >
-> UTOLSO JELZESEK  (merre indult el az ar)
+> UTOLSO JELZESEK  (merre indult el az ar -- tipusonkent 3)
 > ido   par          tipus irany      +1p     +5p    +15p
+> 04:54 XRPUSDT      rev   LONG    +0.12%  -0.30%  +0.44%
 > 04:49 SOLUSDT      rev   SHORT   +0.98%  +2.24%  +5.49%
 > 04:44 BTCUSDT      pump  SHORT   +0.08%  +0.31%     ...
 > 04:39 ENAUSDT      pump  LONG    -1.54%  -4.67%  -4.77%
+> 04:34 龙虾USDT     pump  SHORT   +0.44%  +0.90%  -0.12%
+> 04:29 ZKCUSDT      rev   LONG    +0.59%  +1.15%  +1.75%
 >
 > OSSZESITES  (+ = a jelzes iranyaba ment)
 >                        +1p     +5p    +15p
@@ -489,8 +492,9 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
   felfelé ment az ár, vagy SHORT után lefelé. `talalat 54%` = a lemért jelzések
   54%-a ment jó irányba.
 - **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
-  `rev`), milyen irányba jelzett, és merre indult el az ár. `...` = az a mérési
-  pont még nem járt le. **Ez az egyetlen visszajelzés arról, hogy a
+  `rev`), milyen irányba jelzett, és merre indult el az ár. **Típusonként** az
+  utolsó `statusRecentSignals` darab (alapon 3 pump és 3 forduló), időrendben.
+  `...` = az a mérési pont még nem járt le. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

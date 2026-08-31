@@ -92,17 +92,22 @@ class OutcomeTracker:
         """Oszlopfejlec: a bal oldali resz + egy oszlop merespontonkent."""
         return bal + "".join(f"{'+' + str(p) + 'p':>8}" for p in self._percek())
 
-    def recent_lines(self, n=5):
-        """Az utolso n jelzes TABLAZATBAN: mit jelzett, mikor, es merre indult az ar.
+    def recent_lines(self, n=3):
+        """TIPUSONKENT az utolso n jelzes tablazatban: mit jelzett mikor, es merre
+        indult el az ar.
 
-        Elso sor a fejlec, legfrissebb jelzes elol. A tipus is latszik, hogy a
-        pump/dump es a fordulo jelzesek kulon ertelmezhetok legyenek.
+        Tipusonkent kulon valogatunk, kulonben egy sokat jelzo detektor kiszoritana
+        a masikat a listarol. A tablazat idorendben, a legfrissebb elol.
         """
-        kesz = [j for j in self.jelzesek.values() if j["m"]]
+        kesz = []
+        for det in {j["detector"] for j in self.jelzesek.values() if j["m"]}:
+            sajat = [j for j in self.jelzesek.values()
+                     if j["detector"] == det and j["m"]]
+            kesz += sorted(sajat, key=lambda x: -x["ts"])[:n]
         if not kesz:
             return []
         sorok = [self._fejlec(f"{'ido':<6}{'par':<13}{'tipus':<6}{'irany':<6}")]
-        for j in sorted(kesz, key=lambda x: -x["ts"])[:n]:
+        for j in sorted(kesz, key=lambda x: -x["ts"]):
             tipus = "pump" if j["detector"] == "pump_dump" else "rev"
             sor = (f"{time.strftime('%H:%M', time.gmtime(j['ts'])):<6}"
                    f"{pad(j['symbol'], 13)}{pad(tipus, 6)}{pad(j['direction'], 6)}")
