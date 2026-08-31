@@ -387,6 +387,12 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > rev     +1p    4   +0.59%      75%
 > rev     +5p    4   +1.15%      75%
 > rev    +15p    4   +1.75%      75%
+>
+> PARONKENT  (melyik paron mit hoztak)
+> par          tipus   db       +1p     +5p    +15p
+> SKRUSDT      pump     3    -0.38%  -0.22%  -0.19%
+> ZKCUSDT      rev      2    +0.35%  +0.42%  +1.09%
+> ENAUSDT      pump     1    -1.54%  -4.67%  -4.77%
 > ```
 > A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
 > küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
@@ -492,6 +498,9 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
   `talalat` = hány százalékuk ment jó irányba. Irányhelyesen: `+` = LONG után
   felfelé ment az ár, vagy SHORT után lefelé. `...` = még nincs lemért jelzés
   arra a pontra.
+- **`PARONKENT`** — ugyanez páronként lebontva, mert a típusonkénti átlag elfedi,
+  ha egy-két pár viszi az egészet. Ugyanaz a pár két detektornál külön sor. A
+  legtöbb jelzést adó párok elöl, legfeljebb 10 sor.
 - **`UTOLSO JELZESEK`** — táblázat: mikor, melyik páron, melyik detektor (`pump` /
   `rev`), milyen irányba jelzett, és merre indult el az ár. **Típusonként** az
   utolsó `statusRecentSignals` darab (alapon 3 pump és 3 forduló), időrendben.

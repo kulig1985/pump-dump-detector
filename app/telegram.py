@@ -150,6 +150,9 @@ def format_status(info):
     if info.get("talalat"):
         meres += ("\n\nOSSZESITES  (+ = a jelzes iranyaba ment)\n"
                   + "\n".join(esc(x) for x in info["talalat"]))
+    if info.get("paronkent"):
+        meres += ("\n\nPARONKENT  (melyik paron mit hoztak)\n"
+                  + "\n".join(esc(x) for x in info["paronkent"]))
     if meres:
         veg += f"\n\n<pre>{meres.strip()}</pre>"
     else:

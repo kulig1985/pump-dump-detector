@@ -142,6 +142,34 @@ class OutcomeTracker:
                 sorok.append(sor)
         return sorok
 
+    def per_symbol_lines(self, limit=10):
+        """Paronkent: melyik paron mit hoztak a jelzesek, tipusonkent kulon.
+
+        A tipusonkenti atlag elfedi, hogy egy-ket par viszi az egeszet -- ebbol
+        latszik, melyik paron mukodik es melyiken nem.
+        """
+        csoport = {}
+        for j in self.jelzesek.values():
+            if not j["m"]:
+                continue
+            kulcs = (j["symbol"], j["detector"])
+            csoport.setdefault(kulcs, []).append(j)
+        if not csoport:
+            return []
+        sorok = [self._fejlec(f"{'par':<13}{'tipus':<6}{'db':>4}  ")]
+        rendezett = sorted(csoport.items(), key=lambda x: (-len(x[1]), x[0][0]))
+        for (symbol, det), jelzesek in rendezett[:limit]:
+            tipus = "pump" if det == "pump_dump" else "rev"
+            sor = f"{pad(symbol, 13)}{pad(tipus, 6)}{len(jelzesek):>4}  "
+            for perc in self._percek():
+                ertekek = [j["m"][perc] for j in jelzesek if perc in j["m"]]
+                sor += (f"{sum(ertekek) / len(ertekek):>+7.2f}%" if ertekek
+                        else f"{'...':>8}")
+            sorok.append(sor)
+        if len(rendezett) > limit:
+            sorok.append(f"... es meg {len(rendezett) - limit} par")
+        return sorok
+
     def status_lines(self):
         """A log STATUS blokkjahoz. Ures, amig nincs lemert jelzes."""
         osszes = self.summary_lines()
@@ -149,5 +177,7 @@ class OutcomeTracker:
             return []
         return (["OSSZESITES  (+ = a jelzes iranyaba ment az ar)"]
                 + [f"  {x}" for x in osszes]
+                + ["PARONKENT"]
+                + [f"  {x}" for x in self.per_symbol_lines()]
                 + ["UTOLSO JELZESEK"]
                 + [f"  {x}" for x in self.recent_lines()])
