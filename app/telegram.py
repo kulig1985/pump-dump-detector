@@ -142,9 +142,16 @@ def format_status(info):
     veg = ""
     if info.get("kozel"):
         veg += f"\n\n<b>LEGKOZELEBB A JELZESHEZ</b>\n  • {esc(info['kozel'])}"
-    if info.get("eredmenyek"):
-        sorok = "\n".join(f"  • {esc(x)}" for x in info["eredmenyek"])
-        veg += f"\n\n<b>MI LETT AZ EDDIGI JELZESEKBOL</b>\n{sorok}"
+
+    meres = ""
+    if info.get("talalat"):
+        meres += ("\nTALALATI ARANY  (a jelzes iranyaba ment-e az ar)\n"
+                  + "\n".join(f"  {esc(x)}" for x in info["talalat"]))
+    if info.get("utolso"):
+        meres += ("\n\nUTOLSO JELZESEK  (mi tortent volna)\n"
+                  + "\n".join(f"  {esc(x)}" for x in info["utolso"]))
+    if meres:
+        veg += f"\n\n<pre>{meres.strip()}</pre>"
     else:
         veg += "\n\n<i>Meg nincs lemert jelzes.</i>"
     return f"{fej}\n\n<pre>{torzs}</pre>{veg}"

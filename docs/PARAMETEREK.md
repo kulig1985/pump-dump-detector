@@ -361,11 +361,20 @@ lett az eddigi jelzésekből. `0` = nincs ilyen üzenet.
 > LEGKOZELEBB A JELZESHEZ
 >   • normal kesz: 56/58 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%, normalja 0.041%)
 >
-> MI LETT AZ EDDIGI JELZESEKBOL
->   • EREDMENY  pump_dump  + 5 perc:   7 merve,  57% jo iranyba, median +0.10%
+> TALALATI ARANY  (a jelzes iranyaba ment-e az ar)
+>   pump_dump  +1p  23% (3/13)   +5p  46% (6/13)   +15p  54% (7/13)
+>   reversal   +1p  75% (3/4)    +5p  75% (3/4)    +15p  75% (3/4)
+>
+> UTOLSO JELZESEK  (mi tortent volna)
+>   04:02 SKRUSDT      LONG   +1p  -0.31%  +5p  +0.12%  +15p  +1.02%
+>   03:57 ZKCUSDT      SHORT  +1p  +0.44%  +5p  +0.90%  +15p  -0.12%
 > ```
 > A `MOST A LEGMOZGEKONYABB` nem a legnagyobb abszolút mozgás, hanem ami a **saját
 > küszöbéhez** legközelebb van — ebből látod, hogy áll a mezőny a jelzéshez képest.
+
+### `statusRecentSignals` — alap: `5`
+Az életjelben ennyi **legutóbbi jelzés** eredménye jelenik meg egyenként.
+> **Példa:** `10` — hosszabb lista, több múltbeli jelzéssel.
 
 ### `botToken` / `chatId`
 A BotFather-től kapott token és a cél chat azonosítója. **Környezeti változóból**
@@ -439,16 +448,22 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
    kizarva 2: tul szeles a spread: 2
    spread   p10 0.004%  p50 0.016%  p90 0.042%   kuszob 0.050%  -> 2 par felette
    normal kesz: 58/60 par | legkozelebb: SKRUSDT 0.283% (kell 0.80%, normalja 0.038%)
-   EREDMENY  pump_dump  + 5 perc:  12 merve,  58% jo iranyba, median +0.12%, legjobb +1.40%, legrosszabb -0.65%
-   EREDMENY  reversal   + 5 perc:   4 merve,  25% jo iranyba, median -0.08%, legjobb +0.30%, legrosszabb -0.90%
+   TALALATI ARANY (a jelzes iranyaba ment-e az ar)
+     pump_dump  +1p  23% (3/13)   +5p  46% (6/13)   +15p  54% (7/13)
+     reversal   +1p  75% (3/4)    +5p  75% (3/4)    +15p  75% (3/4)
+   UTOLSO JELZESEK
+     04:02 SKRUSDT      LONG   +1p  -0.31%  +5p  +0.12%  +15p  +1.02%
 ```
 
 - **`normal kesz`** — hány párnak épült már fel a normálja. Amíg nem kész, az a pár nem jelezhet.
 - **`legkozelebb`** — a mezőny legjobbja épp mennyire van a küszöbtől. Ha itt tartósan
   0.05%-os mozgások vannak 0.50% mellett, akkor a piac áll — nem a beállítás rossz.
 - **`spread` percentilisek** — a küszöb ebből állítható adat alapján, nem vaktában.
-- **`EREDMENY`** — mi lett a kiküldött jelzésekből (`outcomeMinutes`). Csak akkor
-  jelenik meg, ha már van lemért jelzés. **Ez az egyetlen visszajelzés arról, hogy a
+- **`TALALATI ARANY`** — a lemért jelzések hány százalékában ment az ár a jelzés
+  irányába (LONG után fel, SHORT után le), detektoronként és mérési pontonként.
+  `54% (7/13)` = 13 lemért jelzésből 7 ment jó irányba. Csak akkor jelenik meg,
+  ha már van lemért jelzés.
+- **`UTOLSO JELZESEK`** — jelzésenként egy sor: mi történt volna, ha beszállsz. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

@@ -696,7 +696,7 @@ def test_telegram_heartbeat_renders():
 
     ures = {"ido": "14:20:03", "uptime": "0h 1p", "symbols": 0, "wsConnected": 0,
             "wsTotal": 1, "ticksPerMin": 0, "signals": 0, "kizarva": "",
-            "movers": [], "kozel": "", "eredmenyek": []}
+            "movers": [], "kozel": "", "talalat": [], "utolso": []}
     szoveg = format_status(ures)
     assert "ELETJEL" in szoveg and "Meg nincs lemert jelzes" in szoveg
 
@@ -709,9 +709,11 @@ def test_telegram_heartbeat_renders():
     teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
             "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
             "movers": movers, "kozel": det.readiness(),
-            "eredmenyek": ["EREDMENY  pump_dump  + 5 perc:  7 merve,  57% jo iranyba"]}
+            "talalat": ["pump_dump  +1p  57% (4/7)   +5p  71% (5/7)"],
+            "utolso": ["04:02 SKRUSDT      LONG  +1p  -0.31%  +5p  +0.12%"]}
     szoveg = format_status(teli)
-    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57% jo iranyba"):
+    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57% (4/7)",
+                 "TALALATI ARANY", "UTOLSO JELZESEK", "-0.31%"):
         assert kell in szoveg, (kell, szoveg)
     assert "Meg nincs lemert jelzes" not in szoveg
 
@@ -746,8 +748,14 @@ def test_outcome_records_what_happened_after_the_signal():
     assert abs(ertekek["id-short"] + 1.0) < 0.01, "SHORT-nal a foleme a jo irany"
     assert o.varolista == [], "a lejart merespont kikerult a sorbol"
 
-    sorok = o.status_lines()
-    assert any("pump_dump" in x and "jo iranyba" in x for x in sorok), sorok
+    talalat = o.summary_lines()
+    assert any("pump_dump" in x and "100% (1/1)" in x for x in talalat), talalat
+    assert any("reversal" in x and "0% (0/1)" in x for x in talalat), talalat
+
+    utolso = o.recent_lines()
+    assert len(utolso) == 2, utolso
+    assert any("AUSDT" in x and "LONG" in x and "+1p  +1.00%" in x for x in utolso), utolso
+    assert any("BUSDT" in x and "SHORT" in x and "+1p  -1.00%" in x for x in utolso), utolso
 
     # amirol nem erkezik kotes, arrol nem talalunk ki adatot
     o2 = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals()))
@@ -756,6 +764,7 @@ def test_outcome_records_what_happened_after_the_signal():
         x["esedekes"] = 0
     asyncio.run(o2._kiertekel())
     assert o2.status_lines() == [], "nema paron nincs mert eredmeny"
+    assert o2.recent_lines() == [] and o2.summary_lines() == []
 
 
 def test_live_defaults_are_at_least_as_strict_as_the_test_profile():

@@ -298,7 +298,9 @@ class MarketDataService:
             "kizarva": (self.eligibility.summary() or [""])[0],
             "movers": pump.top_movers() if pump else [],
             "kozel": pump.readiness() if pump else "",
-            "eredmenyek": self.outcome.status_lines() if self.outcome else [],
+            "talalat": self.outcome.summary_lines() if self.outcome else [],
+            "utolso": self.outcome.recent_lines(
+                self.cfg.telegram.get("statusRecentSignals", 5)) if self.outcome else [],
         }
 
     @staticmethod
