@@ -161,7 +161,9 @@ class PumpDumpDetector(Detector):
         m = dict(m, heldPct=round(tartott, 4), heldOfMovePct=round(hanyad, 1),
                  confirmSec=c["confirmSec"])
         reasons = [
-            f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s",
+            f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s "
+            f"({fprice(m['startPrice'])} -> {fprice(p['triggerPrice'])}, "
+            f"{c['confirmSec']:.0f} mp-el a jelzes elott)",
             f"{p['arany']:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
             f"{m['trades']} kotes az ablakban, a legnagyobb egyetlen arlepes "
             f"a mozgas {m['singleStepPct']:.0f}%-a",

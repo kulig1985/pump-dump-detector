@@ -490,11 +490,20 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
 - **`NYERO / BUKO JELZESEK`** — kategóriánként (`pump` / `rev`) és mérési pontonként:
   hány jelzés lett volna nyerő és hány bukó. **Nyerő** = LONG jelzés után feljebb,
   SHORT jelzés után lejjebb állt az ár.
+- Az összesítés **indításkor betölti a MongoDB-ből** a korábbi lemért jelzéseket
+  (az utolsó 50-et), tehát újraindítás után sem kezd nulláról.
 - **`UTOLSO ... JELZES`** — típusonként az utolsó `statusRecentSignals` darab
   (alapon 3 pump és 3 forduló). Jelzésenként: a pár, LONG/SHORT, a jelzés
   időpontja, a **jelzett árfolyam**, majd mérési pontonként a **tényleges árfolyam**
   és a **százalékos változás**. A százalék a nyers árváltozás: felfelé `+`,
-  lefelé `-`, függetlenül attól, hogy LONG vagy SHORT volt a jelzés. **Ez az egyetlen visszajelzés arról, hogy a
+  lefelé `-`, függetlenül attól, hogy LONG vagy SHORT volt a jelzés. A nem mai
+  jelzéseknél a dátum is kiíródik (`09-01 06:56`).
+
+> **A jelzés ára a megerősítés pillanatáé, nem a mozgásé.** A mozgás
+> `confirmSec` másodperccel korábban történt — ezért a jelzés indoklása kiírja a
+> mozgás tényleges árait is: `move -1.22% / 2.0s (0.21366 -> 0.21151, 60 mp-el a
+> jelzes elott)`. Ha a charton a jelzés időpontjánál keresed a mozgást, egy
+> perccel elcsúszol. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

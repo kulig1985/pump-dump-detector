@@ -838,6 +838,48 @@ def test_telegram_heartbeat_renders():
     assert "Meg nincs lemert jelzes" not in szoveg
 
 
+def test_outcome_history_is_loaded_at_startup():
+    """Az osszesites ne nullazodjon minden ujrainditasnal -- kulonben epp akkor
+    mutat mast, amikor eldontened, mukodik-e a rendszer."""
+    import asyncio
+    from app.outcome import OutcomeTracker
+
+    class FakeCursor:
+        def __init__(self, docs): self.docs = docs
+        def sort(self, *a): return self
+        def limit(self, n): return self
+        async def to_list(self, length=None): return self.docs
+
+    class FakeSignals:
+        def __init__(self, docs): self.docs = docs
+        def find(self, q): return FakeCursor(self.docs)
+        async def update_one(self, q, u): pass
+
+    import datetime as _dt
+    most = _dt.datetime(2026, 9, 1, 6, 56, tzinfo=_dt.timezone.utc)
+    docs = [
+        {"_id": "a", "timestamp": most, "symbol": "BTRUSDT", "detector": "pump_dump",
+         "direction": "SHORT", "price": 0.21087,
+         "outcome": {"m1": {"price": 0.20508, "changePct": -2.75, "win": True}}},
+        # regi alak: iranyhelyes 'pct', 'win' nelkul
+        {"_id": "b", "timestamp": most, "symbol": "UNIUSDT", "detector": "reversal",
+         "direction": "SHORT", "price": 5.0, "outcome": {"m1": {"price": 5.1, "pct": -2.0}}},
+    ]
+    cfg = types.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
+    o = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals(docs)))
+    asyncio.run(o.load_history())
+
+    assert len(o.jelzesek) == 2, o.jelzesek
+    assert o.jelzesek["a"]["m"][1]["nyero"] is True
+    regi = o.jelzesek["b"]["m"][1]
+    assert regi["nyero"] is False and abs(regi["valt"] - 2.0) < 0.01, \
+        "a regi alaknal a nyers valtozas +2%, ami SHORT-nal buko"
+
+    # a nem mai jelzes datummal jelenik meg
+    szoveg = "\n".join(o.recent_lines())
+    assert "09-01 06:56" in szoveg or "06:56" in szoveg, szoveg
+
+
 def test_recent_shows_three_of_each_type():
     """Tipusonkent az utolso n jelzes -- kulonben egy sokat jelzo detektor
     kiszoritana a masikat."""

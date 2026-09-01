@@ -53,7 +53,43 @@ class OutcomeTracker:
 
     # ---------------------------------------------------------------- kiertekeles
 
+    async def load_history(self):
+        """A korabbi lemert jelzesek betoltese indulaskor.
+
+        Enelkul az osszesites minden ujrainditasnal nullarol kezdodik, es epp
+        akkor mutat mast, amikor eldontened, mukodik-e a rendszer.
+        """
+        try:
+            kurzor = self.db.signals.find(
+                {"outcome": {"$exists": True}}).sort("timestamp", -1).limit(MEMORIA)
+            betoltve = 0
+            for doc in reversed(await kurzor.to_list(length=MEMORIA)):
+                m = {}
+                for kulcs, e in (doc.get("outcome") or {}).items():
+                    if not kulcs.startswith("m") or "price" not in e:
+                        continue
+                    valt = e.get("changePct")
+                    if valt is None:            # regi alak: iranyhelyes szazalek
+                        valt = e.get("pct", 0.0)
+                        if doc["direction"] == "SHORT":
+                            valt = -valt
+                    nyero = e.get("win")
+                    if nyero is None:
+                        nyero = valt > 0 if doc["direction"] == "LONG" else valt < 0
+                    m[int(kulcs[1:])] = {"ar": e["price"], "valt": valt, "nyero": nyero}
+                if m:
+                    self.jelzesek[doc["_id"]] = {
+                        "ts": doc["timestamp"].timestamp(), "symbol": doc["symbol"],
+                        "detector": doc["detector"], "direction": doc["direction"],
+                        "price": doc["price"], "m": m}
+                    betoltve += 1
+            if betoltve:
+                log.info("%d korabbi lemert jelzes betoltve az osszesiteshez", betoltve)
+        except Exception as e:
+            log.warning("a korabbi eredmenyek betoltese nem sikerult: %s", e)
+
     async def run(self):
+        await self.load_history()
         while True:
             await asyncio.sleep(ELLENORZES_SEC)
             try:
@@ -104,9 +140,12 @@ class OutcomeTracker:
                 continue
             out.append(f"UTOLSO {min(n, len(sajat))} {cim} JELZES")
             for j in sorted(sajat, key=lambda x: -x["ts"])[:n]:
+                ma = time.strftime('%Y-%m-%d', time.gmtime())
+                nap = time.strftime('%Y-%m-%d', time.gmtime(j["ts"]))
+                mikor = (time.strftime('%H:%M', time.gmtime(j["ts"])) if nap == ma
+                         else time.strftime('%m-%d %H:%M', time.gmtime(j["ts"])))
                 out.append(f"{pad(j['symbol'], 12)}{pad(j['direction'], 6)}"
-                           f"{time.strftime('%H:%M', time.gmtime(j['ts']))}"
-                           f"   jelzes aron {fprice(j['price'])}")
+                           f"{pad(mikor, 12)}jelzes aron {fprice(j['price'])}")
                 for perc in self._percek():
                     e = j["m"].get(perc)
                     if e:
