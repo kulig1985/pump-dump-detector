@@ -101,6 +101,11 @@ class PumpDumpDetector(Detector):
         self.last_trigger[trade.symbol] = trade.ts
         direction = "LONG" if m["movePct"] > 0 else "SHORT"
 
+        # confirmSec = 0 -> AZONNAL jelzunk, ahogy a mozgas megvan. Nincs varakozas,
+        # nincs utolagos ellenorzes: amit latsz, az a mozgas pillanata.
+        if c["confirmSec"] <= 0:
+            return self._kiad(trade, direction, dict(m), arany, h, hanyad=None)
+
         log.info("MOZGAS     %-14s %-5s ar %.8g  %+.2f%% / %.1fs  normal %.3f%% "
                  "(%.1fx)  -- %.0f mp megerositesre var",
                  trade.symbol, direction, trade.price, m["movePct"], m["spanSec"],
@@ -157,32 +162,43 @@ class PumpDumpDetector(Detector):
             return None                 # tartja magat, de meg nem telt le az ido
         del self.pending[trade.symbol]
 
+        return self._kiad(trade, p["direction"],
+                          dict(m, heldPct=round(tartott, 4),
+                               heldOfMovePct=round(hanyad, 1),
+                               confirmSec=c["confirmSec"]),
+                          p["arany"], p["history"], hanyad=hanyad,
+                          start=p["startPrice"], trigger=p["triggerPrice"])
+
+    def _kiad(self, trade, direction, m, arany, h, hanyad=None,
+              start=None, trigger=None):
+        """A CANDIDATE osszeallitasa -- azonnali es megerositett jelzesnel egyarant."""
+        c = self.cfg.detector
         self.total_candidates += 1
-        m = dict(m, heldPct=round(tartott, 4), heldOfMovePct=round(hanyad, 1),
-                 confirmSec=c["confirmSec"])
+        start = m["startPrice"] if start is None else start
+        trigger = trade.price if trigger is None else trigger
+
         reasons = [
             f"move {m['movePct']:+.2f}% / {m['spanSec']:.1f}s "
-            f"({fprice(m['startPrice'])} -> {fprice(p['triggerPrice'])}, "
-            f"{c['confirmSec']:.0f} mp-el a jelzes elott)",
-            f"{p['arany']:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
+            f"({fprice(start)} -> {fprice(trigger)})",
+            f"{arany:.1f}x a par normaljahoz kepest (normal {m['baseline']:.3f}%)",
             f"{m['trades']} kotes az ablakban, a legnagyobb egyetlen arlepes "
             f"a mozgas {m['singleStepPct']:.0f}%-a",
-            f"a mozgas {hanyad:.0f}%-a VEGIG megvolt {c['confirmSec']:.0f} mp-en at "
-            f"({tartott:+.2f}%)",
         ]
+        if hanyad is not None:
+            reasons.append(f"a mozgas {hanyad:.0f}%-a VEGIG megvolt "
+                           f"{c['confirmSec']:.0f} mp-en at")
         log.info("CANDIDATE  %-14s %-5s ar %.8g  mozgas %+.2f%% / %.1fs  "
-                 "normal %.3f%% (%.1fx)  megtartott %.0f%%",
-                 trade.symbol, p["direction"], trade.price, m["movePct"], m["spanSec"],
-                 m["baseline"], p["arany"], hanyad)
-        events.add(f"{trade.symbol:<14} CANDIDATE {p['direction']:<5} "
-                   f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s, megtartva {hanyad:.0f}%")
+                 "normal %.3f%% (%.1fx)%s",
+                 trade.symbol, direction, trade.price, m["movePct"], m["spanSec"],
+                 m["baseline"], arany,
+                 "" if hanyad is None else f"  megtartott {hanyad:.0f}%")
+        events.add(f"{trade.symbol:<14} CANDIDATE {direction:<5} "
+                   f"{m['movePct']:+.2f}% / {m['spanSec']:.1f}s")
 
         return make_signal(
-            self.name, self.config_key, trade.symbol, p["direction"], trade.price,
-            trade.ts,
-            reasons=reasons,
-            metrics=m,
-            history=p["history"],
+            self.name, self.config_key, trade.symbol, direction, trade.price,
+            trade.ts, reasons=reasons, metrics=m,
+            history=h if isinstance(h, list) else [(t, pr) for t, pr, _ in h],
         )
 
     # ------------------------------------------------------------------ meres

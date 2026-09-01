@@ -123,6 +123,11 @@ class ReversalDetector(Detector):
         self.last_signal[trade.symbol] = trade.ts
         self.setups.pop(trade.symbol, None)
 
+        # confirmSec = 0 -> AZONNAL jelzunk, ahogy az attores megtortent.
+        if c["confirmSec"] <= 0:
+            self.total_signals += 1
+            return self._signal(trade, setup, flow, break_pct, retrace, kor, c, w)
+
         # Az attores meg csak megtortent -- attol meg nem tartja magat. A jelzes
         # confirmSec masodperccel kesobb megy ki, ha az ar addig is a micro szint
         # tuloldalan maradt. A hamis kitores addigra visszaesik.

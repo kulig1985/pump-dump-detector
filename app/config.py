@@ -53,7 +53,10 @@ DETECTOR_DEFAULTS = {
     "baselineRatio": 8.0,              # a mozgas a par normaljanak ennyiszerese legyen
     "minMovePct": 0.80,                # abszolut padlo
     "maxSingleStepPct": 35,            # ennel nagyobb reszt egyetlen arlepes ne adjon
-    "confirmSec": 60.0,                # ennyi ideig VEGIG tartania kell a mozgasnak
+    # 0 = AZONNALI jelzes, ahogy a mozgas megvan. Nagyobb ertek eseten a jelzes
+    # csak akkor megy ki, ha a mozgas ennyi ideig VEGIG tartotta a confirmHoldPct-ot
+    # (ez szurte a kanocokat, de keslelteti a jelzest).
+    "confirmSec": 0.0,
     "confirmHoldPct": 80,              # es a mozgas ennyi szazaleka legyen meg
     "symbolCooldownSec": 900,
 
@@ -92,7 +95,7 @@ REVERSAL_DEFAULTS = {
     # ---- idozites es kotesaramlas ----
     "windowSeconds": 20,
     "maxExtremeAgeSec": 6,
-    "confirmSec": 30.0,                # ennyi ideig VEGIG tartania kell az attoresnek
+    "confirmSec": 0.0,                 # 0 = azonnali jelzes az attoreskor
     "flowWindowSeconds": 3,
     "minFlowRatio": 1.6,
     "minTradesInFlowWindow": 5,

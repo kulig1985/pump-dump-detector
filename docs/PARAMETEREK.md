@@ -179,20 +179,24 @@ Ha a mozgás ennél nagyobb részét **egyetlen árlépés** adta, nem jelzés.
 > látszik, pedig egyetlen lépcső az egész — és az ilyen ár rendszerint visszaesik.
 > `0` = kikapcsolva.
 
-### `confirmSec` — alap: `60.0`  ⭐
-A jelzés **nem** a mozgás pillanatában megy ki. Ennyi ideig **végig** tartania kell
-a mozgásnak — nem egy pillantás a végén, hanem **minden kötésnél** ellenőrizzük.
-Amint visszaesik, azonnal eldobjuk (a határidőt sem várjuk ki).
-> **Példa (valódi eset, ZECUSDT):** a kanóc 15 másodperccel később **még fent volt**,
-> és csak utána csorgott vissza. Egy végponti pillantás ezt átengedte — a folyamatos
-> ellenőrzés + a 60 másodperc kifogja.
-> Cserébe a jelzés egy perccel később ér oda, és elveszíted azokat a valódi
-> mozgásokat, amelyek egy percen belül lefutnak. Ez a szándék: amit ennyi idő alatt
-> visszavernek, azt úgysem tudod kézzel lekereskedni.
+### `confirmSec` — alap: `0.0`  ⭐
+**`0` = a jelzés azonnal megy ki, ahogy a mozgás megvan.** Nincs várakozás, nincs
+utólagos ellenőrzés — amit látsz, az a mozgás pillanata, és a jelzés ára a mozgás
+végén mért ár.
+
+Nagyobb értéknél a jelzés csak akkor megy ki, ha a mozgás ennyi ideig **végig**
+tartotta a `confirmHoldPct`-ot (minden kötésnél ellenőrizve, és amint visszaesik,
+azonnal eldobjuk).
+> **Mit veszítesz `0`-nál:** a kanócokat. Valódi eset (ZECUSDT): egy nagy kötés
+> átsöpörte a könyvet, az ár egy percig fent maradt, aztán visszaesett — `60`-nál
+> ez nem lett volna jelzés, `0`-nál igen.
+> **Mit nyersz:** azonnal látod a mozgást, és nem maradsz le arról, ami egy percen
+> belül lefut. Hogy melyik éri meg, azt az `outcome` mérés mutatja meg utólag.
 
 ### `confirmHoldPct` — alap: `80`
-És a látott mozgás ennyi százaléka legyen meg — **a `confirmSec` teljes ideje alatt,
-végig**. Nem elég, ha a végén épp jó: egy megbicsaklás menet közben is eldobja.
+**Csak akkor számít, ha a `confirmSec` nagyobb nullánál.** A látott mozgás ennyi
+százaléka legyen meg a `confirmSec` teljes ideje alatt, végig. Nem elég, ha a végén
+épp jó: egy megbicsaklás menet közben is eldobja.
 > **Példa:** az ablak eleje 100.00, a jelzés pillanatában 100.30 (a látott mozgás
 > tehát 0.30). A következő 60 másodpercben végig:
 > 100.30 → 100% megvan → **jelzés**
@@ -260,10 +264,10 @@ skálázódik: bolyongásnál az elmozdulás az idő gyökével nő.
 > `0.05 × √(20/2) = 0.158%`, tehát ott `0.158 × 8 = 1.26%` kell. Enélkül egy lassú
 > 20 másodperces kúszás is „rendkívülinek" látszana.
 
-### `confirmSec` — alap: `30.0`  ⭐
-Az áttörés pillanata még nem forduló. Ennyi ideig **végig** a micro szint túloldalán
-kell maradnia az árnak — minden kötésnél ellenőrizzük, és amint visszaesik a szint
-mögé, azonnal eldobjuk.
+### `confirmSec` — alap: `0.0`  ⭐
+**`0` = a jelzés az áttörés pillanatában megy ki.** Nagyobb értéknél az árnak ennyi
+ideig **végig** a micro szint túloldalán kell maradnia — minden kötésnél ellenőrizve,
+és amint visszaesik a szint mögé, azonnal eldobjuk.
 > **Példa:** a micro-high 0.7838, az ár áttöri 0.7845-ig. A következő 30 másodpercben:
 > 0.7850 → tartja → **jelzés**
 > 0.7832 → visszaesett a szint mögé → nincs jelzés, a logban:
@@ -499,11 +503,10 @@ STATUS  60 par | 14,113 tick/60s | konyv: 752 par | 3 candidate, 2 jelzes, 1 kih
   lefelé `-`, függetlenül attól, hogy LONG vagy SHORT volt a jelzés. A nem mai
   jelzéseknél a dátum is kiíródik (`09-01 06:56`).
 
-> **A jelzés ára a megerősítés pillanatáé, nem a mozgásé.** A mozgás
-> `confirmSec` másodperccel korábban történt — ezért a jelzés indoklása kiírja a
-> mozgás tényleges árait is: `move -1.22% / 2.0s (0.21366 -> 0.21151, 60 mp-el a
-> jelzes elott)`. Ha a charton a jelzés időpontjánál keresed a mozgást, egy
-> perccel elcsúszol. **Ez az egyetlen visszajelzés arról, hogy a
+> **A jelzés indoklása kiírja a mozgás tényleges árait:**
+> `move -1.22% / 2.0s (0.21366 -> 0.21151)`. Ha a `confirmSec` nem nulla, a jelzés
+> ára a megerősítés pillanatáé — ilyenkor a charton `confirmSec` másodperccel
+> korábban keresd a mozgást. **Ez az egyetlen visszajelzés arról, hogy a
   beállításaid működnek-e** — a többi szám csak azt mutatja, mit csinál a rendszer.
 
 ## Ezt látod egy jelzés útján a logban

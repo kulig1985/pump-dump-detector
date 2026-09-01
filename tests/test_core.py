@@ -955,9 +955,11 @@ def test_live_defaults_are_at_least_as_strict_as_the_test_profile():
     """A tesztek fix profilon futnak, hogy a hangolas ne torje oket. Cserebe ITT
     orizzuk, hogy az ELES alapertekek ne legyenek lazabbak a profilnal."""
     szigorubb_ha_nagyobb = {
-        "detector": ("baselineRatio", "minMovePct", "confirmSec", "confirmHoldPct",
+        # a confirmSec NEM szerepel: a felhasznalo szandekosan 0-ra tette
+        # (azonnali jelzes), tehat ott a kisebb ertek a kivant allapot
+        "detector": ("baselineRatio", "minMovePct", "confirmHoldPct",
                      "symbolCooldownSec"),
-        "reversal": ("baselineRatio", "minMovePct", "confirmSec", "cooldownSec"),
+        "reversal": ("baselineRatio", "minMovePct", "cooldownSec"),
     }
     elesek = {"detector": C_CFG.DETECTOR_DEFAULTS, "reversal": C_CFG.REVERSAL_DEFAULTS}
     for doksi, kulcsok in szigorubb_ha_nagyobb.items():
@@ -1130,6 +1132,34 @@ def test_slowly_decaying_wick_is_dropped_mid_window():
             break
     eltelt = i * 0.05 - len(fel) * 0.05
     assert eltelt < CFG["confirmSec"], f"a hatarido elott eldolt ({eltelt:.1f}s)"
+
+
+def test_zero_confirm_signals_immediately():
+    """confirmSec = 0 -> a jelzes a mozgas pillanataban megy ki, varakozas nelkul.
+
+    Nincs pending, nincs utolagos ellenorzes, es a jelzes ara a mozgas vegen mert ar.
+    """
+    azonnali = types.SimpleNamespace(
+        detector={**CFG, "confirmSec": 0.0}, market=MARKET, telegram=TG,
+        reversal={**REV, "confirmSec": 0.0})
+
+    det = PumpDumpDetector(azonnali)
+    kesz_baseline(det, "NOWUSDT")
+    arak = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
+    jelzesek = feed(det, "NOWUSDT", 1000.0, arak)          # NINCS tarto szakasz
+    assert len(jelzesek) == 1, jelzesek
+    assert not det.pending, "nem varakozik semmire"
+    j = jelzesek[0]
+    assert j["timestamp"] <= 1000.0 + len(arak) * 0.05, "a mozgas pillanataban"
+    assert "heldOfMovePct" not in j["metrics"], "nincs megerosites-adat"
+    assert not any("VEGIG megvolt" in r for r in j["reasons"]), j["reasons"]
+    assert any("->" in r for r in j["reasons"]), "a mozgas arai latszanak"
+
+    # a fordulo is azonnal jelez, a tape tarto szakasza nelkul
+    rev = ReversalDetector(azonnali)
+    tape = rev_tape(0.78380, 0.78330, 0.78450)[:-85]
+    assert len(rev_run(rev, tape)) == 1, "az attores pillanataban jelez"
+    assert not rev.pending
 
 
 def test_momentary_spike_that_falls_back_is_not_a_signal():
