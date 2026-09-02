@@ -105,6 +105,7 @@ class MarketDataService:
         self.on_signal = on_signal
         self.signal_service = None      # a STATUS sorhoz, a main koti be
         self.outcome = None             # OutcomeTracker, a main koti be
+        self.book = None                # BookCache, a main koti be
         self.notifier = None            # TelegramNotifier az idoszakos eletjelhez
         self.symbols = []
         self.started = time.time()
@@ -129,12 +130,16 @@ class MarketDataService:
                 continue
             chunks = [self.symbols[i:i + STREAMS_PER_CONNECTION]
                       for i in range(0, len(self.symbols), STREAMS_PER_CONNECTION)]
-            log.info("Indul %d WebSocket kapcsolat, osszesen %d symbol",
-                     len(chunks), len(self.symbols))
+            log.info("Indul %d arfolyam- es %d konyv-kapcsolat, osszesen %d symbol",
+                     len(chunks), len(chunks), len(self.symbols))
 
             self.connected = 0
             tasks = [asyncio.create_task(self._stream(i + 1, ch))
                      for i, ch in enumerate(chunks)]
+            # a konyv-melyseg FOLYAMATOSAN streamel, hogy a dontes pillanataban
+            # mar keszen alljon -- korabban a jelzeskor kertuk le, es az varakozas volt
+            tasks += [asyncio.create_task(self._depth_stream(i + 1, ch))
+                      for i, ch in enumerate(chunks)]
             try:
                 # a symbol univerzumot idonkent ujraepitjuk (uj listing, kiszaradt par)
                 # -- ha epp mentett listaval futunk, hamarabb probaljuk ujra
@@ -255,6 +260,58 @@ class MarketDataService:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF)
 
+    async def _depth_stream(self, index, symbols):
+        """Partial book depth minden figyelt parra, folyamatosan.
+
+        A hivatalos spec szerint ez a "public" csoport: <symbol>@depth<5|10|20>@
+        <100ms|500ms>, az esemeny neve depthUpdate, a mezok b (bid) es a (ask).
+        """
+        c = self.cfg.detector
+        streams = [f"{s.lower()}@depth{c['depthLevels']}@{c['depthUpdateSpeed']}"
+                   for s in symbols]
+        backoff, attempt = 1.0, 0
+        while True:
+            await self.limiter.wait()
+            base = BOOK_BASES[attempt % len(BOOK_BASES)]
+            attempt += 1
+            self.reconnects += 1
+            nyitva = time.time()
+            try:
+                async with websockets.connect(base, ping_interval=20,
+                                              ping_timeout=20) as ws:
+                    await ws.send(json.dumps({"method": "SUBSCRIBE",
+                                              "params": streams,
+                                              "id": uuid.uuid4().hex}))
+                    log.info("Konyv-melyseg #%d csatlakozva: %s | %d stream",
+                             index, base, len(streams))
+                    kapott = False
+                    while True:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=SILENCE_SEC)
+                        msg = json.loads(raw)
+                        if "result" in msg or "error" in msg:
+                            if msg.get("error"):
+                                log.error("A depth feliratkozast a Binance "
+                                          "elutasitotta: %s", msg["error"])
+                            continue
+                        adat = msg.get("data", msg)
+                        if isinstance(adat, dict) and self.book:
+                            self.book.on_depth(adat)
+                            if not kapott:
+                                kapott = True
+                                attempt -= 1        # ez az utvonal jo
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                log.warning("Konyv-melyseg #%d %ds-ig nema -- ujracsatlakozas",
+                            index, SILENCE_SEC)
+            except Exception as e:
+                log.warning("Konyv-melyseg #%d szakadas: %s", index, e)
+
+            if time.time() - nyitva >= EGESZSEGES_SEC:
+                backoff = 1.0
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF)
+
     async def _book_stream(self):
         """A teljes piac legjobb bid/ask ara es mennyisege, egyetlen feliratkozassal.
 
@@ -361,6 +418,7 @@ class MarketDataService:
             sorok = [
                 f"STATUS     {len(self.symbols)} par | {ticks:,} tick/{interval}s | "
                 f"{self.eligibility.book_status()} | "
+                f"{self.book.status() if self.book else 'nincs melyseg'} | "
                 f"ujracsatlakozas {self.limiter.utolso_5_perc()}/5perc | "
                 f"{self.detectors.total_candidates} candidate, "
                 f"{svc.signals_today if svc else 0} jelzes, "
@@ -409,8 +467,9 @@ class MarketDataService:
                 log.warning("eletjel kuldese sikertelen: %s", e)
 
     def _status_info(self):
-        pump = next((d for d in self.detectors.detectors
-                     if hasattr(d, "top_movers")), None)
+        det = next((d for d in self.detectors.detectors
+                    if hasattr(d, "allapotok")), None)
+        allapot = det.allapotok() if det else {}
         eltelt = max(1, int(time.time() - self.started))
         return {
             "ido": datetime.now(timezone.utc).strftime("%H:%M:%S"),
@@ -422,8 +481,8 @@ class MarketDataService:
             "ticksPerMin": self.detectors.osszes_tick / max(1, eltelt / 60),
             "signals": self.signal_service.signals_today if self.signal_service else 0,
             "kizarva": (self.eligibility.summary() or [""])[0],
-            "movers": pump.top_movers() if pump else [],
-            "kozel": pump.readiness() if pump else "",
+            "setups": [(k, str(v)) for k, v in sorted(allapot.items()) if v],
+            "kozel": det.readiness() if det else "",
             "talalat": self.outcome.summary_lines() if self.outcome else [],
             "utolso": self.outcome.recent_lines(
                 self.cfg.telegram.get("statusRecentSignals", 3)) if self.outcome else [],

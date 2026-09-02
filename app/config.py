@@ -1,8 +1,7 @@
 """Konfiguracio MongoDB-bol. Ot dokumentum:
 
-    market      KOZOS: melyik parokat figyeljuk egyaltalan (mindket detektorra hat)
-    detector    CSAK a pump/dump detektor parameterei
-    reversal    CSAK a fordulo detektor parameterei
+    market      KOZOS: melyik parokat figyeljuk, es hogyan merjuk az eredmenyt
+    detector    a scalp detektor (impulzus + setup) parameterei
     trading     a TradingService
     telegram    a Bot API es az uzenet
 
@@ -34,71 +33,75 @@ MARKET_DEFAULTS = {
     # ---- realtime kereskedhetoseg (a jelzes kiadasanal szur) ----
     "maxSpreadPct": 0.05,
 
-    # ---- eredmenymeres: a jelzes UTAN ennyi perccel jegyezzuk fel az arat ----
-    # Nem kapuz semmit, nem backteszt. Ebbol derul ki, tartos-e egy jelzes.
-    "outcomeMinutes": [1, 5, 15],
+    # ---- eredmenymeres: a jelzes UTAN folyamatosan kovetjuk az arat ----
+    # Nem kapuz semmit, nem backteszt. Ebbol derul ki, melyik setup mukodik.
+    "outcomeTrackSec": 600,            # ennyi ideig kovetunk minden jelzest
+    "tpLevels": [0.3, 0.5, 0.8, 1.0],  # ezeket a TP szinteket merjuk (%)
+    "slLevels": [0.2, 0.3, 0.5],       # es ezeket a SL szinteket (%)
+    "reportTp": 0.5,                   # az osszesitesben ez a TP/SL par szerepel
+    "reportSl": 0.3,
 
     # ---- megjelenites ----
     "statusIntervalSec": 60,
 }
 
+# ==========================================================================
+#  A SCALP DETEKTOR PARAMETEREI
+#
+#  MINDEN ERTEK ITT KIINDULASI PARAMETER. Nem "helyes" ertekek: ezek olyan
+#  kezdopontok, amelyeket az outcome meres (MFE/MAE, TP/SL) adataibol kell
+#  hangolni. A hangolas a KODBAN tortenik, nem a DB-ben -- lasd docs/PARAMETEREK.md.
+# ==========================================================================
 DETECTOR_DEFAULTS = {
     "_id": "detector",
-    "enabled": True,                   # CSAK a pump/dump detektor
+    "enabled": True,
 
-    # ---- pump/dump: rendkivuli-e a mozgas EZEN a paron ----
-    "moveWindowSec": 2.0,              # ekkora idoablakban merjuk az elmozdulast
+    # ---- 1. IMPULZUS: rendkivuli-e a mozgas ES a mogotte allo penz ----
+    "impulseWindowSec": 3.0,           # ekkora idoablakban merunk
     "minTradesInWindow": 10,           # ennyi kotes kell bele, kulonben nem merheto
     "baselineMinutes": 5,              # ennyi perc visszatekintessel epul a "normal"
-    "baselineRatio": 8.0,              # a mozgas a par normaljanak ennyiszerese legyen
-    "minMovePct": 0.80,                # abszolut padlo
-    "maxSingleStepPct": 35,            # ennel nagyobb reszt egyetlen arlepes ne adjon
-    # 0 = AZONNALI jelzes, ahogy a mozgas megvan. Nagyobb ertek eseten a jelzes
-    # csak akkor megy ki, ha a mozgas ennyi ideig VEGIG tartotta a confirmHoldPct-ot
-    # (ez szurte a kanocokat, de keslelteti a jelzest).
-    "confirmSec": 0.0,
-    "confirmHoldPct": 80,              # es a mozgas ennyi szazaleka legyen meg
-    "symbolCooldownSec": 900,
+    "minImpulsePct": 0.40,             # abszolut padlo a mozgasra
+    "impulseBaselineRatio": 6.0,       # es a par sajat normaljanak ennyiszerese
+    "minImpulseNotional": 50_000,      # abszolut padlo az agressziv forgalomra (USDT)
+    "notionalRatio": 3.0,              # es a par normal ablak-forgalmanak ennyiszerese
+    "minImpulseImbalance": 0.25,       # a taker oldal ennyire legyen egyiranyu (0-1)
+    "maxSingleStepPct": 35,            # egyetlen arlepes ne adja a mozgas tobbet
 
-    # ---- order book es EMA: CSAK INFORMACIO a jelzesben, semmit nem kapuznak ----
-    "orderBookLevels": 20,
-    "wallSensitivity": 3.0,
-    "wallMaxDistancePct": 1.5,
+    # ---- 2. SETUP: az impulzus utani szerkezet kovetese ----
+    "setupTimeoutSec": 90,             # ennyi ido utan eldobjuk a setupot
+    "invalidateBeyondOriginPct": 20,   # ha az ar ennyivel az impulzus ala megy, vege
+    "flowWindowSec": 5.0,              # a megerosito kotesaramlas ablaka
+
+    # ---- 3a. FOLYTATAS: sekely visszahuzas, majd a pivot ujratorese ----
+    "minPullbackPct": 15,              # ennyi visszahuzas kell (a lab %-aban)
+    "maxPullbackPct": 62,              # ennel melyebb visszahuzas utan mar nem folytatas
+    "breakoutOfLegPct": 5,             # ekkora attores kell a pivot folott
+    "minConfirmImbalance": 0.15,       # es ennyi kotesaramlas a belepo iranyaba
+
+    # ---- 3b. FORDULO: kifulladas, majd a counter szint letorese ----
+    "exhaustionSec": 10.0,             # ennyi ideje nincs uj szelsoertek
+    "minReversalImbalance": 0.20,      # a kotesaramlas ennyire fordult meg
+    "counterPullbackPct": 30,          # ennyi ellen-visszahuzas rogziti a fordulo szintjet
+    "reclaimOfLegPct": 5,              # ekkora attores kell a counter szinten
+    "reclaimHoldSec": 3.0,             # es ennyi ideig tartania is kell
+    "maxEntryRetracePct": 50,          # ennel tobb mar ne jojjon vissza a belepoig
+
+    # ---- 4. KONYV es TREND: ezek BEFOLYASOLJAK a dontest ----
+    "maxOpposingBookImbalance": 0.40,  # ennyi ellentetes konyv-tulsuly meg elfogadhato
+    "wallBlockDistPct": 0.15,          # ilyen kozeli fal a mozgas iranyaban -> nincs jelzes
+    "depthLevels": 20,                 # a partial book depth stream szintjei (5/10/20)
+    "depthUpdateSpeed": "500ms",       # frissitesi sebesseg (100ms/500ms)
+    "wallSensitivity": 3.0,            # fal = a tobbi szint medianjanak ennyiszerese
+    "wallMaxDistancePct": 1.5,         # ennel tavolabbi falat figyelmen kivul hagyunk
+    "requireTrendForContinuation": True,   # a folytatas egyezzen az EMA iranyaval
+    "requireTrendForReversal": False,      # a fordulo szandekosan szembe megy
     "emaFast": 9,
     "emaSlow": 21,
     "emaInterval": "1m",
-}
+    "emaRefreshSec": 60,               # ennyi idonkent frissul minden par EMA-ja
 
-REVERSAL_DEFAULTS = {
-    "_id": "reversal",
-    "enabled": True,
-    "cooldownSec": 1800,
-
-    # ---- mekkora elozetes mozgas utan keresunk fordulot ----
-    "baselineRatio": 8.0,              # a par normaljanak ennyiszerese
-    "minMovePct": 2.00,                # abszolut padlo
-    "wickSliceSec": 0.5,               # ekkora szeletek kozeparan keressuk a szelsoerteket
-
-    # ---- az alakzat merete, MINDIG a mozgas aranyaban (0-100%) ----
-    #
-    #   csucs  ─────────────────────  100%
-    #                                  25%    <- max belepo (maxRetracementPct)
-    #                                  12%    <- ide kell visszapattannia
-    #   melypont ───────────────────   0%     <- stop ez ala
-    #
-    "bounceOfMovePct": 12,
-    "pullbackOfBouncePct": 30,         # a visszapattanasbol ennyi visszahuzas -> micro szint
-    "breakOfMovePct": 5,               # az attores merete (bounce + break < maxRetracement!)
-    "maxRetracementPct": 25,           # ennel tobb mar ne jojjon vissza, amikor jelzunk
-    "newExtremeOfMovePct": 2,
-
-    # ---- idozites es kotesaramlas ----
-    "windowSeconds": 20,
-    "maxExtremeAgeSec": 6,
-    "confirmSec": 0.0,                 # 0 = azonnali jelzes az attoreskor
-    "flowWindowSeconds": 3,
-    "minFlowRatio": 1.6,
-    "minTradesInFlowWindow": 5,
+    # ---- 5. KIMENET ----
+    "symbolCooldownSec": 600,          # paronkent ennyi szunet ket jelzes kozott
 }
 
 TRADING_DEFAULTS = {
@@ -117,14 +120,13 @@ TRADING_DEFAULTS = {
 TELEGRAM_DEFAULTS = {
     "_id": "telegram",
     "enabled": True,                   # ha false: log + DB igen, Telegram nem
-    "signalWindowMinutes": 10,         # ennyi visszatekintessel: hanyadik jelzes ez
     "statusEveryMinutes": 20,          # idoszakos eletjel Telegramra (0 = nincs)
     "statusRecentSignals": 3,          # TIPUSONKENT ennyi legutobbi jelzes az eletjelben
     "botToken": os.getenv("TELEGRAM_BOT_TOKEN", ""),
     "chatId": os.getenv("TELEGRAM_CHAT_ID", ""),
-    # Ha kulon csatornara akarod a ket detektort, ide irj chat ID-t.
-    # Ures ertek eseten a fenti kozos chatId-re megy.
-    "chatIds": {"pump_dump": "", "reversal": ""},
+    # Ha kulon csatornara akarod a folytatas- es a fordulo-jelzeseket, ide irj
+    # chat ID-t. Ures ertek eseten a fenti kozos chatId-re megy.
+    "chatIds": {"scalp": ""},
     # Extra link az uzenet aljara, {symbol} helyettesitessel. Sima szovegkent
     # kerul bele (nem kattinthato hivatkozaskent), mert a Telegram Bot API csak
     # http/https/tg semat fogad el <a href>-ben -- egy bnc:// anchor hibaval
@@ -139,14 +141,12 @@ class ConfigStore:
         self.db = db
         self.market = dict(MARKET_DEFAULTS)
         self.detector = dict(DETECTOR_DEFAULTS)
-        self.reversal = dict(REVERSAL_DEFAULTS)
         self.trading = dict(TRADING_DEFAULTS)
         self.telegram = dict(TELEGRAM_DEFAULTS)
 
     DOCS = (
         (MARKET_DEFAULTS, "market"),
         (DETECTOR_DEFAULTS, "detector"),
-        (REVERSAL_DEFAULTS, "reversal"),
         (TRADING_DEFAULTS, "trading"),
         (TELEGRAM_DEFAULTS, "telegram"),
     )
@@ -158,8 +158,7 @@ class ConfigStore:
         ("detector", "market", {k: k for k in (
             "quoteAssets", "minQuoteVolume24h", "maxSymbols", "symbolRefreshMinutes",
             "symbolWhitelist", "symbolBlacklist", "maxSpreadPct", "statusIntervalSec")}),
-        ("detector", "telegram", {"telegramEnabled": "enabled",
-                                  "signalWindowMinutes": "signalWindowMinutes"}),
+        ("detector", "telegram", {"telegramEnabled": "enabled"}),
     )
 
     async def _migrate(self):

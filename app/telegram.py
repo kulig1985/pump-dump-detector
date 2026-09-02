@@ -14,15 +14,17 @@ API = "https://api.telegram.org/bot{token}/sendMessage"
 # A "SHORT REVERSAL" onmagaban ketertelmu volt: olvashato ugy is, hogy egy short
 # fordul meg. Ezert kiirjuk, mi tortent es milyen poziciot jelent.
 HEADERS = {
-    ("pump_dump", "LONG"): (
-        "🚨", "PUMP", "hirtelen, egyiranyu emelkedes", "LONG — veteli pozicio"),
-    ("pump_dump", "SHORT"): (
-        "🔻", "DUMP", "hirtelen, egyiranyu eses", "SHORT — eladasi pozicio"),
-    ("reversal", "LONG"): (
-        "🟢", "FORDULO FELFELE", "eses utan aljazott es visszapattant",
+    "LONG_CONTINUATION": (
+        "🚀", "FOLYTATAS FELFELE", "emelkedes, sekely visszahuzas, ujratores",
         "LONG — veteli pozicio"),
-    ("reversal", "SHORT"): (
-        "🔴", "FORDULO LEFELE", "emelkedes utan tetozott es lefordult",
+    "SHORT_CONTINUATION": (
+        "🔻", "FOLYTATAS LEFELE", "eses, sekely visszapattanas, ujratores",
+        "SHORT — eladasi pozicio"),
+    "LONG_REVERSAL": (
+        "🟢", "FORDULO FELFELE", "az eses kifulladt, a szint visszaveve",
+        "LONG — veteli pozicio"),
+    "SHORT_REVERSAL": (
+        "🔴", "FORDULO LEFELE", "az emelkedes kifulladt, a szint letorve",
         "SHORT — eladasi pozicio"),
 }
 
@@ -37,7 +39,7 @@ class TelegramNotifier:
         tg = self.cfg.telegram
         return (tg.get("chatIds", {}) or {}).get(detector) or tg.get("chatId")
 
-    async def send(self, symbol, text, detector="pump_dump"):
+    async def send(self, symbol, text, detector="scalp"):
         """Visszaad {"sent": bool, "error": str|None}. Sose dob kivetelt."""
         tg = self.cfg.telegram
         chat_id = self._chat_id(detector)
@@ -75,35 +77,39 @@ def format_signal(sig, app_link_template=""):
 
     Nincs score: helyette az, hogy MIERT lett jelzes, es milyen mert szamokkal.
     """
-    detector = sig.get("detector", "pump_dump")
+    setup = sig.get("setup") or sig.get("detector", "")
     direction = sig["direction"]
     emoji, cim, tortent, jelent = HEADERS.get(
-        (detector, direction), ("⚡", detector, "", f"{direction} pozicio"))
+        setup, ("⚡", setup, "", f"{direction} pozicio"))
     url = sig.get("url") or binance_url(sig["symbol"])
 
     fej = (f"{emoji} <b>{cim}</b>  ·  "
            f"<a href=\"{esc(url)}\"><b>{esc(sig['symbol'])}</b></a>\n"
            f"{esc(tortent)}\n"
            f"➜ <b>{esc(jelent)}</b>\n"
-           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC  ·  {esc(detector)}")
+           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC  ·  {esc(setup)}")
 
     alap = [("ar", f"{sig['price']:.8g}")]
     if sig.get("quoteVolume24h"):
         alap.append(("24h forgalom", f"{sig['quoteVolume24h'] / 1e6:,.0f}M USDT"))
 
+    m = sig.get("metrics") or {}
     kontextus = []
-    ema = sig.get("ema")
-    kontextus.append(("EMA", f"{ema['trend']} (csak informacio)" if ema else "n/a"))
-    ob = sig.get("orderBook") or {}
-    for nev, kulcs in (("sell wall", "nearestSellWall"), ("buy wall", "nearestBuyWall")):
-        w = ob.get(kulcs)
-        kontextus.append((nev, f"{_tav(w['distancePct'])} tavolsagra" if w else "nincs kozel"))
-    r = sig.get("recent")
-    if r:
-        kontextus.append(("gyakorisag",
-                          f"{r['sameDirection']}. {direction} {r['windowMinutes']} percen belul"))
-        kontextus.append((f"{detector} / {r['windowMinutes']} perc",
-                          f"{r['detectorLong']} LONG / {r['detectorShort']} SHORT"))
+    if m.get("legPct") is not None:
+        kontextus.append(("impulzus", f"{m.get('impulsePct', 0):+.2f}%  "
+                                      f"(lab {m['legPct']:.2f}%)"))
+    if m.get("maxRetracePct") is not None:
+        kontextus.append(("visszahuzas", f"a lab {m['maxRetracePct']:.0f}%-a"))
+    if m.get("confirmImbalance") is not None:
+        kontextus.append(("kotesaramlas", f"{m['confirmImbalance']:+.2f}"))
+    if m.get("bookImbalance") is not None:
+        kontextus.append(("konyv-imbalance", f"{m['bookImbalance']:+.2f}"))
+    if m.get("spreadPct") is not None:
+        kontextus.append(("spread", f"{m['spreadPct']:.3f}%"))
+    if m.get("trend"):
+        kontextus.append(("EMA trend", m["trend"]))
+    if m.get("setupAgeSec") is not None:
+        kontextus.append(("setup kora", f"{m['setupAgeSec']:.0f} mp"))
 
     blokkok = [("", alap), ("KONTEXTUS", kontextus)]
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
@@ -136,17 +142,17 @@ def format_status(info):
         allapot.append(("kizarva", info["kizarva"]))
 
     blokkok = [("ALLAPOT", allapot)]
-    if info.get("movers"):
-        blokkok.append(("MOST A LEGMOZGEKONYABB", info["movers"]))
+    if info.get("setups"):
+        blokkok.append(("ELO SETUPOK", info["setups"]))
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
 
     veg = ""
     if info.get("kozel"):
-        veg += f"\n\n<b>LEGKOZELEBB A JELZESHEZ</b>\n  • {esc(info['kozel'])}"
+        veg += f"\n\n<b>DETEKTOR ALLAPOT</b>\n  • {esc(info['kozel'])}"
 
     meres = ""
     if info.get("talalat"):
-        meres += ("\nNYERO / BUKO JELZESEK\n"
+        meres += ("\nEREDMENY  (melyiket erte el elobb: TP vagy SL)\n"
                   + "\n".join(esc(x) for x in info["talalat"]))
     if info.get("utolso"):
         meres += "\n\n" + "\n".join(esc(x) for x in info["utolso"])

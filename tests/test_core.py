@@ -1,46 +1,25 @@
 """Halozat nelkuli onteszt a detektor magjara: python tests/test_core.py"""
 import sys
-import math
 import time
 import types
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from app.detectors.pumpdump import PumpDumpDetector
-from app.detectors.reversal import ReversalDetector
+from app.detectors.scalp import ScalpDetector
 from app.detectors.manager import DetectorManager
-from app.detectors.baseline import Baseline
+from app.detectors.baseline import Baseline, RollingMedian
 from app.detectors.base import Trade
 from app.eligibility import Eligibility
 from app.fmt import pad as _pad
 from app import orderbook
 from app.ta import ema
-from app import events
 import app.config as C_CFG
 
-# A TESZTEK FIX PROFILT hasznalnak, nem az eles alapertekeket. Kulonben minden
-# erzekenyseg-hangolas atirna a fixture-oket (mekkora mozgas, milyen hosszu tape),
-# es a tesztek arrol szolnanak, hogy epp mi az alapertek -- nem arrol, hogy jol
-# mukodik-e a logika. Az eles alapertekekre kulon teszt van (lasd lentebb).
-TESZT_PROFIL = {
-    "detector": {"moveWindowSec": 2.0, "minTradesInWindow": 10, "baselineMinutes": 5,
-                 "baselineRatio": 6.0, "minMovePct": 0.50, "maxSingleStepPct": 40,
-                 "confirmSec": 10.0, "confirmHoldPct": 70, "symbolCooldownSec": 300},
-    "reversal": {"baselineRatio": 6.0, "minMovePct": 0.50, "confirmSec": 10.0,
-                 "cooldownSec": 600, "maxExtremeAgeSec": 8, "windowSeconds": 20,
-                 "bounceOfMovePct": 12, "pullbackOfBouncePct": 30, "breakOfMovePct": 5,
-                 "maxRetracementPct": 25, "wickSliceSec": 0.5},
-    "market": {"maxSpreadPct": 0.05},
-}
-
-CFG = {**C_CFG.DETECTOR_DEFAULTS, **TESZT_PROFIL["detector"]}
-REV = {**C_CFG.REVERSAL_DEFAULTS, **TESZT_PROFIL["reversal"]}
-MARKET = {**C_CFG.MARKET_DEFAULTS, **TESZT_PROFIL["market"]}
+CFG = dict(C_CFG.DETECTOR_DEFAULTS)
+MARKET = dict(C_CFG.MARKET_DEFAULTS)
 TG = dict(C_CFG.TELEGRAM_DEFAULTS)
-cfg_obj = types.SimpleNamespace(detector=CFG, reversal=REV, market=MARKET, telegram=TG)
-
-rev_cfg = types.SimpleNamespace(detector=CFG, market=MARKET, telegram=TG, reversal=REV)
+cfg_obj = types.SimpleNamespace(detector=CFG, market=MARKET, telegram=TG)
 
 
 def eligible_stub():
@@ -50,458 +29,440 @@ def eligible_stub():
     return e
 
 
-def kesz_baseline(det, symbol, normal_pct=0.02, t0=900.0, db=70):
-    """A par normaljat kozvetlenul feltoltjuk, hogy a teszt ne varjon 1-2 percet.
+def kesz_baseline(det, symbol, normal_pct=0.02, normal_notional=20_000.0,
+                  start_ts=2000.0, db=400):
+    """A par mindket normaljat kozvetlenul feltoltjuk, hogy a teszt ne varjon.
 
-    Baseline nelkul a detektor szandekosan nem ad candidate-et.
+    A mintak a start_ts (a kesobbi futtat() elso trade-jenek ideje) ELE
+    kerulnek, kozvetlenul mellette -- kulonben az elso valodi RollingMedian.add()
+    hivas (ami a trade.ts szerint metsz) azonnal kiurítené az ablakot, mert a
+    tavolsag a mesterseges seed-ido es a valodi trade-ido kozott nagyobb, mint
+    a baseline ablak. Baseline nelkul a detektor szandekosan nem indit impulzust.
     """
     for i in range(db):
-        det.baseline.add(symbol, t0 + i, normal_pct)
+        det.baseline.add(symbol, start_ts - db + i, normal_pct)
+        det.notional_baseline.add(symbol, start_ts - db + i, normal_notional)
     assert det.baseline.value(symbol) is not None
+    assert det.notional_baseline.value(symbol) is not None
     return det
 
 
-def tart(prices, mp=12.0, step=0.05):
-    """A mozgas utan az ar ott marad: a megerositeshez kellenek tovabbi tickek."""
-    return list(prices) + [prices[-1]] * int(mp / step)
+def uj_detektor(cfg=None, book=None, trend=None):
+    return ScalpDetector(cfg or cfg_obj, book=book, trend=trend)
 
 
-def feed(det, symbol, start_ts, prices, step=0.05, usd=3000.0):
-    """Tick sorozat betoltese, visszaadja az osszes candidate-et."""
+def futtat(det, symbol, trades, t0=2000.0):
+    """Egy elore epitett tape lejatszasa, visszaadja az osszes jelzest."""
     out = []
-    for i, p in enumerate(prices):
-        c = det.on_trade(Trade(symbol, p, usd / p, start_ts + i * step, True))
-        if c:
-            out.append(c)
-    return out
-
-
-def test_burst_of_trades_in_milliseconds_is_not_a_signal():
-    """Valos eset: 30 trade 0.03 masodperc alatt, osszesen +0.02% mozgas.
-
-    A darabszam-alapu ablak ebbol +0.4%/mp "meredekseget" szamolt, es jelzett.
-    Egy apro arvaltozas apro idotartammal osztva nem mozgas.
-    """
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.0002 * i / 30) for i in range(30)]
-    assert feed(det, "BURSTUSDT", 1000.0, prices, step=0.001) == []
-
-
-def test_same_timestamp_trades_do_not_break_measurement():
-    """A legnagyobb parokon sok aggTrade azonos idobelyeggel erkezik."""
-    det = PumpDumpDetector(cfg_obj)
-    for i in range(40):
-        det.on_trade(Trade("ETHUSDT", 2455.0 + i * 0.01, 1.0, 1000.0, True))
-    assert det.latest["ETHUSDT"] is None, "nem merheto, de nem is szabad hibaznia"
-
-
-def test_no_trigger_on_slow_drift():
-    """Lassu kuszas: nagy teljes elmozdulas, de kicsi tempó."""
-    det = PumpDumpDetector(cfg_obj)
-    ticks = [(1000.0 + i * 1.5, 100.0 * (1 + 0.005 * i / 60)) for i in range(60)]
-    assert [t for t in (det.on_trade(Trade("AAAUSDT", p, 30.0, ts, True))
-                        for ts, p in ticks) if t] == []
-
-
-def test_trigger_on_steady_fast_move():
-    """Valodi pump: 2 masodperc alatt egyenletes +0.4%."""
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "BBBUSDT")
-    prices = tart([100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)])
-    triggers = feed(det, "BBBUSDT", 1000.0, prices)
-    assert len(triggers) == 1, triggers
-    d = triggers[0]["metrics"]
-    assert triggers[0]["direction"] == "LONG"
-    assert d["spanSec"] >= CFG["moveWindowSec"] / 2
-    assert abs(d["movePct"]) >= CFG["minMovePct"]
-
-
-def test_dump_direction():
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "CCCUSDT")
-    prices = tart([100.0] * 40 + [100.0 * (1 - 0.010 * (i + 1) / 40) for i in range(40)])
-    triggers = feed(det, "CCCUSDT", 1000.0, prices)
-    assert len(triggers) == 1
-    assert triggers[0]["direction"] == "SHORT"
-
-
-def test_cooldown_suppresses_repeat():
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "FFF2USDT")
-    prices = tart([100.0] * 40
-                  + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-                  + [101.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)])
-    assert len(feed(det, "FFF2USDT", 1000.0, prices)) == 1
-
-
-def test_no_trigger_without_enough_trades():
-    det = PumpDumpDetector(cfg_obj)
-    prices = [100.0 * (1 + 0.001 * i) for i in range(8)]
-    assert feed(det, "GGG2USDT", 1000.0, prices) == []
-
-
-CSUCS, MELY = 0.79246, 0.78240          # a valodi CYSUSDT jelzesbol visszaszamolva
-
-
-def rev_tape(micro, visszahuzas, belepo, tetlen_mp=0.0, csucs=CSUCS, mely=MELY):
-    """Fordulo szekvencia. A lemozgas lassabb (0.3 mp/trade), hogy a 3 masodperces
-    flow ablakba mar csak a visszapattanas essen bele -- ahogy elesben is.
-
-    tetlen_mp: ennyi ideig all az ar a visszahuzas szintjen az attores elott
-               (ezzel oregitheto a szelsoertek)
-    """
-    from app import binance_rest
-    binance_rest.SYMBOL_VOLUME["CYSUSDT"] = 52e6
-    t, out = [1000.0], []
-    # a szelsoertek utani oldal a fordulo iranyaval egyezik: lefele mozgas utan
-    # veteli flow (LONG fordulo), felfele mozgas utan eladoi (SHORT fordulo)
-    utana = mely < csucs
-
-    def add(ar, buy, usd, dt):
-        t[0] += dt
-        out.append(Trade("CYSUSDT", ar, usd / ar, t[0], buy))
-
-    for _ in range(8):
-        add(csucs, not utana, 3000, 0.3)
-    for i in range(12):
-        add(csucs + (mely - csucs) * (i + 1) / 12, not utana, 3000, 0.3)
-    for i in range(6):
-        add(mely + (micro - mely) * (i + 1) / 6, utana, 3000, 0.1)
-    for _ in range(4):
-        add(visszahuzas, utana, 3000, 0.1)
-    if tetlen_mp:                       # varakozas: az alakzat oregszik
-        for _ in range(6):
-            add(visszahuzas, utana, 3000, tetlen_mp / 6)
-    # az attores utan meg legalabb confirmSec masodpercig tart az ar -- a jelzes
-    # nem az attores pillanataban megy ki, hanem a megerosites utan
-    for _ in range(90):
-        add(belepo, utana, 4000, 0.15)
-    return out
-
-
-def rev_run(det, tape):
-    """Feltolti a par normaljat (baseline nelkul nincs alakzat), majd lejatssza."""
-    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
-    return [s for s in (det.on_trade(t) for t in tape) if s]
-
-
-def test_late_entry_is_rejected():
-    """A valodi jelzes: a mozgas 48%-a mar visszajott. Nem szabad jelezni."""
-    det = ReversalDetector(rev_cfg)
-    assert rev_run(det, rev_tape(0.78600, 0.78520, 0.78720)) == []
-
-
-def test_stale_extreme_is_rejected():
-    """Helyes alakzat, de a melypont mar 12 masodperces -- a mozgas lefutott."""
-    det = ReversalDetector(rev_cfg)
-    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78450, tetlen_mp=12.0)) == []
-
-
-def test_tiny_break_is_rejected():
-    """Az attores a mozgas 5%-a alatt marad -- az nem informacio, csak zaj."""
-    det = ReversalDetector(rev_cfg)
-    # a mozgas 1.006 arpont, 5%-a 0.000503; itt csak 0.0002-t torunk at
-    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78400)) == []
-
-
-def test_pullback_below_bounce_still_locks_the_micro_level():
-    """Regresszio: a visszapattanast a MAR ELERT csucshoz merjuk, nem a pillanatnyi
-    arhoz. Kulonben a visszahuzas kilokne az alakzatot, es a micro szint csak NAGY
-    visszapattanasoknal rogzulne -- pontosan ez okozta a kesoi jelzeseket."""
-    det = ReversalDetector(rev_cfg)
-    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
-    for t in rev_tape(0.78380, 0.78330, 0.78450):
-        det.on_trade(t)
-        st = det.setups.get("CYSUSDT")
-        if st and st.micro:
-            assert st.micro == 0.78380
-            return
-    raise AssertionError("a micro szint sosem rogzult")
-
-
-def test_breakout_that_falls_back_is_not_a_reversal():
-    """Az attores pillanata meg nem fordulo. Ha az ar confirmSec masodpercen belul
-    visszaesik a micro szint moge, nem volt fordulo -- csak egy kilenges."""
-    det = ReversalDetector(rev_cfg)
-    tape = rev_tape(0.78380, 0.78330, 0.78450)
-    # az attores utani reszt lecsereljuk: visszaesik a micro szint ala
-    attores_elott = [t for t in tape if t.price != 0.78450]
-    t0 = attores_elott[-1].ts
-    vissza = ([Trade("CYSUSDT", 0.78450, 4000 / 0.78450, t0 + 0.15 * (i + 1), True)
-               for i in range(4)]
-              + [Trade("CYSUSDT", 0.78350, 4000 / 0.78350, t0 + 0.6 + 0.15 * (i + 1), True)
-                 for i in range(90)])
-    assert rev_run(det, attores_elott + vissza) == []
-    assert "CYSUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
-
-
-def test_relative_sizing_works_on_a_small_move():
-    """Minden meret a mozgas aranyaban van, igy egy 1%-os mozgason is mukodik."""
-    det = ReversalDetector(rev_cfg)
-    sigs = rev_run(det, rev_tape(99.13, 99.09, 99.20, csucs=100.0, mely=99.00))
-    assert len(sigs) == 1, sigs
-    assert sigs[0]["metrics"]["retracementPct"] <= REV["maxRetracementPct"]
-
-
-def rev_tape_sell_flow(micro, visszahuzas, belepo):
-    """Ugyanaz az alakzat, de az attorest ELADOI oldal viszi -> LONG-hoz rossz."""
-    tape = rev_tape(micro, visszahuzas, belepo)
-    return [t._replace(buy_taker=False) if t.price == belepo else t for t in tape]
-
-
-def test_no_reversal_without_buy_flow():
-    det = ReversalDetector(rev_cfg)
-    assert rev_run(det, rev_tape_sell_flow(0.78380, 0.78330, 0.78450)) == []
-
-
-def test_no_reversal_without_micro_break():
-    """Visszapattan, a micro szint rogzul, de nem tori at."""
-    det = ReversalDetector(rev_cfg)
-    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78370)) == []
-
-
-def test_new_lower_low_resets_the_setup():
-    """Uj, melyebb minimum -> az alakzat ujraindul a regi micro szint nelkul."""
-    det = ReversalDetector(rev_cfg)
-    tape = rev_tape(0.78380, 0.78330, 0.78450)
-    # az attores ele beszurunk egy uj melypontot
-    uj_mely = [t._replace(price=0.78100) for t in tape[22:26]]
-    for sig in rev_run(det, tape[:22] + uj_mely + tape[26:]):
-        assert sig["metrics"]["extreme"] <= 0.78101, sig["metrics"]
-
-
-def test_reversal_cooldown():
-    det = ReversalDetector(rev_cfg)
-    assert len(rev_run(det, rev_tape(0.78380, 0.78330, 0.78450))) == 1
-    assert rev_run(det, rev_tape(0.78380, 0.78330, 0.78450)) == []
-
-
-# ---------------------------------------------------------------- baseline
-
-def _tanit(det, symbol, amplitudo_pct, perc=6, t0=1000.0):
-    """A par sajat normaljanak felepitese: folyamatos hullamzas."""
     t = t0
-    while t < t0 + perc * 60:
-        for i in range(12):
-            ar = 100.0 * (1 + amplitudo_pct / 100 * math.sin(t * 3.0))
-            det.on_trade(Trade(symbol, ar, 30.0, t + i * 0.08, True))
-        t += 1.0
-    return t
+    for price, buy, usd, dt in trades:
+        t += dt
+        sig = det.on_trade(Trade(symbol, price, usd / price, t, buy))
+        if sig:
+            out.append(sig)
+    return out
 
 
-def test_same_move_signals_on_a_calm_pair_but_not_on_a_wild_one():
-    """A refaktoralas lenyege: ugyanaz a +0.8%-os mozgas az egyik paron rendkivuli,
-    a masikon a normalis mukodes resze."""
-    def probal(amplitudo):
-        det = PumpDumpDetector(cfg_obj)
-        t = _tanit(det, "XUSDT", amplitudo)
-        alap = det.baseline.value("XUSDT")
-        jelzesek = []
-        arak = tart([100.0 * (1 + 0.008 * (i + 1) / 30) for i in range(30)], step=0.07)
-        for i, ar in enumerate(arak):
-            c = det.on_trade(Trade("XUSDT", ar, 30.0, t + i * 0.07, True))
-            if c:
-                jelzesek.append(c)
-        return alap, jelzesek
-
-    nyugodt_alap, nyugodt = probal(0.01)
-    vad_alap, vad = probal(0.60)
-    assert vad_alap > nyugodt_alap * 5, (nyugodt_alap, vad_alap)
-    assert nyugodt, "a nyugodt paron a +0.8% rendkivuli -> jelzes"
-    assert not vad, "a vad paron a +0.8% a normalis mukodes resze -> nincs jelzes"
+def continuation_tape(up=True, retrace_frac=0.30, p0=100.0, leg=0.6,
+                      breakout_frac=0.10):
+    """Impulzus -> retrace_frac-os visszahuzas -> ujratores, egyiranyu flowval."""
+    sign = 1 if up else -1
+    buy = up
+    out = []
+    for i in range(40):                                    # 1) impulzus
+        out.append((p0 + sign * leg * (i + 1) / 40, buy, 20_000, 0.1))
+    peak = p0 + sign * leg
+    low = peak - sign * leg * retrace_frac
+    for i in range(20):                                     # 2) visszahuzas
+        out.append((peak - sign * leg * retrace_frac * (i + 1) / 20, not buy, 3_000, 0.3))
+    target = peak + sign * leg * breakout_frac
+    for i in range(30):                                     # 3) ujratores
+        out.append((low + (target - low) * (i + 1) / 30, buy, 8_000, 0.2))
+    return out
 
 
-def test_absolute_floor_applies_until_baseline_is_ready():
-    """Amig nincs eleg minta, az abszolut padlo dont -- nem jelzunk vaktaban."""
-    det = PumpDumpDetector(cfg_obj)
-    assert det.baseline.value("YUSDT") is None
-    assert feed(det, "YUSDT", 1000.0,
-                [100.0 * (1 + 0.0005 * i / 40) for i in range(40)]) == []
-
-
-def test_baseline_is_compared_before_it_is_updated():
-    """Eloszor a KORABBI normalhoz hasonlitunk, csak utana frissitunk -- kulonben
-    az eppen vizsgalt mozgas resze lenne annak, amihez merjuk."""
-    det = PumpDumpDetector(cfg_obj)
-    t = _tanit(det, "ZUSDT", 0.02)
-
-    sorrend = []
-    ratio_eredeti, add_eredeti = det.baseline.ratio, det.baseline.add
-    det.baseline.ratio = lambda *a, **k: (sorrend.append("hasonlit"),
-                                          ratio_eredeti(*a, **k))[1]
-    det.baseline.add = lambda *a, **k: (sorrend.append("frissit"),
-                                        add_eredeti(*a, **k))[1]
-
-    for i in range(10):
-        det.on_trade(Trade("ZUSDT", 100.0 * (1 + 0.001 * i), 30.0, t + i * 0.07, True))
-
-    assert sorrend, "egyik hivas sem tortent meg"
-    # minden korben eloszor hasonlitunk, aztan frissitunk
-    assert sorrend[0] == "hasonlit", sorrend[:4]
-    for i in range(0, len(sorrend) - 1, 2):
-        assert sorrend[i:i + 2] == ["hasonlit", "frissit"], sorrend[i:i + 4]
-
-
-def test_baseline_scales_with_the_measured_window():
-    """Bolyongasnal az elmozdulas az ido gyokevel no: egy 4x hosszabb ablakban a
-    NORMAL mozgas ~2x akkora. Skalazas nelkul egy hosszabb kuszas rendkivulinek tunne."""
-    det = PumpDumpDetector(cfg_obj)
-    _tanit(det, "WUSDT", 0.02)
-    alap = det.baseline.value("WUSDT")
-    ablak = CFG["moveWindowSec"]
-    assert det.baseline.value_for("WUSDT", ablak) == alap
-    negyszer = det.baseline.value_for("WUSDT", ablak * 4)
-    assert abs(negyszer / alap - 2.0) < 0.01, negyszer / alap
-    assert det.baseline.value_for("ISMERETLEN", ablak) is None
-
-
-def test_slow_drift_over_a_long_window_is_not_a_reversal_setup():
-    """Idoskala-javitas: ugyanaz a 0.70%-os mozgas 3 masodperc alatt rendkivuli,
-    20 masodperc alatt viszont a normal bolyongas resze."""
-    def probal(hossz_sec):
-        base = Baseline(cfg_obj)
-        det = ReversalDetector(rev_cfg, base)
-        # normal: 2 mp-es ablakban 0.05%
-        for i in range(400):
-            base.add("QUSDT", 1000.0 + i, 0.05)
-        ablak = [Trade("QUSDT", 100.0 * (1 - 0.0070 * (i + 1) / 40), 30.0,
-                       2000.0 + i * hossz_sec / 40, False) for i in range(40)]
-        return det._find_setup(ablak, {**REV, "minMovePct": 0.0})
-
-    assert probal(3.0) is not None, "3 mp alatt 0.70% rendkivuli"
-    assert probal(20.0) is None, "20 mp alatt ugyanez a normal bolyongas"
-
-
-def test_instant_wick_is_not_the_start_of_a_move():
-    """VALODI eset (SKRUSDT, 2026-08-30 13:50:41 UTC): egyetlen pillanatban negy
-    print 0.015642-ig, aztan azonnal vissza. A detektor ezt vette a mozgas
-    kezdopontjanak, es "0.61% emelkedest" jelentett -- a valosagban az ar
-    0.01570 es 0.015738 kozott mozgott, azaz 0.24%-ot.
-    """
-    base = Baseline(cfg_obj)
-    det = ReversalDetector(rev_cfg, base)
-    for i in range(400):
-        base.add("SKRUSDT", 1000.0 + i, 0.049)
-
-    ablak = []
-    t = 2000.0
-    for i in range(120):                       # ~0.01570 korul rezeg
-        ablak.append(Trade("SKRUSDT", 0.015700 + (i % 5) * 0.000002, 30.0, t, False))
-        t += 0.05
-    kanoc_ts = t
-    for ar in (0.015689, 0.015650, 0.015642, 0.015670):   # egyetlen pillanat
-        ablak.append(Trade("SKRUSDT", ar, 30.0, kanoc_ts, False))
-    t += 0.05
-    for i in range(120):                       # majd fel 0.015738-ig
-        ablak.append(Trade("SKRUSDT", 0.015700 + 0.000038 * (i + 1) / 120, 30.0, t, True))
-        t += 0.05
-
-    setup = det._find_setup(ablak, REV)
-    assert setup is None or setup.move_pct < 0.4, (
-        setup and (setup.move_pct, setup.origin))
-
-    # ugyanez a lemozgas SOK kotessel, 2 masodperc alatt -> ez valodi, meg kell latni
-    valodi = []
-    t = 2000.0
+def reversal_tape(break_holds=True, hold_ticks=20):
+    """Impulzus le -> lassu visszapattanas -> ellen-visszahuzas (szint rogzul)
+    -> a szint attorese, ami tart -- vagy nem, ha break_holds=False."""
+    out = []
     for i in range(40):
-        valodi.append(Trade("SKRUSDT", 0.015840 * (1 - 0.0250 * (i + 1) / 40), 30.0, t, False))
-        t += 0.05
-    for i in range(10):
-        valodi.append(Trade("SKRUSDT", 0.015460, 30.0, t, True))
-        t += 0.05
-    s2 = det._find_setup(valodi, REV)
-    assert s2 is not None and s2.side == "LONG", s2
+        out.append((100.0 * (1 - 0.006 * (i + 1) / 40), False, 20_000, 0.1))
+    for i in range(20):                                     # lassu visszapattanas (~10 mp)
+        out.append((99.40 + 0.12 * (i + 1) / 20, True, 4_000, 0.5))
+    for i in range(8):                                       # ellen-visszahuzas: a szint rogzul
+        out.append((99.52 - 0.045 * (i + 1) / 8, False, 2_500, 0.4))
+    for i in range(15):                                       # attores
+        out.append((99.475 + 0.08 * (i + 1) / 15, True, 9_000, 0.3))
+    if break_holds:
+        for _ in range(hold_ticks):
+            out.append((99.556, True, 9_000, 0.3))
+    else:
+        for i in range(10):                                    # azonnal visszaesik
+            out.append((99.556 - 0.10 * (i + 1) / 10, False, 4_000, 0.3))
+    return out
 
 
-def test_single_whale_print_cannot_create_flow():
-    """Egyetlen nagy kotes ne csinaljon 'fordulast': a domináns oldalnak
-    kotesszamban is vezetnie kell."""
-    det = ReversalDetector(rev_cfg)
-    balna = ([Trade("X", 100.0, 500.0, 1000.0, True)]
-             + [Trade("X", 100.0, 10.0, 1000.1 + i * 0.1, False) for i in range(8)])
-    assert det._flow(balna, 1001.0, REV, None) is None
+# ---------------------------------------------------------------- impulzus
 
-    valodi = ([Trade("X", 100.0, 50.0, 1000.0 + i * 0.1, True) for i in range(6)]
-              + [Trade("X", 100.0, 20.0, 1000.7 + i * 0.1, False) for i in range(3)])
-    f = det._flow(valodi, 1001.0, REV, None)
-    assert f and f["buyDominant"] and f["buyTrades"] > f["sellTrades"]
+def test_impulse_alone_is_not_a_signal():
+    """Az impulzus csak egy setup kezdete, nem jelzes."""
+    det = uj_detektor()
+    kesz_baseline(det, "IUSDT")
+    imp = continuation_tape()[:40]                      # csak az impulzus resze
+    assert futtat(det, "IUSDT", imp) == []
+    assert "IUSDT" in det.setups, "a setup elindult, csak nem jelzett"
+    assert det.setups["IUSDT"].state == "IMPULSE_DETECTED"
+
+
+def test_no_impulse_without_ready_baseline():
+    """Amig nincs eleg minta MINDKET normalhoz, nem indul setup."""
+    det = uj_detektor()
+    assert det.baseline.value("CUSDT") is None
+    imp = continuation_tape()[:40]
+    assert futtat(det, "CUSDT", imp) == []
+    assert "CUSDT" not in det.setups
+
+
+def test_notional_gate_blocks_thin_impulse():
+    """Ugyanaz az arelmozdulas, de vekony konyvbol -- nem eleg penz all mogotte."""
+    det = uj_detektor()
+    kesz_baseline(det, "TUSDT", normal_notional=20_000.0)
+    vekony = [(p, b, usd / 50.0, dt) for p, b, usd, dt in continuation_tape()[:40]]
+    assert futtat(det, "TUSDT", vekony) == []
+    assert "TUSDT" not in det.setups, "vekony konyvbol nem indulhat impulzus"
+
+
+def test_imbalance_gate_blocks_two_sided_move():
+    """+0.6%-os mozgas, de a taker forgalom fele eladoi -- nem egyiranyu."""
+    det = uj_detektor()
+    kesz_baseline(det, "MUSDT")
+    imp = continuation_tape()[:40]
+    vegyes = [(p, (i % 2 == 0), usd, dt) for i, (p, b, usd, dt) in enumerate(imp)]
+    assert futtat(det, "MUSDT", vegyes) == []
+    assert "MUSDT" not in det.setups
+
+
+def test_single_step_gate_blocks_book_sweep():
+    """Egy nagy kotes atsopri a konyvet, a tobbi mar az uj aron nyomtat."""
+    det = uj_detektor()
+    kesz_baseline(det, "SUSDT")
+    lepcsos = [(100.0, True, 20_000, 0.1)] * 20 + [(100.6, True, 20_000, 0.1)] * 20
+    assert futtat(det, "SUSDT", lepcsos) == []
+    assert "SUSDT" not in det.setups
+
+
+def test_absolute_floor_applies_until_baseline_says_otherwise():
+    """Abszolut padlo alatti mozgasbol sosem lesz impulzus, akarmennyire nyugodt a par."""
+    det = uj_detektor()
+    kesz_baseline(det, "FUSDT", normal_pct=0.001)   # nagyon nyugodt par
+    kicsi = [(100.0 * (1 + 0.001 * (i + 1) / 40), True, 20_000, 0.1) for i in range(40)]
+    assert futtat(det, "FUSDT", kicsi) == []
+    assert "FUSDT" not in det.setups
+
+
+def test_wild_pair_needs_bigger_move_than_calm_pair():
+    """Ugyanaz a mozgas az egyik paron impulzus, a masikon a normal resze."""
+    det_nyugodt = uj_detektor()
+    kesz_baseline(det_nyugodt, "CALMUSDT", normal_pct=0.01)
+    det_vad = uj_detektor()
+    kesz_baseline(det_vad, "WILDUSDT", normal_pct=0.20)
+
+    imp = continuation_tape()[:40]
+    futtat(det_nyugodt, "CALMUSDT", imp)
+    futtat(det_vad, "WILDUSDT", imp)
+    assert "CALMUSDT" in det_nyugodt.setups, "nyugodt paron a +0.6% rendkivuli"
+    assert "WILDUSDT" not in det_vad.setups, "vad paron a +0.6% a normal resze"
+
+
+# ---------------------------------------------------------------- folytatas
+
+def test_continuation_signal_after_shallow_pullback():
+    det = uj_detektor()
+    kesz_baseline(det, "CXUSDT")
+    jelek = futtat(det, "CXUSDT", continuation_tape(retrace_frac=0.30))
+    assert len(jelek) == 1, jelek
+    assert jelek[0]["setup"] == "LONG_CONTINUATION"
+    assert jelek[0]["direction"] == "LONG"
+    assert "CXUSDT" not in det.setups, "a setup lezarult"
+
+
+def test_short_continuation_is_the_mirror_image():
+    det = uj_detektor()
+    kesz_baseline(det, "CDUSDT")
+    jelek = futtat(det, "CDUSDT", continuation_tape(up=False, retrace_frac=0.30))
+    assert len(jelek) == 1, jelek
+    assert jelek[0]["setup"] == "SHORT_CONTINUATION"
+    assert jelek[0]["direction"] == "SHORT"
+
+
+def test_deep_pullback_blocks_continuation():
+    """Ha a visszahuzas mar tul mely volt, ez mar nem folytatas."""
+    det = uj_detektor()
+    kesz_baseline(det, "DPUSDT")
+    assert futtat(det, "DPUSDT", continuation_tape(retrace_frac=0.80)) == []
+
+
+def test_continuation_needs_matching_flow():
+    """Az ujratores pillanataban a kotesaramlas ne az ellenkezo iranyba mutasson."""
+    det = uj_detektor()
+    kesz_baseline(det, "FLUSDT")
+    tape = continuation_tape(retrace_frac=0.30)
+    # az utolso (ujratores) szakaszon megforditjuk a takert -- eladoi nyomas LONG-nal
+    forditott = tape[:-30] + [(p, False, usd, dt) for p, b, usd, dt in tape[-30:]]
+    assert futtat(det, "FLUSDT", forditott) == []
+
+
+# ---------------------------------------------------------------- fordulo
+
+def test_reversal_signal_after_exhaustion_and_reclaim():
+    det = uj_detektor()
+    kesz_baseline(det, "RXUSDT")
+    jelek = futtat(det, "RXUSDT", reversal_tape())
+    assert len(jelek) == 1, jelek
+    assert jelek[0]["setup"] == "LONG_REVERSAL"
+    assert jelek[0]["direction"] == "LONG"
+
+
+def test_reversal_requires_the_break_to_hold():
+    """Az attores pillanata meg nem fordulo -- ha azonnal visszaesik, nincs jelzes."""
+    det = uj_detektor()
+    kesz_baseline(det, "RHUSDT")
+    assert futtat(det, "RHUSDT", reversal_tape(break_holds=False)) == []
+
+
+def test_reversal_needs_a_locked_level():
+    """Amig nincs ellen-visszahuzas (a szint sosem fordul vissza), nem rogzul --
+    nincs mit attorni, tehat a folyamatosan tovabb kuszo ar sosem lesz fordulo."""
+    det = uj_detektor()
+    kesz_baseline(det, "NLUSDT")
+    tape = reversal_tape()[:60]                    # impulzus + visszapattanas 99.52-ig
+    # a visszapattanas MEGALLAS NELKUL folytatodik -- sosem fordul vissza, tehat
+    # a szint (counter) sosem rogzul
+    folytatodik = [(99.52 + 0.18 * (i + 1) / 15, True, 4_000, 0.4) for i in range(15)]
+    assert futtat(det, "NLUSDT", tape + folytatodik) == []
+
+
+def test_reversal_direction_mirrors_the_impulse():
+    """Felfele impulzus utan a fordulo SHORT."""
+    det = uj_detektor()
+    kesz_baseline(det, "RMUSDT")
+    tukor = [(200.0 - p, b, usd, dt) for p, b, usd, dt in reversal_tape()]
+    # a taker oldalt is tukrozzuk, hiszen fizikailag forditott mozgasrol van szo
+    tukor = [(p, not b, usd, dt) for p, b, usd, dt in tukor]
+    jelek = futtat(det, "RMUSDT", tukor)
+    assert len(jelek) == 1, jelek
+    assert jelek[0]["setup"] == "SHORT_REVERSAL"
+
+
+# ---------------------------------------------------------------- setup elettartam
+
+def test_setup_invalidates_after_timeout():
+    det = uj_detektor()
+    kesz_baseline(det, "TOUSDT")
+    imp = continuation_tape()[:40]
+    futtat(det, "TOUSDT", imp)
+    assert "TOUSDT" in det.setups
+    hosszu_varakozas = [(100.6, True, 3_000, det.cfg.detector["setupTimeoutSec"] + 1)]
+    futtat(det, "TOUSDT", hosszu_varakozas, t0=2000.0 + 40 * 0.1)
+    assert "TOUSDT" not in det.setups, "a lejart setupot el kellett dobni"
+
+
+def test_setup_invalidates_beyond_origin():
+    """Ha az ar visszamegy az impulzus kiindulopontja ALA, vege a setupnak."""
+    det = uj_detektor()
+    kesz_baseline(det, "OBUSDT")
+    imp = continuation_tape()[:40]
+    futtat(det, "OBUSDT", imp)
+    assert "OBUSDT" in det.setups
+    zuhanas = [(99.5, False, 3_000, 0.2)]              # jol az origin (100.0) ala
+    futtat(det, "OBUSDT", zuhanas, t0=2004.0)
+    assert "OBUSDT" not in det.setups
+
+
+def test_long_structure_is_followed_not_just_the_instant_v():
+    """30-90 masodperces szerkezetet is vegig kell tudni kovetni, nem csak a
+    masodperces V-fordulot. Csak a VISSZAHUZAS szakaszat nyujtjuk meg -- az
+    impulzus es az ujratores sűrűsegenek meg kell maradnia a minTradesInWindow
+    es a flowWindowSec ablakokhoz."""
+    det = uj_detektor()
+    kesz_baseline(det, "LSUSDT")
+    tape = continuation_tape(retrace_frac=0.30)
+    impulzus, visszahuzas, ujratores = tape[:40], tape[40:60], tape[60:]
+    nyujtott_visszahuzas = [(p, b, usd, dt * 6) for p, b, usd, dt in visszahuzas]
+    jelek = futtat(det, "LSUSDT", impulzus + nyujtott_visszahuzas + ujratores)
+    assert len(jelek) == 1, jelek
+    assert jelek[0]["metrics"]["setupAgeSec"] > 30
+
+
+def test_symbol_cooldown_suppresses_repeat():
+    det = uj_detektor()
+    kesz_baseline(det, "COUSDT")
+    tape = continuation_tape(retrace_frac=0.30) * 1
+    egy = futtat(det, "COUSDT", tape)
+    assert len(egy) == 1
+    # ugyanaz megint, kozvetlen utana -- a cooldown alatt vagyunk
+    ketto = futtat(det, "COUSDT", tape, t0=2000.0 + 90 * 0.1 + 20 * 0.3 + 30 * 0.2)
+    assert ketto == []
+
+
+# ---------------------------------------------------------------- konyv es trend
+
+class FakeBook:
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    def context(self, symbol):
+        return self._ctx
+
+    def snapshot(self, symbol):
+        return None
+
+
+def test_book_wall_blocks_continuation():
+    """Egy kozeli fal a mozgas iranyaban -- a folytatas nem mehet ki."""
+    fal = {"price": 100.65, "distancePct": 0.05, "notional": 999.0, "ratio": 9.0}
+    book = FakeBook({"spreadPct": 0.01, "topImbalance": 0.0,
+                     "wallAsk": fal, "wallBid": None, "levels": 20})
+    det = uj_detektor(book=book)
+    kesz_baseline(det, "WBUSDT")
+    assert futtat(det, "WBUSDT", continuation_tape(retrace_frac=0.30)) == []
+
+
+def test_book_imbalance_blocks_continuation():
+    """Eros konyv-tulsuly az ELLENKEZO oldalon -- a folytatas nem mehet ki."""
+    book = FakeBook({"spreadPct": 0.01, "topImbalance": -0.9,
+                     "wallAsk": None, "wallBid": None, "levels": 20})
+    det = uj_detektor(book=book)
+    kesz_baseline(det, "BIUSDT")
+    assert futtat(det, "BIUSDT", continuation_tape(retrace_frac=0.30)) == []
+
+
+def test_no_book_data_does_not_block_the_signal():
+    """Ha nincs friss konyv-adat, nem nemitunk el mindent -- csak nem szurunk vele."""
+    book = FakeBook(None)
+    det = uj_detektor(book=book)
+    kesz_baseline(det, "NBUSDT")
+    jelek = futtat(det, "NBUSDT", continuation_tape(retrace_frac=0.30))
+    assert len(jelek) == 1
+
+
+class FakeTrend:
+    def __init__(self, trend):
+        self._trend = trend
+
+    def get(self, symbol):
+        return {"trend": self._trend} if self._trend else None
+
+
+def test_continuation_requires_matching_trend_by_default():
+    """requireTrendForContinuation alapbol be van kapcsolva."""
+    trend = FakeTrend("bearish")             # LONG folytatashoz nem illik
+    det = uj_detektor(trend=trend)
+    kesz_baseline(det, "TRUSDT")
+    assert futtat(det, "TRUSDT", continuation_tape(retrace_frac=0.30)) == []
+
+    trend_jo = FakeTrend("bullish")
+    det2 = uj_detektor(trend=trend_jo)
+    kesz_baseline(det2, "TR2USDT")
+    assert len(futtat(det2, "TR2USDT", continuation_tape(retrace_frac=0.30))) == 1
+
+
+def test_reversal_does_not_require_trend_by_default():
+    """requireTrendForReversal alapbol KI van kapcsolva -- a fordulo szandekosan
+    szembe megy a rovid tavu trenddel."""
+    trend = FakeTrend("bearish")             # a LONG_REVERSAL "szembe" megy ezzel
+    det = uj_detektor(trend=trend)
+    kesz_baseline(det, "TR3USDT")
+    assert len(futtat(det, "TR3USDT", reversal_tape())) == 1
+
+
+# ---------------------------------------------------------------- baseline / RollingMedian
+
+def test_rolling_median_ignores_outliers():
+    rm = RollingMedian(window_sec=300, min_samples=5)
+    assert rm.value("X") is None
+    for i in range(20):
+        rm.add("X", 1000.0 + i, 10.0)
+    assert rm.value("X") == 10.0
+    rm.add("X", 1021.0, 10_000.0)             # egyetlen kiugro ertek
+    assert rm.value("X") == 10.0, "a median nem viheto el egy kiugro ertekkel"
+
+
+def test_baseline_value_for_scales_with_sqrt_of_time():
+    b = Baseline(cfg_obj)
+    for i in range(400):
+        b.add("WUSDT", 1000.0 + i, 0.02)
+    alap = b.value("WUSDT")
+    ablak = CFG["impulseWindowSec"]
+    assert b.value_for("WUSDT", ablak) == alap
+    negyszer = b.value_for("WUSDT", ablak * 4)
+    assert abs(negyszer / alap - 2.0) < 0.01, negyszer / alap
+    assert b.value_for("ISMERETLEN", ablak) is None
+
+
+# ---------------------------------------------------------------- order book
+
+def test_wall_detection():
+    price = 100.0
+    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
+    asks[8] = (100.08, 60.0)
+    wall = orderbook.find_wall(asks, price, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
+    assert wall is not None
+    assert wall["price"] == 100.08
+    assert abs(wall["distancePct"] - 0.08) < 0.001
+    assert wall["ratio"] > 3.0
+
+
+def test_no_wall_when_flat():
+    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
+    assert orderbook.find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
+
+
+def test_wall_outside_range_ignored():
+    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)] + [(105.0, 500.0)]
+    assert orderbook.find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
 
 
 def test_wall_is_measured_against_the_median_not_the_mean():
-    """Az atlagba a fal maga is beleszamit, es felhigitja a sajat aranyat."""
     import statistics
     asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
     asks[8] = (100.08, 10.0)
     n = [p * q for p, q in asks]
     atlaghoz = n[8] / (sum(n) / len(n))
-    w = orderbook._find_wall(asks, 100.0, 3.0, 1.5)
+    w = orderbook.find_wall(asks, 100.0, 3.0, 1.5)
     assert abs(w["ratio"] - n[8] / statistics.median(n)) < 0.01
     assert w["ratio"] > atlaghoz + 2, (atlaghoz, w["ratio"])
 
 
-def test_distribution_block_is_safe_and_informative():
-    e = Eligibility(cfg_obj)
-    assert e.distribution([]) == [], "ures adaton se hibazzon"
-    for nev, bid, ask in (("A", 100.0, 100.001), ("B", 100.0, 100.01),
-                          ("C", 100.0, 100.2)):
-        _book(e, nev, bid, ask)
-        e.check(nev)
-    sorok = e.distribution(["A", "B", "C"])
-    assert len(sorok) == 1
-    assert "spread" in sorok[0] and "kuszob" in sorok[0] and "par felette" in sorok[0]
-
-
-def test_detectors_build_state_even_for_ineligible_pairs():
-    """A szuro a JELZESNEL all, nem a detektor elott: igy a baseline minden figyelt
-    paron epul, es egy par nem nullarol indul, amint kereskedhetove valik."""
-    e = Eligibility(cfg_obj)
-    _book(e, "OTHERUSDT", 1.0000, 1.0001)
-    _book(e, "CYSUSDT", 0.7800, 0.7830)            # szeles spread -> nem kereskedheto
-    det = ReversalDetector(rev_cfg)
-    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
-    mgr = DetectorManager(rev_cfg, [det], e)
-    for t in rev_tape(0.78380, 0.78330, 0.78450):
-        mgr.on_trade(t)
-    assert mgr.total_candidates == 0, "jelzes nem mehet ki"
-    assert mgr.skipped > 0
-    assert det.trades["CYSUSDT"], "de a detektor allapota epult"
-
-
-def test_readiness_shows_raw_numbers_not_just_a_ratio():
-    """Hidegindulaskor a median lehet ~0.001%, amitol barmi '266x'-nek latszana."""
-    det = PumpDumpDetector(cfg_obj)
-    _tanit(det, "RUSDT", 0.02)
-    sor = det.readiness()
-    assert "normal kesz:" in sor
-    assert "%" in sor and "kell" in sor, sor
-
-
 def test_touch_level_is_not_a_wall():
-    """Elesben a BTC/ETH sajat legjobb ajanlata szamitott 'falnak' (0.00% tavolsag,
-    1124x atlag), es emiatt minden jelzesuk elbukott. A touch nem akadaly: ott
-    lepsz be."""
-    # a touch hatalmas, a tobbi szint lapos
+    """Elesben a BTC/ETH sajat legjobb ajanlata szamitott 'falnak', es emiatt
+    minden jelzesuk elbukott. A touch nem akadaly: ott lepsz be."""
     asks = [(100.01, 1000.0)] + [(100.02 + i * 0.01, 1.0) for i in range(19)]
-    assert orderbook._find_wall(asks, 100.0, 3.0, 1.5) is None
-
-    # de egy valodi fal a konyv belsejeben tovabbra is fal
+    assert orderbook.find_wall(asks, 100.0, 3.0, 1.5) is None
     asks[5] = (asks[5][0], 40.0)
-    w = orderbook._find_wall(asks, 100.0, 3.0, 1.5)
+    w = orderbook.find_wall(asks, 100.0, 3.0, 1.5)
     assert w is not None and w["distancePct"] > 0.0
 
 
-def test_no_candidate_without_a_baseline():
-    """Baseline nelkul a rendszer csak egy fix kuszob lenne -- epp az, amitol el
-    akartunk jutni. Elesben minden jelzes pontosan a 0.15%-os padlon szuletett."""
-    det = PumpDumpDetector(cfg_obj)
-    assert det.baseline.value("COLDUSDT") is None
-    # bőven a padlo folotti, tiszta mozgas -- megsem jelez, mert nincs meg normal
-    assert feed(det, "COLDUSDT", 1000.0,
-                [100.0 * (1 + 0.006 * (i + 1) / 40) for i in range(40)]) == []
+def test_bookcache_context_and_snapshot():
+    from app.bookcache import BookCache
+    bc = BookCache(cfg_obj)
+    assert bc.context("XUSDT") is None
+    bids = [[100.0 - i * 0.01, 1.0] for i in range(20)]
+    asks = [[100.02 + i * 0.01, 1.0] for i in range(20)]
+    bids[3] = [99.97, 50.0]
+    bc.on_depth({"s": "XUSDT", "b": bids, "a": asks})
+    ctx = bc.context("XUSDT")
+    assert ctx is not None
+    assert -1.0 <= ctx["topImbalance"] <= 1.0
+    assert ctx["wallBid"] is not None and ctx["wallBid"]["price"] == 99.97
+    snap = bc.snapshot("XUSDT")
+    assert len(snap["bids"]) == 20 and len(snap["asks"]) == 20
 
+
+# ---------------------------------------------------------------- eligibility
 
 def _book(e, symbol, bid, ask, qty=100000.0):
-    """Konyv-adat feltoltese: annyi megfigyeles, hogy a median beallja."""
     for _ in range(40):
         e.on_book_ticker({"e": "bookTicker", "s": symbol, "b": str(bid),
                           "B": str(qty / bid), "a": str(ask), "A": str(qty / ask)})
@@ -522,111 +483,15 @@ def test_eligibility_rejects_wide_spread():
 
 
 def test_eligibility_without_book_data_does_not_pass():
-    """Van konyv-adat a rendszerben, de EZT a part meg nem lattuk -> varunk."""
     e = Eligibility(cfg_obj)
     _book(e, "OTHERUSDT", 1.0000, 1.0001)
     assert e.check("UNKNOWNUSDT")[1] == "no_book_data"
 
 
-def test_reconnect_storm_is_rate_limited():
-    """A Binance az IP-t tiltja ki, ha tul suru a kapcsolodasi kiserlet.
-
-    Elesben ez tortent: szakadozo alagut a VPS fele -> a nemasag-timeout utan a
-    kod VARAKOZAS NELKUL ujracsatlakozott, minden 15 masodpercben, minden
-    kapcsolaton. A korlat az OSSZES kapcsolatra egyutt szamol, mert a tiltas az
-    IP-re szol.
-    """
-    import asyncio
-    from app.market_data import ConnectLimiter
-
-    async def probal():
-        lim = ConnectLimiter(min_gap=0.01, max_per_5min=5)
-        # az elso 5 kiserlet atmegy
-        for _ in range(5):
-            await lim.wait()
-        assert lim.utolso_5_perc() == 5
-        # a 6. mar var -- az ablak legregebbi elemenek lejartaig
-        lim.kiserletek[0] = time.time() - 299.95      # 0.05 mp mulva szabadul fel
-        t0 = time.time()
-        await lim.wait()
-        assert time.time() - t0 >= 0.04, "varnia kellett a keret felszabadulasara"
-
-    asyncio.run(probal())
-
-    # es a stream minden bontas utan var -- a nemasag-timeout utan is
-    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
-    stream = forras[forras.index("async def _stream"):forras.index("async def _book_stream")]
-    assert "await self.limiter.wait()" in stream, "globalis korlat a csatlakozas elott"
-    assert stream.count("await asyncio.sleep(backoff)") == 1, "bontas utan mindig var"
-    assert "EGESZSEGES_SEC" in stream, "a backoff csak elo kapcsolat utan nullazodik"
-
-
-def test_rate_limit_is_recognised_and_never_crashes_the_app():
-    """A Binance 429-cel jelzi a tullepest, 418-cal KITILTJA az IP-t.
-
-    Elesben ez tortent: az indulasi hiba kiloti a processzt, a docker azonnal
-    ujrainditja, es minden inditas lo egy exchangeInfo + egy ticker/24hr hivast
-    (utobbi 40 sulyu). A crash-loop percek alatt osszehozta a 418-at.
-    """
-    import asyncio
-    from app import binance_rest as BR
-
-    assert BR.ban_seconds(418, {"Retry-After": "120"}) == 120.0
-    assert BR.ban_seconds(429, {}) == 60.0, "fejlec nelkul is varunk"
-    assert BR.ban_seconds(429, {"Retry-After": "x"}) == 60.0, "hibas fejlec"
-    assert BR.ban_seconds(200, {}) is None and BR.ban_seconds(404, {}) is None
-
-    # tiltas eseten a mentett listaval futunk tovabb, kivetel nelkul
-    from app.market_data import MarketDataService
-
-    class FakeStatus:
-        def __init__(self, symbols): self.doc = {"_id": "symbols", "symbols": symbols}
-        async def find_one(self, q): return dict(self.doc)
-        async def update_one(self, q, u, upsert=False): self.doc.update(u["$set"])
-
-    db = types.SimpleNamespace(status=FakeStatus(["BTCUSDT", "ETHUSDT"]))
-    m = MarketDataService(cfg_obj, db, None, None, None)
-    eredeti = BR.load_symbols
-
-    async def tiltva(*a, **k):
-        raise BR.RateLimited(418, 120)
-
-    BR.load_symbols = tiltva
-    try:
-        symbols = asyncio.run(m._load_symbols())
-    finally:
-        BR.load_symbols = eredeti
-    assert symbols == ["BTCUSDT", "ETHUSDT"], symbols
-    assert m.stale_symbols is True, "jelezzuk, hogy regi listaval futunk"
-
-    # a main sem lephet ki azonnal egy vegzetes hiban: az adna a szoros hurkot
-    forras = (pathlib.Path(__file__).parent.parent / "app" / "main.py").read_text()
-    assert "await asyncio.sleep(60)" in forras and "raise" in forras, \
-        "a main varjon, mielott kilep -- kulonben szoros ujrainditasi hurok"
-
-
-def test_book_and_trade_streams_use_different_url_segments():
-    """Regresszio: a !bookTicker a /market/stream vegponton NEM erkezik meg (a
-    feliratkozast nyugtazza, de nem kuld adatot) -- ezert kell kulon kapcsolat a
-    "public" szegmensre. Elesben ez 39 parbol 39-et zart ki no_book_data-val."""
-    from app import market_data as MD
-    assert MD.WS_BASES[0].endswith("/market/stream")
-    assert MD.BOOK_BASES[0].endswith("/public/stream")
-    assert MD.WS_BASES[0] != MD.BOOK_BASES[0]
-    # mindketto vegigprobalja a regi utvonalakat is, ha az elso nem kuld adatot
-    assert MD.BOOK_BASES[1:] == MD.WS_BASES[1:]
-
-
 def test_total_book_outage_fails_open_and_says_so():
-    """Ha SEMMILYEN konyv-adat nem erkezik, az rendszerszintu baj (rossz WS utvonal).
-
-    Ilyenkor nem nemitjuk el az egesz rendszert -- atengedunk, es a STATUS sor
-    hangosan szol rola. Kulonben orakig nem lenne jelzes, ok nelkul.
-    """
     e = Eligibility(cfg_obj)
     assert e.check("BTCUSDT")[0] is True
     assert "NEM ERKEZIK" in e.book_status()
-
     e.on_book_ticker({"e": "bookTicker", "s": "BTCUSDT", "b": "1.0000",
                       "B": "100000", "a": "1.0001", "A": "100000"})
     assert "konyv: 1 par" in e.book_status()
@@ -647,14 +512,13 @@ def test_blacklist_and_whitelist():
 
 
 def test_rejection_reasons_have_hungarian_text_and_machine_key():
-    """A gepi kulcs megy a Mongo-ba (aggregalhatosag), a szoveg a logba."""
     from app.eligibility import OKOK, szoveg
     e = Eligibility(cfg_obj)
     _book(e, "WIDE2USDT", 1.000, 1.002)
     kulcs = e.check("WIDE2USDT")[1]
-    assert kulcs == "spread_too_wide", "a Mongo-ba gepi kulcs kerul"
-    assert szoveg(kulcs) == "tul szeles a spread", "a logba magyar szoveg"
-    assert all(szoveg(k) != k for k in OKOK), "minden oknak van magyar szovege"
+    assert kulcs == "spread_too_wide"
+    assert szoveg(kulcs) == "tul szeles a spread"
+    assert all(szoveg(k) != k for k in OKOK)
 
 
 def test_eligibility_summary_aggregates_by_reason():
@@ -670,44 +534,82 @@ def test_eligibility_summary_aggregates_by_reason():
     assert "tul szeles a spread: 2" in osszegzes, osszegzes
 
 
+def test_distribution_block_is_safe_and_informative():
+    e = Eligibility(cfg_obj)
+    assert e.distribution([]) == [], "ures adaton se hibazzon"
+    for nev, bid, ask in (("A", 100.0, 100.001), ("B", 100.0, 100.01),
+                          ("C", 100.0, 100.2)):
+        _book(e, nev, bid, ask)
+        e.check(nev)
+    sorok = e.distribution(["A", "B", "C"])
+    assert len(sorok) == 1
+    assert "spread" in sorok[0] and "kuszob" in sorok[0] and "par felette" in sorok[0]
+
+
 def test_ineligible_pair_builds_state_but_emits_nothing():
     """A szuro a JELZESNEL all, nem a detektor elott: az allapot epul, de jelzes
-    nem megy ki -- igy egy par nem nullarol indul, amint kereskedhetove valik."""
+    nem megy ki."""
     e = Eligibility(cfg_obj)
-    _book(e, "OTHERUSDT", 1.0000, 1.0001)          # van konyv-adat a rendszerben
-    _book(e, "CYSUSDT", 0.7800, 0.7830)            # de EZ a par szeles spreadu
-    det = ReversalDetector(rev_cfg)
-    kesz_baseline(det, "CYSUSDT", normal_pct=0.02)
-    mgr = DetectorManager(rev_cfg, [det], e)
-    assert [s for t in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(t)] == []
+    _book(e, "OTHERUSDT", 1.0000, 1.0001)
+    _book(e, "CYSUSDT", 0.7800, 0.7830)            # szeles spread -> nem kereskedheto
+    det = uj_detektor()
+    kesz_baseline(det, "CYSUSDT")
+    mgr = DetectorManager(cfg_obj, [det], e)
+    t = 2000.0
+    for price, buy, usd, dt in continuation_tape(retrace_frac=0.30):
+        t += dt
+        mgr.on_trade(Trade("CYSUSDT", price, usd / price, t, buy))
     assert mgr.total_candidates == 0, "jelzes nem mehet ki"
     assert mgr.skipped > 0, "de a detektor eljutott a candidate-ig"
-    assert det.trades["CYSUSDT"], "es az allapota epult"
+    assert "CYSUSDT" in det.window, "es az allapota epult"
 
 
-# ---------------------------------------------------------------- egyeb
+# ---------------------------------------------------------------- manager
 
-def test_status_line_only_uses_existing_attributes():
-    """Regresszio: a STATUS sor egy mar nem letezo mezore hivatkozott
-    (svc.rejected_today), es a status task elesben elszallt AttributeError-ral.
-    A statusz csak percenkent fut, ezert a teszt sose latta."""
-    import re
-    from app.signals import SignalService
-    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
-    for attr in set(re.findall(r"\bsvc\.([a-zA-Z_]+)", forras)):
-        assert hasattr(SignalService, attr) or attr in SignalService.__init__.__code__.co_names, \
-            f"SignalService.{attr} nem letezik"
-    for attr in set(re.findall(r"self\.detectors\.([a-zA-Z_]+)", forras)):
-        assert hasattr(DetectorManager, attr) or attr in DetectorManager.__init__.__code__.co_names, \
-            f"DetectorManager.{attr} nem letezik"
+class BoomDetector:
+    name, config_key = "boom", "detector"
 
+    def on_trade(self, trade):
+        raise RuntimeError("szandekos hiba")
+
+    def status_lines(self):
+        return []
+
+
+def test_manager_fans_out_and_survives_a_broken_detector():
+    scalp = uj_detektor()
+    kesz_baseline(scalp, "CYSUSDT")
+    mgr = DetectorManager(cfg_obj, [BoomDetector(), scalp], eligible_stub())
+    tape = continuation_tape(retrace_frac=0.30)
+    signals = []
+    t = 2000.0
+    for price, buy, usd, dt in tape:
+        t += dt
+        signals += mgr.on_trade(Trade("CYSUSDT", price, usd / price, t, buy))
+    assert len(signals) == 1, "a hibas detektor nem nyelheti el a masik jelzeset"
+    assert mgr.ticks == len(tape)
+    assert mgr.total_candidates == 1
+
+
+def test_manager_skips_disabled_detector():
+    cfg = types.SimpleNamespace(detector={**CFG, "enabled": False}, market=MARKET,
+                                telegram=TG)
+    mgr = DetectorManager(cfg, [ScalpDetector(cfg)], eligible_stub())
+    signals = []
+    t = 2000.0
+    for price, buy, usd, dt in continuation_tape(retrace_frac=0.30):
+        t += dt
+        signals += mgr.on_trade(Trade("CYSUSDT", price, usd / price, t, buy))
+    assert signals == []
+
+
+# ---------------------------------------------------------------- config
 
 def test_cold_start_creates_every_setting():
     """HIDEGINDITAS: a config collection URES. A rendszernek minden beallitassal
     egyutt fel kell allnia -- semmi nem varhat kezi mongo parancsra.
 
-    A user minden ujrainditasnal torli a configot, tehat ez a normal eset,
-    nem a kivetel.
+    A user minden ujrainditasnal torli a configot, tehat ez a normal eset.
     """
     import asyncio
 
@@ -736,12 +638,11 @@ def test_cold_start_creates_every_setting():
         for k, v in defaults.items():
             assert betoltve[k] == v, f"{defaults['_id']}.{k}: {betoltve[k]!r} != {v!r}"
 
-    # es a startup osszefoglalo se hasaljon el a friss configon
     from app.main import startup_summary
     assert startup_summary(store)
 
 
-def test_config_split_moves_your_existing_values():
+def test_config_migration_moves_your_existing_values():
     """A kozos beallitasok kikerultek a 'detector'-bol egy uj 'market' dokumentumba.
 
     A koltoztetesnek a MAR BEALLITOTT ertekeket kell atvinnie -- kulonben a
@@ -767,216 +668,25 @@ def test_config_split_moves_your_existing_values():
             for k in update.get("$unset", {}):
                 doc.pop(k, None)
 
-    # a regi vilag: minden a 'detector' dokumentumban, sajat hangolt ertekekkel
     coll = FakeCollection([{"_id": "detector", "minQuoteVolume24h": 250_000_000,
                             "symbolWhitelist": ["BTCUSDT"], "telegramEnabled": False,
-                            "baselineRatio": 9.0}])
+                            "impulseBaselineRatio": 9.0}])
     store = C_CFG.ConfigStore(types.SimpleNamespace(config=coll))
     asyncio.run(store.load())
 
     assert store.market["minQuoteVolume24h"] == 250_000_000, store.market
     assert store.market["symbolWhitelist"] == ["BTCUSDT"]
     assert store.telegram["enabled"] is False, "a telegramEnabled=false nem veszhet el"
-    assert store.detector["baselineRatio"] == 9.0, "a sajat detector ertek marad"
+    assert store.detector["impulseBaselineRatio"] == 9.0, "a sajat detector ertek marad"
     assert "minQuoteVolume24h" not in coll.docs["detector"], "a regi kulcs kikerult"
 
 
-def test_saved_history_contains_the_move_not_the_confirmation():
-    """A jelzes csak confirmSec mulva megy ki -- addigra a detektor ablaka mar
-    tovagordul a mozgason. VALODI eset (ZECUSDT): a market_snapshots egy lapos
-    4 masodpercet orzott 860.1-860.6 kozott, a +0.80%-os mozgas helyett.
-    """
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "ZECUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    sig = feed(det, "ZECUSDT", 1000.0, tart(fel))[0]
-    h = sig["history"]
-    arak = [p for _, p in h]
-    assert min(arak) <= 100.001, "a mozgas ELOTTI szintnek benne kell lennie"
-    assert max(arak) >= 100.9, "es a mozgas tetejenek is"
-    assert h[-1][0] - h[0][0] >= CFG["confirmSec"], "a megerositesig tarto ut is"
-
-
-def test_wall_distance_is_not_rounded_into_meaninglessness():
-    """A "fal a mozgas iranyaban 0.00%-ra" ugy nez ki, mintha hianyozna az adat."""
-    from app.telegram import _tav
-    assert _tav(0.004) == "0.004%"
-    assert _tav(0.05) == "0.05%"
-    assert _tav(1.5) == "1.50%"
-
-
-def test_telegram_heartbeat_renders():
-    """Idoszakos eletjel: ures allapotban (meg semmi nem tortent) se hibazzon,
-    es teljes allapotban tartalmazza a lenyeget."""
-    from app.telegram import format_status
-
-    ures = {"ido": "14:20:03", "uptime": "0h 1p", "symbols": 0, "wsConnected": 0,
-            "wsTotal": 1, "ticksPerMin": 0, "signals": 0, "kizarva": "",
-            "movers": [], "kozel": "", "talalat": [], "utolso": [],
-            "reconnects5min": 0}
-    szoveg = format_status(ures)
-    assert "ELETJEL" in szoveg and "Meg nincs lemert jelzes" in szoveg
-
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "SOLUSDT", normal_pct=0.041)
-    feed(det, "SOLUSDT", 1000.0, [100.0 * (1 + 0.0002 * i) for i in range(40)])
-    movers = det.top_movers()
-    assert movers and "kell" in movers[0][1], movers
-
-    teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
-            "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
-            "movers": movers, "kozel": det.readiness(),
-            "talalat": ["tipus    ido   nyero   buko   arany",
-                        "pump     +1p       4      3     57%"],
-            "utolso": ["UTOLSO 3 PUMP/DUMP JELZES",
-                       "SKRUSDT     LONG  04:02   jelzes aron 100.00",
-                       "   + 1 perc   ar 99.69        -0.31%"]}
-    szoveg = format_status(teli)
-    for kell in ("58", "1,932", "SOLUSDT", "LEGKOZELEBB", "57%", "nyero",
-                 "UTOLSO 3 PUMP/DUMP JELZES", "-0.31%", "jelzes aron"):
-        assert kell in szoveg, (kell, szoveg)
-    assert "Meg nincs lemert jelzes" not in szoveg
-
-
-def test_outcome_history_is_loaded_at_startup():
-    """Az osszesites ne nullazodjon minden ujrainditasnal -- kulonben epp akkor
-    mutat mast, amikor eldontened, mukodik-e a rendszer."""
-    import asyncio
-    from app.outcome import OutcomeTracker
-
-    class FakeCursor:
-        def __init__(self, docs): self.docs = docs
-        def sort(self, *a): return self
-        def limit(self, n): return self
-        async def to_list(self, length=None): return self.docs
-
-    class FakeSignals:
-        def __init__(self, docs): self.docs = docs
-        def find(self, q): return FakeCursor(self.docs)
-        async def update_one(self, q, u): pass
-
-    import datetime as _dt
-    most = _dt.datetime(2026, 9, 1, 6, 56, tzinfo=_dt.timezone.utc)
-    docs = [
-        {"_id": "a", "timestamp": most, "symbol": "BTRUSDT", "detector": "pump_dump",
-         "direction": "SHORT", "price": 0.21087,
-         "outcome": {"m1": {"price": 0.20508, "changePct": -2.75, "win": True}}},
-        # regi alak: iranyhelyes 'pct', 'win' nelkul
-        {"_id": "b", "timestamp": most, "symbol": "UNIUSDT", "detector": "reversal",
-         "direction": "SHORT", "price": 5.0, "outcome": {"m1": {"price": 5.1, "pct": -2.0}}},
-    ]
-    cfg = types.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
-    o = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals(docs)))
-    asyncio.run(o.load_history())
-
-    assert len(o.jelzesek) == 2, o.jelzesek
-    assert o.jelzesek["a"]["m"][1]["nyero"] is True
-    regi = o.jelzesek["b"]["m"][1]
-    assert regi["nyero"] is False and abs(regi["valt"] - 2.0) < 0.01, \
-        "a regi alaknal a nyers valtozas +2%, ami SHORT-nal buko"
-
-    # a nem mai jelzes datummal jelenik meg
-    szoveg = "\n".join(o.recent_lines())
-    assert "09-01 06:56" in szoveg or "06:56" in szoveg, szoveg
-
-
-def test_recent_shows_three_of_each_type():
-    """Tipusonkent az utolso n jelzes -- kulonben egy sokat jelzo detektor
-    kiszoritana a masikat."""
-    import types as _t
-    from app.outcome import OutcomeTracker
-    cfg = _t.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
-    o = OutcomeTracker(cfg, None)
-    minta = [("P1", "pump_dump"), ("P2", "pump_dump"), ("R1", "reversal"),
-             ("P3", "pump_dump"), ("P4", "pump_dump"), ("P5", "pump_dump"),
-             ("R2", "reversal"), ("P6", "pump_dump")]
-    for i, (sym, det) in enumerate(minta):
-        o.jelzesek[sym] = {"ts": 1000.0 + i, "symbol": sym, "detector": det,
-                           "direction": "LONG", "price": 100.0,
-                           "m": {1: {"ar": 100.5, "valt": 0.5, "nyero": True}}}
-    szoveg = "\n".join(o.recent_lines(3))
-    assert "UTOLSO 3 PUMP/DUMP JELZES" in szoveg and "UTOLSO 2 FORDULO JELZES" in szoveg
-    for kell in ("P6", "P5", "P4", "R1", "R2"):
-        assert kell in szoveg, (kell, szoveg)
-    for nem in ("P1", "P2", "P3"):
-        assert nem not in szoveg, (nem, szoveg)
-
-
-def test_outcome_records_what_happened_after_the_signal():
-    """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat.
-
-    A szazalek a NYERS arvaltozas (fel = +, le = -), a "nyero" mezo mondja meg,
-    hogy ez a jelzes iranyaban jo volt-e. SHORT-nal a leeso ar a nyero.
-    """
-    import asyncio
-    from app.outcome import OutcomeTracker
-
-    class FakeSignals:
-        def __init__(self): self.updates = []
-        async def update_one(self, q, u): self.updates.append((q, u))
-
-    coll = FakeSignals()
-    cfg = types.SimpleNamespace(market={**MARKET, "outcomeMinutes": [1]})
-    o = OutcomeTracker(cfg, types.SimpleNamespace(signals=coll))
-
-    o.track("id-long", "AUSDT", "pump_dump", "LONG", 100.0)
-    o.track("id-short", "BUSDT", "reversal", "SHORT", 100.0)
-    for x in o.varolista:
-        x["esedekes"] = 0
-    o.on_trade(Trade("AUSDT", 101.0, 1.0, 0.0, True))    # LONG: felment  -> nyero
-    o.on_trade(Trade("BUSDT", 101.0, 1.0, 0.0, True))    # SHORT: felment -> buko
-    asyncio.run(o._kiertekel())
-
-    mentett = {q["_id"]: u["$set"]["outcome.m1"] for q, u in coll.updates}
-    assert mentett["id-long"] == {"price": 101.0, "changePct": 1.0, "win": True}
-    assert mentett["id-short"] == {"price": 101.0, "changePct": 1.0, "win": False}, \
-        "SHORT-nal a felfele mozgas buko, de a szazalek marad +1.00%"
-
-    fej, *sorok = o.summary_lines()
-    assert fej.split() == ["tipus", "ido", "nyero", "buko", "arany"], fej
-    ertekek = {x.split()[0]: x.split()[1:] for x in sorok}
-    assert ertekek["pump"] == ["+1p", "1", "0", "100%"], ertekek
-    assert ertekek["rev"] == ["+1p", "0", "1", "0%"], ertekek
-
-    szoveg = "\n".join(o.recent_lines())
-    assert "AUSDT" in szoveg and "LONG" in szoveg and "jelzes aron 100.00" in szoveg
-    assert "ar 101.00" in szoveg and "+1.00%" in szoveg, szoveg
-
-    # amirol nem erkezik kotes, arrol nem talalunk ki adatot
-    o2 = OutcomeTracker(cfg, types.SimpleNamespace(signals=FakeSignals()))
-    o2.track("id-nema", "CUSDT", "reversal", "LONG", 100.0)
-    for x in o2.varolista:
-        x["esedekes"] = 0
-    asyncio.run(o2._kiertekel())
-    assert o2.status_lines() == [] and o2.recent_lines() == []
-
-
-def test_live_defaults_are_at_least_as_strict_as_the_test_profile():
-    """A tesztek fix profilon futnak, hogy a hangolas ne torje oket. Cserebe ITT
-    orizzuk, hogy az ELES alapertekek ne legyenek lazabbak a profilnal."""
-    szigorubb_ha_nagyobb = {
-        # a confirmSec NEM szerepel: a felhasznalo szandekosan 0-ra tette
-        # (azonnali jelzes), tehat ott a kisebb ertek a kivant allapot
-        "detector": ("baselineRatio", "minMovePct", "confirmHoldPct",
-                     "symbolCooldownSec"),
-        "reversal": ("baselineRatio", "minMovePct", "cooldownSec"),
-    }
-    elesek = {"detector": C_CFG.DETECTOR_DEFAULTS, "reversal": C_CFG.REVERSAL_DEFAULTS}
-    for doksi, kulcsok in szigorubb_ha_nagyobb.items():
-        for k in kulcsok:
-            assert elesek[doksi][k] >= TESZT_PROFIL[doksi][k], (
-                f"{doksi}.{k}: az eles alapertek ({elesek[doksi][k]}) lazabb, "
-                f"mint a teszt profil ({TESZT_PROFIL[doksi][k]})")
-    assert C_CFG.DETECTOR_DEFAULTS["maxSingleStepPct"] <= \
-        TESZT_PROFIL["detector"]["maxSingleStepPct"], "itt a KISEBB a szigorubb"
-
-
 def test_every_config_key_is_documented():
-    """A doksi ne csusszon el a kodtol: minden detector/reversal beallitas
-    szerepeljen a docs/PARAMETEREK.md-ben."""
+    """A doksi ne csusszon el a kodtol: minden beallitas szerepeljen a
+    docs/PARAMETEREK.md-ben."""
     doksi = (pathlib.Path(__file__).parent.parent / "docs" / "PARAMETEREK.md").read_text()
     for defaults in (C_CFG.MARKET_DEFAULTS, C_CFG.DETECTOR_DEFAULTS,
-                     C_CFG.REVERSAL_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS):
+                     C_CFG.TELEGRAM_DEFAULTS):
         for k in defaults:
             if k == "_id":
                 continue
@@ -984,19 +694,13 @@ def test_every_config_key_is_documented():
 
 
 def test_every_config_key_read_by_the_code_exists():
-    """Ha atnevezunk egy beallitast, ne maradjon regi hivatkozas a kodban.
-
-    Egy ilyen elmaradt hivatkozas (c["bouncePct"]) a statusz blokkot dontotte el
-    futas kozben, es csak egy egysoros "statusz hiba" latszott belole.
-    """
+    """Ha atnevezunk egy beallitast, ne maradjon regi hivatkozas a kodban."""
     import re
     ismert = set().union(*(set(d) for d in (
-        C_CFG.MARKET_DEFAULTS, C_CFG.DETECTOR_DEFAULTS, C_CFG.REVERSAL_DEFAULTS,
+        C_CFG.MARKET_DEFAULTS, C_CFG.DETECTOR_DEFAULTS,
         C_CFG.TRADING_DEFAULTS, C_CFG.TELEGRAM_DEFAULTS)))
-    # barmilyen config-szeru hozzaferes: c[...], cfg[...], own[...], shared[...],
-    # es a dokumentumok nev szerint is (cfg.detector[...], self.cfg.reversal[...])
     minta = re.compile(
-        r'(?:\b(?:c|cfg|own|shared|conf|tg)\b|\.(?:market|detector|reversal|trading|telegram))'
+        r'(?:\b(?:c|cfg|own|shared|conf|tg)\b|\.(?:market|detector|trading|telegram))'
         r'\s*\[\s*["\'](\w+)["\']\s*\]')
     hibas = []
     for f in sorted((pathlib.Path(__file__).parent.parent / "app").rglob("*.py")):
@@ -1009,266 +713,306 @@ def test_every_config_key_read_by_the_code_exists():
 
 
 def test_startup_summary_renders():
-    """Indulaskor kiirt osszefoglalo: itt egy atnevezett kulcs miatt korabban
-    elhasalt az egesz alkalmazas, mielott barmit csinalt volna."""
     from app.main import startup_summary
     cfg = types.SimpleNamespace(
-        market=dict(C_CFG.MARKET_DEFAULTS),
-        detector=dict(C_CFG.DETECTOR_DEFAULTS), reversal=dict(C_CFG.REVERSAL_DEFAULTS),
+        market=dict(C_CFG.MARKET_DEFAULTS), detector=dict(C_CFG.DETECTOR_DEFAULTS),
         trading=dict(C_CFG.TRADING_DEFAULTS), telegram=dict(C_CFG.TELEGRAM_DEFAULTS))
     sorok = startup_summary(cfg)
-    assert len(sorok) == 5 and all(isinstance(x, str) and x for x in sorok)
+    assert len(sorok) == 6 and all(isinstance(x, str) and x for x in sorok)
 
 
-def test_detector_status_lines_render():
-    """A statusz blokkoknak hiba nelkul ki kell rajzolodniuk (ures allapotban is)."""
-    for det in (PumpDumpDetector(cfg_obj), ReversalDetector(rev_cfg)):
-        assert isinstance(det.status_lines(), list)
-    det = ReversalDetector(rev_cfg)
-    # alakzat, attores nelkul -- a tape vegen levo hosszu varakozas nelkul, kulonben
-    # a szelsoertek elavul (maxExtremeAgeSec), es az alakzatot eldobjuk
-    rev_run(det, rev_tape(0.78380, 0.78330, 0.78400)[:-85])
-    sorok = det.status_lines()
-    assert any("FORDULOK" in x for x in sorok), sorok
-    # a statusz a TOZSDEI idot hasznalja, nem a helyi orat -- kulonben a szintetikus
-    # (vagy elcsuszott oraju) idobelyegeknel minden alakzat "elavultnak" latszana
-    assert any("CYSUSDT" in x for x in sorok), sorok
-    assert det.last_ts > 0
+def test_status_line_only_uses_existing_attributes():
+    """Regresszio: a STATUS sor egy mar nem letezo mezore hivatkozott, es a
+    status task elesben elszallt AttributeError-ral."""
+    import re
+    from app.signals import SignalService
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
+    for attr in set(re.findall(r"\bsvc\.([a-zA-Z_]+)", forras)):
+        assert hasattr(SignalService, attr) or attr in SignalService.__init__.__code__.co_names, \
+            f"SignalService.{attr} nem letezik"
+    for attr in set(re.findall(r"self\.detectors\.([a-zA-Z_]+)", forras)):
+        assert hasattr(DetectorManager, attr) or attr in DetectorManager.__init__.__code__.co_names, \
+            f"DetectorManager.{attr} nem letezik"
 
 
-def test_flow_ratio_is_finite_when_one_side_is_empty():
-    """Ha az egyik oldalon nincs volumen, az arany nem lehet vegtelen (Mongo + score)."""
-    det = ReversalDetector(rev_cfg)
-    trades = [Trade("JJJUSDT", 100.0 + i * 0.01, 30.0, 1000.0 + i * 0.1, True)
-              for i in range(10)]                      # kizarolag veteli oldal
-    flow = det._flow(trades, 1001.0, REV, "JJJUSDT")
-    assert flow["sell"] == 0
-    assert flow["ratio"] == 99.0
-    assert math.isfinite(flow["ratio"])
+def test_no_blocking_calls_on_the_signal_path():
+    """A jelzes utjan NINCS halozati varakozas: sem order book lekeres, sem klines.
+    Korabban epp a jelzes pillanataban vartunk ezekre."""
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "signals.py").read_text()
+    assert "orderbook.analyze" not in forras
+    assert "ta.analyze" not in forras
+    assert "await asyncio.gather" not in forras
 
 
-class BoomDetector:
-    name, config_key = "boom", "detector"
+def test_reconnect_storm_is_rate_limited():
+    """A Binance az IP-t tiltja ki, ha tul suru a kapcsolodasi kiserlet."""
+    import asyncio
+    from app.market_data import ConnectLimiter
 
-    def on_trade(self, trade):
-        raise RuntimeError("szandekos hiba")
+    async def probal():
+        lim = ConnectLimiter(min_gap=0.01, max_per_5min=5)
+        for _ in range(5):
+            await lim.wait()
+        assert lim.utolso_5_perc() == 5
+        lim.kiserletek[0] = time.time() - 299.95
+        t0 = time.time()
+        await lim.wait()
+        assert time.time() - t0 >= 0.04, "varnia kellett a keret felszabadulasara"
 
-    def status_lines(self):
-        return []
+    asyncio.run(probal())
 
-
-def test_manager_fans_out_and_survives_a_broken_detector():
-    rev = ReversalDetector(rev_cfg)
-    kesz_baseline(rev, "CYSUSDT", normal_pct=0.02)
-    mgr = DetectorManager(rev_cfg, [BoomDetector(), rev], eligible_stub())
-    tape = rev_tape(0.78380, 0.78330, 0.78450)
-    signals = [s for tr in tape for s in mgr.on_trade(tr)]
-    assert len(signals) == 1, "a hibas detektor nem nyelheti el a masik jelzeset"
-    assert mgr.ticks == len(tape)
-    assert mgr.total_candidates == 1
-
-
-def test_manager_skips_disabled_detector():
-    cfg = types.SimpleNamespace(detector=CFG, reversal={**REV, "enabled": False})
-    mgr = DetectorManager(cfg, [ReversalDetector(cfg)], eligible_stub())
-    assert [s for tr in rev_tape(0.78380, 0.78330, 0.78450) for s in mgr.on_trade(tr)] == []
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
+    stream = forras[forras.index("async def _stream"):forras.index("async def _depth_stream")]
+    assert "await self.limiter.wait()" in stream
+    assert stream.count("await asyncio.sleep(backoff)") == 1
+    assert "EGESZSEGES_SEC" in stream
 
 
-def test_wall_detection():
-    price = 100.0
-    # 20 ask szint, a 8. (100.08) kiugroan nagy
-    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
-    asks[8] = (100.08, 60.0)
-    wall = orderbook._find_wall(asks, price, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
-    assert wall is not None
-    assert wall["price"] == 100.08
-    assert abs(wall["distancePct"] - 0.08) < 0.001
-    assert wall["ratio"] > 3.0
+def test_rate_limit_is_recognised_and_never_crashes_the_app():
+    import asyncio
+    from app import binance_rest as BR
+
+    assert BR.ban_seconds(418, {"Retry-After": "120"}) == 120.0
+    assert BR.ban_seconds(429, {}) == 60.0
+    assert BR.ban_seconds(429, {"Retry-After": "x"}) == 60.0
+    assert BR.ban_seconds(200, {}) is None and BR.ban_seconds(404, {}) is None
+
+    from app.market_data import MarketDataService
+
+    class FakeStatus:
+        def __init__(self, symbols): self.doc = {"_id": "symbols", "symbols": symbols}
+        async def find_one(self, q): return dict(self.doc)
+        async def update_one(self, q, u, upsert=False): self.doc.update(u["$set"])
+
+    db = types.SimpleNamespace(status=FakeStatus(["BTCUSDT", "ETHUSDT"]))
+    m = MarketDataService(cfg_obj, db, None, None, None)
+    eredeti = BR.load_symbols
+
+    async def tiltva(*a, **k):
+        raise BR.RateLimited(418, 120)
+
+    BR.load_symbols = tiltva
+    try:
+        symbols = asyncio.run(m._load_symbols())
+    finally:
+        BR.load_symbols = eredeti
+    assert symbols == ["BTCUSDT", "ETHUSDT"], symbols
+    assert m.stale_symbols is True
+
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "main.py").read_text()
+    assert "await asyncio.sleep(60)" in forras and "raise" in forras
 
 
-def test_no_wall_when_flat():
-    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)]
-    assert orderbook._find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
-
-
-def test_wall_outside_range_ignored():
-    # a wall 5%-ra van, a max tavolsag 1.5% -> nem erdekel
-    asks = [(100.0 + i * 0.01, 1.0) for i in range(20)] + [(105.0, 500.0)]
-    assert orderbook._find_wall(asks, 100.0, CFG["wallSensitivity"], CFG["wallMaxDistancePct"]) is None
+def test_book_and_trade_streams_use_different_url_segments():
+    from app import market_data as MD
+    assert MD.WS_BASES[0].endswith("/market/stream")
+    assert MD.BOOK_BASES[0].endswith("/public/stream")
+    assert MD.WS_BASES[0] != MD.BOOK_BASES[0]
+    assert MD.BOOK_BASES[1:] == MD.WS_BASES[1:]
 
 
 def test_cjk_symbol_column_alignment():
-    """A CJK karakter ket oszlop szeles -- kulonben szetcsuszik a tabla."""
-    assert _pad("NEARUSDT", 15) == "NEARUSDT" + " " * 7      # 8 karakter, 8 oszlop
-    assert _pad("龙虾USDT", 15) == "龙虾USDT" + " " * 7        # 6 karakter, de 8 oszlop
+    assert _pad("NEARUSDT", 15) == "NEARUSDT" + " " * 7
+    assert _pad("龙虾USDT", 15) == "龙虾USDT" + " " * 7
     assert _pad("MAGMAUSDT", 15) == "MAGMAUSDT" + " " * 6
-    # a kirajzolt szelesseg legyen azonos
+
     def width(t):
         import unicodedata
         return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in t)
     assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
-def test_slowly_decaying_wick_is_dropped_mid_window():
-    """VALODI eset (ZECUSDT): a kanoc 15 masodperccel kesobb MEG fent volt, es csak
-    utana csorgott vissza. Egy vegponti pillantas ezt atengedi -- ezert nezzuk a
-    megerositest FOLYAMATOSAN, es dobjuk el, amint visszaesik.
-    """
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "WICKUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    # 5 masodpercig tartja (a vegponti ellenorzes ezt latna), majd lassan visszacsorog
-    tartja = [101.0] * 100
-    csorog = [101.0 - 1.0 * (i + 1) / 100 for i in range(100)]
-    assert feed(det, "WICKUSDT", 1000.0, fel + tartja + csorog) == []
-    assert "WICKUSDT" not in det.pending
-
-    # a naplo mutassa, hogy a visszaeses a hatarido ELOTT dolt el
-    det2 = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det2, "WICK2USDT")
-    for i, ar in enumerate(fel + tartja + csorog):
-        det2.on_trade(Trade("WICK2USDT", ar, 30.0, 1000.0 + i * 0.05, True))
-        if "WICK2USDT" not in det2.pending and i > len(fel):
-            break
-    eltelt = i * 0.05 - len(fel) * 0.05
-    assert eltelt < CFG["confirmSec"], f"a hatarido elott eldolt ({eltelt:.1f}s)"
-
-
-def test_zero_confirm_signals_immediately():
-    """confirmSec = 0 -> a jelzes a mozgas pillanataban megy ki, varakozas nelkul.
-
-    Nincs pending, nincs utolagos ellenorzes, es a jelzes ara a mozgas vegen mert ar.
-    """
-    azonnali = types.SimpleNamespace(
-        detector={**CFG, "confirmSec": 0.0}, market=MARKET, telegram=TG,
-        reversal={**REV, "confirmSec": 0.0})
-
-    det = PumpDumpDetector(azonnali)
-    kesz_baseline(det, "NOWUSDT")
-    arak = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    jelzesek = feed(det, "NOWUSDT", 1000.0, arak)          # NINCS tarto szakasz
-    assert len(jelzesek) == 1, jelzesek
-    assert not det.pending, "nem varakozik semmire"
-    j = jelzesek[0]
-    assert j["timestamp"] <= 1000.0 + len(arak) * 0.05, "a mozgas pillanataban"
-    assert "heldOfMovePct" not in j["metrics"], "nincs megerosites-adat"
-    assert not any("VEGIG megvolt" in r for r in j["reasons"]), j["reasons"]
-    assert any("->" in r for r in j["reasons"]), "a mozgas arai latszanak"
-
-    # a fordulo is azonnal jelez, a tape tarto szakasza nelkul
-    rev = ReversalDetector(azonnali)
-    tape = rev_tape(0.78380, 0.78330, 0.78450)[:-85]
-    assert len(rev_run(rev, tape)) == 1, "az attores pillanataban jelez"
-    assert not rev.pending
-
-
-def test_momentary_spike_that_falls_back_is_not_a_signal():
-    """Pillanatnyi korrekcio: az ar felugrik, majd visszaesik oda, ahonnan indult.
-
-    Ez a leggyakoribb hamis jelzes. A jelzes nem a mozgas pillanataban megy ki,
-    hanem confirmSec masodperccel kesobb -- addigra ez visszaesett.
-    """
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "SPIKEUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    vissza = [101.0 * (1 - 0.010 * (i + 1) / 40) for i in range(40)] + [100.0] * 240
-    assert feed(det, "SPIKEUSDT", 1000.0, fel + vissza) == []
-    assert "SPIKEUSDT" not in det.pending, "a fuggo jelzes eldolt, nem ragadt bent"
-
-
-def test_real_move_that_holds_is_a_signal():
-    """Ugyanaz a mozgas, de az ar OTT MARAD: ez valodi elindulas."""
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "REALUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    jelzesek = feed(det, "REALUSDT", 1000.0, tart(fel))
-    assert len(jelzesek) == 1, jelzesek
-    m = jelzesek[0]["metrics"]
-    assert m["heldOfMovePct"] >= CFG["confirmHoldPct"], m
-    assert any("VEGIG megvolt" in r for r in jelzesek[0]["reasons"]), jelzesek[0]["reasons"]
-
-
-def test_half_retracement_is_not_enough():
-    """A latott mozgas felet visszaadja -> a confirmHoldPct (60%) alatt, nincs jelzes."""
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "HALFUSDT")
-    fel = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    assert feed(det, "HALFUSDT", 1000.0, fel) == [], "meg csak megerositesre var"
-    p = det.pending["HALFUSDT"]
-    fele = p["startPrice"] + (p["triggerPrice"] - p["startPrice"]) * 0.5
-    kesobb = [Trade("HALFUSDT", fele, 30.0, 1000.0 + (len(fel) + i) * 0.05, True)
-              for i in range(80)]
-    assert [c for c in (det.on_trade(t) for t in kesobb) if c] == []
-
-
-def test_one_big_trade_that_sweeps_the_book_is_not_a_signal():
-    """Egy nagy kotes atsopri a konyvet, a tobbi kotes mar az uj aron nyomtat.
-
-    Az ablak igy szep egyenletes mozgasnak latszik, pedig egyetlen lepcso az egesz.
-    """
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "SWEEPUSDT")
-    # 40 tick 100.0-n, egyetlen ugras 100.4-re, majd ott marad
-    arak = [100.0] * 40 + [101.0] * 40
-    assert feed(det, "SWEEPUSDT", 1000.0, tart(arak)) == []
-
-    # ugyanaz az elmozdulas sok kis lepesben mar atmegy
-    det2 = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det2, "STEPSUSDT")
-    lepcsos = [100.0] * 40 + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]
-    assert feed(det2, "STEPSUSDT", 1000.0, tart(lepcsos))
-
-
-def test_signal_detail_is_mongo_safe():
-    """A Mongo csak string kulcsot fogad -- a detail nem tartalmazhat int kulcsot."""
-    det = PumpDumpDetector(cfg_obj)
-    kesz_baseline(det, "FFFUSDT")
-    sig = feed(det, "FFFUSDT", 1000.0,
-               tart([100.0] * 40
-                    + [100.0 * (1 + 0.010 * (i + 1) / 40) for i in range(40)]))[0]
-
-    def check(o, path="doc"):
-        if isinstance(o, dict):
-            for k, v in o.items():
-                assert isinstance(k, str), f"{path}: nem string kulcs -> {k!r}"
-                check(v, f"{path}.{k}")
-        elif isinstance(o, list):
-            for i, v in enumerate(o):
-                check(v, f"{path}[{i}]")
-
-    check(sig["metrics"])
-    assert set(sig["metrics"]) == {"movePct", "spanSec", "trades", "baseline",
-                                   "baselineRatio", "singleStepPct", "startPrice",
-                                   "heldPct", "heldOfMovePct", "confirmSec"}, sig["metrics"]
-
-
-def test_wall_behind_price_is_not_an_obstacle():
-    """Ha az ar a snapshotig visszaesett, a mogottunk levo szint nem akadaly."""
-    # kozepar 100.005; a nagy bid 99.95 (alatta), a nagy ask 100.06 (felette)
-    bids = [(100.00 - i * 0.01, 1.0) for i in range(20)]
-    asks = [(100.01 + i * 0.01, 1.0) for i in range(20)]
-    bids[5] = (99.95, 80.0)
-    mid = (bids[0][0] + asks[0][0]) / 2
-
-    buy = orderbook._find_wall(bids, mid, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
-    sell = orderbook._find_wall(asks, mid, CFG["wallSensitivity"], CFG["wallMaxDistancePct"])
-    assert buy is not None and buy["price"] == 99.95
-    assert sell is None, "az ask oldalon nincs wall, nem szabad talalni"
-    # a bid wall tavolsaga a kozepartol mert, pozitiv szazalek
-    assert 0.0 < buy["distancePct"] < 0.1
-
-
-def _sig(strength, accelerating=False, mode="momentum", direction="LONG"):
-    return {"symbol": "X", "direction": direction, "price": 100.0,
-            "strength": strength, "accelerating": accelerating, "contextMode": mode}
-
-
 def test_ema_matches_known_values():
-    # sima novekvo sor: az EMA a vegen az utolso ertekek kozeleben van, es fast > slow
     closes = [float(i) for i in range(1, 61)]
     assert ema(closes, 9) > ema(closes, 21)
-    # konstans sor eseten az EMA maga a konstans
     assert abs(ema([5.0] * 40, 9) - 5.0) < 1e-9
+
+
+# ---------------------------------------------------------------- outcome
+
+def _outcome_cfg(tp=None, sl=None, track_sec=600):
+    m = {**MARKET, "outcomeTrackSec": track_sec,
+         "tpLevels": tp or [0.3, 0.5, 0.8], "slLevels": sl or [0.2, 0.3, 0.5],
+         "reportTp": 0.5, "reportSl": 0.3}
+    return types.SimpleNamespace(market=m)
+
+
+def test_outcome_mfe_mae_and_direction_correction():
+    """LONG-nal a felfele mozgas MFE, SHORT-nal a lefele -- iranyhelyesen."""
+    from app.outcome import Tracker
+
+    long_t = Tracker("id1", "AUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0, [], [])
+    for price, ts in ((101.0, 1.0), (99.0, 2.0), (100.5, 3.0)):
+        long_t.on_price(price, ts)
+    assert abs(long_t.mfe - 1.0) < 1e-9 and long_t.t_mfe == 1.0
+    assert abs(long_t.mae - (-1.0)) < 1e-9 and long_t.t_mae == 2.0
+    assert abs(long_t.final - 0.5) < 1e-9
+
+    short_t = Tracker("id2", "BUSDT", "SHORT_REVERSAL", "SHORT", 100.0, 0.0, 600.0, [], [])
+    for price, ts in ((99.0, 1.0), (101.0, 2.0)):
+        short_t.on_price(price, ts)
+    assert abs(short_t.mfe - 1.0) < 1e-9, "SHORT-nal a leeso ar a nyereseg"
+    assert abs(short_t.mae - (-1.0)) < 1e-9, "SHORT-nal a felmeno ar a veszteseg"
+
+
+def test_outcome_tp_sl_first_touch_decides_the_winner():
+    """Mivel minden kotest latunk, barmely TP/SL parra utolag eldontheto, melyiket
+    erte el elobb -- kulon meres nelkul."""
+    from app.outcome import Tracker
+
+    # eloszor eleri a TP 0.5-ot, csak utana esik SL 0.3 ala
+    t = Tracker("id", "XUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0,
+                [0.3, 0.5], [0.2, 0.3])
+    for price, ts in ((100.4, 1.0), (100.6, 2.0), (99.6, 3.0)):
+        t.on_price(price, ts)
+    assert t.tp["0.5"] == 2.0 and t.tp["0.3"] == 1.0
+    assert t.sl["0.3"] == 3.0 and t.sl["0.2"] == 3.0, "a -0.4% mindket SL szintet eleri"
+    assert t.eredmeny(0.5, 0.3) == "nyero", "a TP 0.5 hamarabb jott, mint az SL 0.3"
+    assert t.eredmeny(0.3, 0.2) == "nyero", "a TP 0.3 (t=1) hamarabb jott, mint az SL 0.2 (t=3)"
+
+    # forditva: eloszor SL, csak utana TP
+    t2 = Tracker("id2", "YUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0,
+                 [0.5], [0.3])
+    for price, ts in ((99.6, 1.0), (100.6, 2.0)):
+        t2.on_price(price, ts)
+    assert t2.eredmeny(0.5, 0.3) == "buko", "az SL hamarabb jott"
+
+
+def test_outcome_tracks_after_signal_without_touching_the_detector():
+    """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat."""
+    import asyncio
+    from app.outcome import OutcomeTracker
+
+    class FakeSignals:
+        def __init__(self): self.updates = []
+        async def update_one(self, q, u): self.updates.append((q, u))
+
+    coll = FakeSignals()
+    o = OutcomeTracker(_outcome_cfg(track_sec=1), types.SimpleNamespace(signals=coll))
+    o.track("id-long", "AUSDT", "LONG_CONTINUATION", "LONG", 100.0)
+    o.on_trade(Trade("AUSDT", 100.5, 1.0, 0.0, True))
+    asyncio.run(o._flush())
+    assert coll.updates, "az elo merest is menteni kell (dirty flush)"
+    doc = coll.updates[-1][1]["$set"]["outcome"]
+    assert doc["mfePct"] > 0 and doc["done"] is False
+
+    # amirol nem erkezik kotes, arrol nem talalunk ki adatot -- a belepo marad az entry
+    o2 = OutcomeTracker(_outcome_cfg(track_sec=0.001),
+                        types.SimpleNamespace(signals=FakeSignals()))
+    o2.track("id-nema", "CUSDT", "LONG_CONTINUATION", "LONG", 100.0)
+    time.sleep(0.01)
+    asyncio.run(o2._flush())
+    assert o2.keszek[0].final == 0.0
+
+
+def test_outcome_summary_groups_by_setup_type():
+    o_cfg = _outcome_cfg()
+    from app.outcome import OutcomeTracker, Tracker
+    o = OutcomeTracker(o_cfg, None)
+
+    def kesz(sid, setup, direction, tp_hit, sl_hit):
+        t = Tracker(sid, "XUSDT", setup, direction, 100.0, 0.0, 600.0, [0.5], [0.3])
+        t.tp["0.5"] = tp_hit
+        t.sl["0.3"] = sl_hit
+        t.mfe, t.mae = 0.5, -0.1
+        t.done = True
+        return t
+
+    o.keszek = [
+        kesz("a", "LONG_CONTINUATION", "LONG", 1.0, None),   # nyero
+        kesz("b", "LONG_CONTINUATION", "LONG", None, 1.0),   # buko
+        kesz("c", "SHORT_REVERSAL", "SHORT", 1.0, None),     # nyero
+    ]
+    sorok = o.summary_lines()
+    szoveg = "\n".join(sorok)
+    assert "LONG_CONTINUATION" in szoveg and "SHORT_REVERSAL" in szoveg
+    assert "SL -0.3%" in szoveg or "SL -0.3" in szoveg
+
+    utolso = "\n".join(o.recent_lines())
+    assert "UTOLSO" in utolso and "nyero" in utolso
+
+
+def test_outcome_history_is_loaded_at_startup():
+    """Az osszesites ne nullazodjon minden ujrainditasnal."""
+    import asyncio
+    from app.outcome import OutcomeTracker
+
+    class FakeCursor:
+        def __init__(self, docs): self.docs = docs
+        def sort(self, *a): return self
+        def limit(self, n): return self
+        async def to_list(self, length=None): return self.docs
+
+    class FakeSignals:
+        def __init__(self, docs): self.docs = docs
+        def find(self, q): return FakeCursor(self.docs)
+
+    import datetime as _dt
+    most = _dt.datetime(2026, 9, 1, 6, 56, tzinfo=_dt.timezone.utc)
+    docs = [{
+        "_id": "a", "timestamp": most, "symbol": "BTRUSDT",
+        "detector": "scalp", "setup": "LONG_CONTINUATION", "direction": "LONG",
+        "price": 100.0,
+        "outcome": {"entry": 100.0, "setup": "LONG_CONTINUATION",
+                   "mfePct": 1.2, "maePct": -0.3, "timeToMfeSec": 30,
+                   "timeToMaeSec": 5, "maxPrice": 101.2, "minPrice": 99.7,
+                   "tp": {"0.5": 25.0}, "sl": {"0.3": None},
+                   "finalPct": 0.8, "done": True},
+    }]
+    o = OutcomeTracker(_outcome_cfg(), types.SimpleNamespace(signals=FakeSignals(docs)))
+    asyncio.run(o.load_history())
+    assert len(o.keszek) == 1
+    assert o.keszek[0].mfe == 1.2 and o.keszek[0].done is True
+
+
+# ---------------------------------------------------------------- telegram
+
+def test_telegram_heartbeat_renders():
+    """Idoszakos eletjel: ures allapotban se hibazzon."""
+    from app.telegram import format_status
+
+    ures = {"ido": "14:20:03", "uptime": "0h 1p", "symbols": 0, "wsConnected": 0,
+            "wsTotal": 1, "ticksPerMin": 0, "signals": 0, "kizarva": "",
+            "setups": [], "kozel": "", "talalat": [], "utolso": [],
+            "reconnects5min": 0}
+    szoveg = format_status(ures)
+    assert "ELETJEL" in szoveg and "Meg nincs lemert jelzes" in szoveg
+
+    teli = {**ures, "symbols": 58, "wsConnected": 1, "ticksPerMin": 1932,
+            "signals": 7, "kizarva": "kizarva 2: tul szeles a spread: 2",
+            "setups": [("IMPULSE_DETECTED", "2"), ("WAITING_CONFIRMATION", "1")],
+            "kozel": "normal kesz: 30/58 par | legkozelebb: SOLUSDT 0.31%",
+            "talalat": ["TP +0.5% / SL -0.3%",
+                        "LONG_CONTINUATION       7      4     2        1   67%    +0.60%    -0.20%"],
+            "utolso": ["UTOLSO 3 LONG_CONTINUATION",
+                       "SOLUSDT     09-01 04:02  belepo 100.00        MFE  +0.60%  MAE  -0.20%  -> nyero"]}
+    szoveg = format_status(teli)
+    for kell in ("58", "1,932", "SOLUSDT", "DETEKTOR ALLAPOT", "IMPULSE_DETECTED",
+                 "UTOLSO 3 LONG_CONTINUATION", "nyero"):
+        assert kell in szoveg, (kell, szoveg)
+    assert "Meg nincs lemert jelzes" not in szoveg
+
+
+def test_telegram_format_signal_uses_setup_headers():
+    from app.telegram import format_signal
+    import datetime as _dt
+
+    sig = {
+        "timestamp": _dt.datetime(2026, 9, 1, 12, 0, tzinfo=_dt.timezone.utc),
+        "detector": "scalp", "setup": "LONG_REVERSAL", "symbol": "XUSDT",
+        "direction": "LONG", "price": 100.0, "url": "https://example.test/XUSDT",
+        "quoteVolume24h": 500_000_000,
+        "reasons": ["impulzus -0.40% / 3.0s", "a szint reclaimelve"],
+        "metrics": {"legPct": 0.40, "maxRetracePct": 30.0, "confirmImbalance": 0.5,
+                   "bookImbalance": 0.1, "spreadPct": 0.01, "trend": "bearish",
+                   "setupAgeSec": 22.0},
+        "trade": {"executed": False},
+    }
+    szoveg = format_signal(sig)
+    assert "FORDULO FELFELE" in szoveg
+    assert "LONG" in szoveg
+    assert "impulzus -0.40%" in szoveg
+    assert "setup kora" in szoveg
 
 
 if __name__ == "__main__":

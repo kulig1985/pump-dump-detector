@@ -1,49 +1,24 @@
-"""TAAnalyzer -- egyszeru 1 perces EMA trendfilter.
+"""EMA trend-kontextus, folyamatosan frissitve.
 
-Ez az egyetlen hely, ahol az arfolyam-adat REST-bol jon (a feladat kifejezetten
-engedi az indikatoroknal). Symbolonkent cache-elunk, hogy egy pumphullam alatt
-ne verjuk szet a rate limitet.
+Ez az egyetlen hely, ahol az arfolyam-adat REST-bol jon. Korabban a jelzes
+pillanataban kertuk le a klines-t -- vagyis epp akkor vartunk halozatra, amikor
+sietni kellett volna. Most egy hatterciklus frissiti a figyelt parokat, a detektor
+pedig a memoriabol olvas (get()).
 """
 import time
+import asyncio
 import logging
 
 from . import binance_rest
 
 log = logging.getLogger("ta")
 
-CACHE_TTL = 30.0
-_cache = {}   # symbol -> (ts, result)
+_cache = {}   # symbol -> {"fast","slow","trend","ts"}
 
 
-async def analyze(symbol, price, cfg):
-    fast_n, slow_n = cfg["emaFast"], cfg["emaSlow"]
-    cached = _cache.get(symbol)
-    if cached and time.time() - cached[0] < CACHE_TTL:
-        return cached[1]
-
-    try:
-        closes = await binance_rest.get_closes(symbol, cfg["emaInterval"], slow_n * 5)
-    except Exception as e:
-        log.warning("[%s] klines lekeres sikertelen: %s", symbol, e)
-        return None
-    if len(closes) < slow_n:
-        return None
-
-    fast = ema(closes, fast_n)
-    slow = ema(closes, slow_n)
-    if fast > slow:
-        trend = "bullish"
-    elif fast < slow:
-        trend = "bearish"
-    else:
-        trend = "neutral"
-
-    result = {"fast": fast, "slow": slow, "trend": trend, "aboveFast": price > fast}
-    _cache[symbol] = (time.time(), result)
-    log.info("[%s] EMA%d %.8g %s EMA%d %.8g -> %s (ar %s EMA%d felett)",
-             symbol, fast_n, fast, ">" if fast > slow else "<", slow_n, slow, trend,
-             "van" if result["aboveFast"] else "nincs", fast_n)
-    return result
+def get(symbol):
+    """A par EMA-kontextusa a cache-bol, halozat nelkul. None, ha meg nincs."""
+    return _cache.get(symbol)
 
 
 def ema(values, period):
@@ -52,3 +27,40 @@ def ema(values, period):
     for v in values[period:]:
         e = v * k + e * (1 - k)
     return e
+
+
+async def refresh(symbol, cfg):
+    fast_n, slow_n = cfg["emaFast"], cfg["emaSlow"]
+    closes = await binance_rest.get_closes(symbol, cfg["emaInterval"], slow_n * 5)
+    if len(closes) < slow_n:
+        return None
+    fast, slow = ema(closes, fast_n), ema(closes, slow_n)
+    trend = "bullish" if fast > slow else "bearish" if fast < slow else "neutral"
+    _cache[symbol] = {"fast": fast, "slow": slow, "trend": trend, "ts": time.time()}
+    return _cache[symbol]
+
+
+async def refresh_loop(cfg, symbols_fn):
+    """Korbejarja a figyelt parokat, es frissiti az EMA-t.
+
+    Egyenletesen elosztva, nem egyszerre: igy nem lokjuk meg a rate limitet, es
+    egy tiltas sem all le semmit -- a detektor EMA nelkul is dolgozik.
+    """
+    while True:
+        c = cfg.detector
+        symbols = list(symbols_fn() or [])
+        interval = max(10.0, float(c["emaRefreshSec"]))
+        if not symbols:
+            await asyncio.sleep(5)
+            continue
+        szunet = interval / len(symbols)
+        for symbol in symbols:
+            try:
+                await refresh(symbol, c)
+            except binance_rest.RateLimited as e:
+                log.warning("EMA frissites szunetel %.0f mp-ig (rate limit)",
+                            e.retry_after)
+                await asyncio.sleep(e.retry_after)
+            except Exception as e:
+                log.debug("[%s] EMA frissites sikertelen: %s", symbol, e)
+            await asyncio.sleep(szunet)

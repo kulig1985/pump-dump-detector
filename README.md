@@ -1,28 +1,30 @@
 # pump-dump-detector
 
-Valós idejű pump/dump detektor a **Binance USDⓈ-M Futures** perpetual piacra.
-Másodperces skálán észreveszi a hirtelen ármozgásokat (nem vár gyertyazárásra),
-gyors order book + EMA elemzést végez, pontoz, **Telegramra** küld, és opcionálisan
+Valós idejű **scalp belépő-detektor** a **Binance USDⓈ-M Futures** perpetual piacra.
+Egy hirtelen impulzus (ár + agresszív forgalom + kötésáramlás) önmagában NEM jelzés
+— csak egy setup kezdete. A rendszer utána figyeli a szerkezetet, és csak akkor
+jelez, ha az **folytatódik** (sekély visszahúzás, majd újratörés) vagy **megfordul**
+(kifulladás, majd a szint visszavétele). **Telegramra** küld, és opcionálisan
 (alapból **kikapcsolva**) pozíciót is nyit.
 
 ```
-Binance WebSocket  (aggTrade + !bookTicker)
+Binance WebSocket  (aggTrade + !bookTicker + depth20, FOLYAMATOSAN)
         ↓
   KERESKEDHETOSÉG      spread / white- és blacklist
         ↓
-  DetectorManager  →  PumpDumpDetector,  ReversalDetector
-        ↓
-   SIGNAL            (order book és EMA információként hozzáfűzve)
+  ScalpDetector  →  IMPULZUS  →  SetupTracker  →  folytatás / fordulás
+        ↓                         (a könyv és az EMA MÁR itt számít, cache-ből)
+   SIGNAL
         ↓
   MongoDB → Telegram → [TradingService]
+        ↓
+  OutcomeTracker  →  MFE/MAE + TP/SL mérés, folyamatosan
 ```
 
-Két detektor fut párhuzamosan ugyanazon a trade-folyamon, külön konfigurációval:
-
-| detektor | mit keres | config dokumentum |
-|---|---|---|
-| `pump_dump` | hirtelen, egyirányú ármozgás — az utolsó N trade meredeksége | `detector` |
-| `reversal` | rövid távú lokális árforduló (mélypont → visszapattanás → micro-high áttörés) | `reversal` |
+| setup típusa | mit keres |
+|---|---|
+| `LONG_CONTINUATION` / `SHORT_CONTINUATION` | impulzus, sekély visszahúzás, majd a csúcs/mélypont újratörése |
+| `LONG_REVERSAL` / `SHORT_REVERSAL` | impulzus kifullad, a kötésáramlás fordul, a visszahúzás szintje visszavéve |
 
 ---
 
@@ -125,32 +127,29 @@ Utána a logban ezt kell látnod:
 
 ```
 12:04:11 INFO  db        MongoDB kapcsolat kesz: mongodb://mongo:27017/pumpdump
-12:04:11 INFO  config    Config letrehozva defaultokkal: detector
-12:04:11 INFO  main      Kuszobok: 1s 0.30% | 3s 0.60% | 5s 0.90% | min score 60 | cooldown 60s
-12:04:11 INFO  main      Auto trading: KI
-12:04:12 INFO  rest      Perpetual USDT parok: 412 | forgalom >= 50,000,000 USDT: 187 | figyelunk: 187
-12:04:12 INFO  market    Indul 2 WebSocket kapcsolat, osszesen 187 symbol
-12:04:13 INFO  market    WS #1 csatlakozva (150 stream)
-12:04:13 INFO  market    WS #2 csatlakozva (37 stream)
+12:04:11 INFO  config    Config letrehozva defaultokkal: market
+12:04:11 INFO  main      Piac: USDT, USDC parok, forgalom >= 120,000,000, max 60 par, spread <= 0.050%
+12:04:11 INFO  main      Impulzus: a mozgas a par normaljanak 6.0x-e (min 0.40%), forgalom >= 50,000 USDT es a normal 3.0x-e, ...
+12:04:11 INFO  main      Telegram: BE -- minden SIGNAL azonnal megy   |   Auto trading: KI (CROSSED, 5x)
+12:04:12 INFO  rest      Perpetual USDT/USDC parok: 412 | forgalom >= 120,000,000 USDT: 60 | figyelunk: 60
+12:04:12 INFO  market    Indul 1 arfolyam- es 1 konyv-kapcsolat, osszesen 60 symbol
+12:04:13 INFO  market    WS #1 csatlakozva (60 stream)
 ```
 
-Innentől **5 másodpercenként kiírja, mi történik éppen az árakkal** — a 10 legmozgékonyabb
-párt, és hogy miért nincs (még) jelzés:
+Percenként egy STATUS sor mutatja, mi történik éppen:
 
 ```
-07:56:38 INFO  market
-  ──────────────────────────────────────────────────────────────────────────────
-  MI TORTENIK MOST   187 par figyelese   jelzes indulas ota: 1
-  az elmult 5 masodpercben 2,061 arvaltozas erkezett   (2/2 kapcsolat el)
-  jelzes kell hozza: 1 mp alatt 0.30%, 3 mp alatt 0.60%, 5 mp alatt 0.90%
-  ──────────────────────────────────────────────────────────────────────────────
-  par               arfolyam     1 mp     3 mp     5 mp   mi van vele
-  WIFUSDT         0.85230384   +0.21%   +0.60%   +1.02%   jelzes mar elment, varakozas a kovetkezoig
-  PEPEUSDT        0.00000932   -0.14%   -0.40%   -0.68%   erosen esik, meg 0.22% hianyzik a jelzeshez
-  SUIUSDT             3.1350   +0.06%   +0.16%   +0.27%   emelkedik, de meg messze van a jelzestol
-  BTCUSDT          61,013.42   +0.00%   +0.01%   +0.02%   alig mozdul
-  ...
-  ──────────────────────────────────────────────────────────────────────────────
+STATUS  60 par | 1,932 tick/60s | konyv-melyseg: 60 par | 0 candidate, 0 jelzes | ujracsatlakozas 0/5perc
+   normal kesz: 55/60 par | legkozelebb: SOLUSDT 0.31% (kell 0.80%)
+```
+
+Amint egy impulzus elindul, majd megerősödik, ez látszik:
+
+```
+IMPULSE_UP SOLUSDT   ar 184.21  +0.62% / 1.9s  normal 0.041%  forgalom 560,000 USDT (28.0x)  flow +0.80
+WAITING    SOLUSDT   pivot 184.40  visszahuzas 22% a labbol
+SETUP OK   SOLUSDT   LONG_CONTINUATION  ar 184.55  lab 0.62%  visszahuzas 22%  flow +0.60  kor 14 mp
+SIGNAL     SOLUSDT   LONG_CONTINUATION  ar 184.55  https://www.binance.com/en/futures/SOLUSDT
 ```
 
 Ha nem érkezik adat, `ERROR` szintű sort kapsz helyette. Ugyanez a Mongo `status`
@@ -222,8 +221,8 @@ Hasznos log-parancsok:
 ```bash
 docker compose logs -f --tail 100 detector          # az utolsó 100 sortól élőben
 docker compose logs --since 10m detector            # az elmúlt 10 perc
-docker compose logs -f detector | grep -E "TRIGGER|FORDULO|SCORE"   # csak a jelzések
-docker compose logs -f detector | grep "EREDMENYEK" -A 8            # csak az összesítő
+docker compose logs -f detector | grep -E "IMPULSE|SETUP OK|SIGNAL"  # csak a jelzések
+docker compose logs -f detector | grep "EREDMENY" -A 8              # csak az osszesito
 docker compose logs detector > detector.log         # mentés fájlba
 ```
 
@@ -244,12 +243,16 @@ szolgáltatás alá a `docker-compose.yml`-ben:
 Nyugodt piacon órákig nem jön jelzés. Ideiglenesen vedd le a küszöböt:
 
 ```bash
-docker compose exec mongo mongosh pumpdump --eval \
-  'app/config.py -> DETECTOR_DEFAULTS, majd docker compose up -d --build'
+# app/config.py -> DETECTOR_DEFAULTS: vedd le ideiglenesen a kuszoboket
+"minImpulsePct": 0.10,
+"impulseBaselineRatio": 2.0,
+# majd:
+git pull && docker compose up -d --build
 ```
 
-Percen belül jönnie kell triggernek. A config 30 másodpercen belül magától újratöltődik,
-**nem kell újraindítani**. Utána állítsd vissza `0.30`-ra.
+Percen belül jönnie kell egy `IMPULSE_...` sornak a logban. **Ez a hangolás mindig a
+kódban történik** — a `config` collectiont a rendszer minden indításkor törli, tehát
+egy mongo shell parancs itt nem maradna meg. Utána állítsd vissza az eredeti értékre.
 
 ### Docker nélkül
 
@@ -267,38 +270,37 @@ Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
 ## Hogyan dönt a rendszer
 
 **Nem fix küszöbbel.** A kérdés nem az, hogy „mozdult-e 0.3%-ot", hanem hogy *szokatlan-e
-ez a mozgás ezen a páron*. Futás közben, páronként mérjük, mi a normális:
+ez a mozgás ÉS a mögötte álló pénz ezen a páron*. Futás közben, páronként mérjük, mi a
+normális — ár ÉS forgalom is:
 
 ```
-baseline = az utolso 5 percben mert 2 masodperces |elmozdulasok| medianja
-jelzeshez kell:  |mozgas| >= max( minMovePct , baselineRatio × baseline )
+jelzeshez kell:  |mozgas| >= max( minImpulsePct , priceBaseline × impulseBaselineRatio )
+             ES  forgalom >= max( minImpulseNotional , notionalBaseline × notionalRatio )
+             ES  a kotesaramlas egyiranyu (imbalance >= minImpulseImbalance)
 ```
 
-Ehhez jön két megerősítés — egyirányúság (a lépések 70%-a egy felé) és forgalom (az
-ablakban legalább a pár átlaga) —, majd a validáció: spread, fal az útban, hozam/kockázat.
-
-**Nincs 0-100 score.** Minden jelzés egy indoklás-listát és a hozzá tartozó mért számokat
-viszi, és minden elutasításnak gépi neve van:
+Ez az **impulzus** — de önmagában még nem jelzés, csak egy setup kezdete. A setup
+csak akkor válik jelzéssé, ha a szerkezet (visszahúzás + újratörés, vagy kifulladás +
+a szint visszavétele) és a könyv/EMA is megerősíti:
 
 ```
-CANDIDATE  SOLUSDT  LONG  move +0.32% / 2.1s  baseline 4.1x
-REJECTED   SOLUSDT  LONG  spread_too_wide
-SIGNAL     BTCUSDT  LONG  move +0.24% / 2.1s  rr 2.4:1  https://www.binance.com/en/futures/BTCUSDT
-STATUS     136 par (kizarva 18 par: tul szeles a spread: 18) | 1,932 tick/60s | 12 candidate, 3 jelzes, 9 elutasitva | Telegram: BE
+IMPULSE_UP SOLUSDT   ar 184.21  +0.62% / 1.9s  forgalom 560,000 USDT (28.0x)  flow +0.80
+WAITING    SOLUSDT   pivot 184.40  visszahuzas 22% a labbol
+SETUP OK   SOLUSDT   LONG_CONTINUATION  ar 184.55  lab 0.62%  visszahuzas 22%  flow +0.60
+SIGNAL     SOLUSDT   LONG_CONTINUATION  ar 184.55  https://www.binance.com/en/futures/SOLUSDT
 ```
 
-A `REJECTED` dokumentumok is a `signals` collectionbe kerülnek, így egy lekérdezéssel
-látszik, mi miért esik ki:
+Az elutasítási okoknak gépi nevük van, a `signals` collectionbe kerülnek:
 
 ```js
-db.signals.aggregate([{$match:{status:"rejected"}},
-                      {$group:{_id:"$reasons", db:{$sum:1}}}, {$sort:{db:-1}}])
+db.signals.aggregate([{$group:{_id:"$setup", db:{$sum:1}}}, {$sort:{db:-1}}])
 ```
 
 Részletes detektor-állapot: `LOG_LEVEL=DEBUG`.
 
-**Minden `SIGNAL` azonnal megy Telegramra** — nincs mérési előfeltétel. Az eredménymérés
-fut és 10 percenként összesít, de semmit nem kapuz.
+**Minden jelzés azonnal megy Telegramra.** Az eredménymérés (MFE/MAE, TP/SL) a jelzés
+után folyamatosan fut, de semmit nem kapuz — csak utólag mutatja meg, melyik setup
+működik.
 
 Minden beállítás leírása: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
@@ -306,9 +308,10 @@ Minden beállítás leírása: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
 Egyet sem kell kézzel létrehozni, az alkalmazás megcsinálja.
 
-- `config` — a fenti öt dokumentum (`market`, `detector`, `reversal`, `trading`, `telegram`)
-- `signals` — minden detektált jelzés (score, EMA, order book összefoglaló, Telegram/trade státusz)
-- `market_snapshots` — a trigger körüli nyers adat (ártörténet, 20 szintes könyv, score inputok), `signalId`-vel visszaköthető
+- `config` — a fenti négy dokumentum (`market`, `detector`, `trading`, `telegram`)
+- `signals` — minden jelzés (setup típusa, indoklás, mért számok, Telegram/trade státusz,
+  plusz az `outcome` mezőben a folyamatos MFE/MAE + TP/SL mérés)
+- `market_snapshots` — a setup körüli nyers adat (ártörténet, order book), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
 - `status` — egyetlen dokumentum (`_id: "detector"`), 5 másodpercenként frissül:
   uptime, tick/s, élő WS kapcsolatok, jelzésszámláló, az aktív detektorok és a

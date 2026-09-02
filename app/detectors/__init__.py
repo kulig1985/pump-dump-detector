@@ -1,5 +1,4 @@
 from .manager import DetectorManager
-from .pumpdump import PumpDumpDetector
-from .reversal import ReversalDetector
+from .scalp import ScalpDetector
 
-__all__ = ["DetectorManager", "PumpDumpDetector", "ReversalDetector"]
+__all__ = ["DetectorManager", "ScalpDetector"]

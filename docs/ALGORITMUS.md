@@ -1,172 +1,133 @@
-# Mit figyel a két detektor — pontosan
+# Mit figyel a scalp detektor — pontosan
 
-A jelenlegi kód alapján, az `app/config.py` alapértékeivel. Ha az értékek változnak,
-ez a leírás a logikát írja le, a számok a configból jönnek.
+A jelenlegi kód (`app/detectors/scalp.py`) alapján, az `app/config.py`
+alapértékeivel. Részletes paraméter-magyarázat és példák: `docs/PARAMETEREK.md`.
 
-## Ami MINDKETTŐ bemenete
+## Az alapelv
 
-Egyetlen adatforrás: a Binance `aggTrade` folyam a figyelt párokra. Kötésenként
-négy adat érkezik:
-
-```
-symbol      melyik par
-price       a kotes ara
-qty         a kotes merete
-ts          a tozsdei idobelyeg
-buy_taker   az agresszor a vevo volt-e (a "m" mezobol)
-```
-
-Ezen kívül fut egy `!bookTicker` feliratkozás (a teljes piac legjobb bid/ask ára),
-de abból **csak a spread** használódik, kizárási feltételként.
-
----
-
-# 1. PUMP/DUMP detektor
-
-**A kérdés, amire válaszol:** „szokatlanul nagyot mozdult-e az ár *ezen a páron*
-az elmúlt 2 másodpercben?"
-
-### Amit használ
-
-| adat | használja? |
-|---|---|
-| `price`, `ts` | **igen** — ez az egyetlen bemenet |
-| `qty` (a kötés mérete) | **NEM** |
-| `buy_taker` (ki az agresszor) | **NEM** |
-| order book mélység | **NEM** (csak a spread, kizárásra) |
-| EMA | **NEM** (csak az üzenetbe kerül, információként) |
-| a többi pár mozgása | **NEM** |
-
-### Hogyan mér
-
-Páronként egy gördülő lista: az utolsó `2 × moveWindowSec` = **4 másodperc**
-`(idő, ár)` párjai. Ebből a **legutolsó 2 másodperc** a mérési ablak.
-
-Az ablak akkor mérhető, ha
-- legalább `minTradesInWindow` = **10 kötés** van benne, és
-- a kötések legalább `moveWindowSec / 2` = **1 másodpercet** átfognak
-  (különben egy ezredmásodperces kötéscsokor „mozgásnak" látszana).
-
-A mozgást **az ablakra illesztett egyenes** adja, nem az első és utolsó ár
-különbsége:
+Egy hirtelen impulzus **önmagában nem jelzés** — csak egy setup kezdete. A régi
+rendszer (PUMP→LONG, DUMP→SHORT) mérése szerint ez érmefeldobás volt: a mozgás
+gyakran visszajön, mielőtt bármit tehetnél vele. A jelenlegi rendszer megvárja,
+amíg a szerkezet **megerősíti** az irányt.
 
 ```
-mozgas %  =  (illesztett meredekseg) × (ablak hossza) / (atlagar) × 100
+IDLE -> IMPULSE_DETECTED -> WAITING_CONFIRMATION
+     -> CONTINUATION_CONFIRMED | REVERSAL_CONFIRMED -> SIGNAL -> COOLDOWN -> IDLE
 ```
 
-Így egyetlen kiugró print nem tud jelzést csinálni, és a fűrészfog (fel-le-fel-le)
-mérése nulla körüli.
+## Amit a rendszer lát
 
-Emellett kiszámol egy második számot: **a legnagyobb egyetlen árlépés** (két
-egymást követő kötés közti legnagyobb ugrás) az illesztett elmozdulás hány
-százaléka. Ez fogja meg azt, amikor egy kötés átsöpri a könyvet, és utána minden
-kötés az új áron nyomtat.
+Egyetlen adatforrás: a Binance `aggTrade` folyam a figyelt párokra —
+`price`, `qty`, `ts`, `buy_taker` (az agresszor oldala, az `m` mezőből).
+Emellett **folyamatosan** streamel:
 
-### A „normál" (baseline) — a pár saját mércéje
+- `!bookTicker` — a legjobb bid/ask ár és mennyiség (spread, kizárásra)
+- `<symbol>@depth20@500ms` — a könyv 20 szintje, memóriában cache-elve
+  (`app/bookcache.py`) — a fal és a könyv-imbalance innen jön, a döntés
+  pillanatában már készen áll
+- 1 perces gyertyák (EMA9/EMA21), háttérben frissítve (`app/ta.py`)
 
-Nincs fix küszöb. Páronként **másodpercenként egy mintát** veszünk az aktuális
-2 másodperces ablak `|mozgásából|`, és `baselineMinutes` = **5 percig** tartjuk.
-A normál ezek **mediánja** (nem átlag: egy kiugró érték ne vigye el).
+**A könyv és az EMA ITT MÁR BEFOLYÁSOLJA a döntést** — nem csak az üzenetbe
+kerül információként, mint a korábbi verzióban.
 
-Amíg nincs legalább **60 minta** (kb. 1 perc), a pár **nem jelezhet**.
+## 1. Impulzus
 
-### Mikor lesz jelzés — minden feltételnek teljesülnie kell
+Páronként egy gördülő ablak (`impulseWindowSec` = 3 mp). A mozgást **az ablakra
+illesztett egyenes** adja, nem a végpontok különbsége — egyetlen kiugró print
+nem tud impulzust csinálni.
 
-1. van már normál (≥60 minta)
-2. `|mozgás| ≥ max(minMovePct, normál × baselineRatio)` — alapon `max(0.80%, normál × 8)`
-3. ezen a páron `symbolCooldownSec` = **900 mp** óta nem volt jelzés
-4. a legnagyobb egyetlen árlépés ≤ `maxSingleStepPct` = **35%**-a a mozgásnak
-5. a pár kereskedhető: nincs feketelistán, spread ≤ `maxSpreadPct` = **0.05%**
-
-**Irány:** a mozgás előjele. `confirmSec = 0`, tehát a jelzés **azonnal** megy.
-
----
-
-# 2. REVERSAL (forduló) detektor
-
-**A kérdés, amire válaszol:** „volt egy érdemi lemozgás (vagy felmozgás), és most
-fordul vissza?"
-
-### Amit használ
-
-| adat | használja? |
-|---|---|
-| `price`, `ts` | **igen** — az alakzathoz |
-| `qty` + `buy_taker` | **igen** — a kötésáramláshoz (az utolsó 3 mp-ben) |
-| order book mélység | **NEM** (a fal csak az üzenetbe kerül) |
-| EMA | **NEM** |
-| a többi pár mozgása | **NEM** |
-
-### 1. lépés — volt-e érdemi mozgás (`_find_setup`)
-
-Páronként egy **20 másodperces** (`windowSeconds`) gördülő kötés-ablak.
-
-Az ablakot `wickSliceSec` = **0.5 másodperces szeletekre** vágjuk, és szeletenként
-a **medián árú kötést** vesszük. (Nem a nyers min/max: egy pillanat alatt beérkező
-pár print — egy nagy kötés, ami átsöpri a könyvet — így nem lesz a mozgás
-kezdőpontja.)
-
-Ezekből a pontokból:
-- ha a **minimum a maximum UTÁN** keletkezett → lemozgás → **LONG jelölt**
-- ha a **maximum a minimum UTÁN** keletkezett → felmozgás → **SHORT jelölt**
-
-A mozgás akkor „érdemi", ha
-`mozgás ≥ max(minMovePct, normál_skálázott × baselineRatio)` — alapon
-`max(2.00%, normál_skálázott × 8)`.
-
-A `normál_skálázott` a **pump/dump baseline-ja**, átskálázva a mozgás tényleges
-hosszára: `normál × √(időtartam / 2 mp)`. Bolyongásnál az elmozdulás az idő
-gyökével nő, tehát egy 20 másodperces mozgásnál a normál is nagyobb.
-
-### 2. lépés — az alakzat követése (`_track_setup`)
+Az ablakra számolt mérőszámok:
 
 ```
-   origin  ─────────────────────────  100%   ← innen indult a mozgás
-                                       25%   ← eddig lehet belépni (maxRetracementPct)
-                                       12%   ← eddig kell visszapattannia (bounceOfMovePct)
-   szélsőérték ───────────────────────  0%
+movePct     az illesztett egyenes elmozdulása
+notional    Σ (ár × mennyiség) az ablakban
+imbalance   (vételi notional − eladói notional) / összes notional   [-1, 1]
+singleStep  a legnagyobb egyetlen árlépés a mozgás %-ában
 ```
 
-- Ha a szélsőérték **6 másodpercnél** (`maxExtremeAgeSec`) régebbi, az alakzatot eldobjuk.
-- Ha új, a mozgás **2%**-ánál (`newExtremeOfMovePct`) mélyebb szélsőérték jön, az
-  alakzat újraindul — nem forduló volt, hanem folytatódik a mozgás.
-- `peak` = a szélsőérték óta elért legjobb ár. Ha a visszapattanás eléri a mozgás
-  **12%**-át (`bounceOfMovePct`), és onnan **30%**-ot (`pullbackOfBouncePct`)
-  visszahúz, akkor a `peak` **rögzül micro szintként**. (Ettől lesz egy csúcsból
-  swing-csúcs: utána visszahúzás következett.)
+**Két normál** (medián, `baselineMinutes` = 5 perc visszatekintéssel):
+- a pár normál **ár**mozgása (mint korábban)
+- a pár normál **forgalma** ugyanabban az ablakméretben — ÚJ, ez fogja meg azt
+  az esetet, amikor egy nagy kötés átsöpri a könyvet kevés valódi pénzből
 
-### 3. lépés — mikor lesz jelzés
+**IMPULSE_UP** akkor áll fenn, ha mind teljesül (IMPULSE_DOWN a tükörképe):
 
-Minden feltételnek teljesülnie kell:
+```
+1. mindket normal kesz (>= minta)
+2. movePct >= max(minImpulsePct, priceBaseline × impulseBaselineRatio)
+3. notional >= max(minImpulseNotional, notionalBaseline × notionalRatio)
+4. imbalance a mozgas iranyaba mutat, es |imbalance| >= minImpulseImbalance
+5. singleStep <= maxSingleStepPct
+6. a par kereskedheto (spread, white/blacklist)
+```
 
-1. a micro szint rögzült
-2. a szélsőérték ≤ **6 mp** régi
-3. a jelenlegi ár a mozgásnak legfeljebb **25%**-át tette vissza (`maxRetracementPct`)
-4. az ár **áttörte** a micro szintet a mozgás **5%**-ával (`breakOfMovePct`)
-5. **kötésáramlás** az utolsó `flowWindowSeconds` = **3 mp**-ben:
-   - legalább **5 kötés** (`minTradesInFlowWindow`)
-   - a domináns oldal **USDT-ben** mérve ≥ **1.6×** (`minFlowRatio`)
-   - a domináns oldalnak **kötésszámban is** vezetnie kell (egy bálna-print ne
-     csináljon fordulást)
-   - és a domináns oldalnak **egyeznie kell a jelzés irányával** (LONG-hoz vételi)
-6. ezen a páron `cooldownSec` = **1800 mp** óta nem volt forduló-jelzés
+Ekkor rögzül: `P0` (az ablak eleje), `P1` (az ablak vége), `leg = |P1 − P0|`.
+**Ettől kezdve minden méret a `leg` arányában értendő.**
 
-`confirmSec = 0`, tehát a jelzés az áttörés pillanatában megy.
+## 2. Setup követése
 
----
+Az impulzus után egy `Setup` figyeli a szerkezetet:
 
-# Amit egyik detektor sem néz
+```
+pivot     a P1 óta elért szélsőérték (amíg nincs érdemi visszahúzás, KÖVETI az árat)
+counter   a visszahúzás szélsőértéke (a fordulás potenciális szintje)
+```
 
-- **A kötések méretét a pump/dump eldobja** (a `Trade.qty` nincs használva benne).
-  Így nem tudja megkülönböztetni a nagy pénzből jövő mozgást a vékony könyvön
-  átcsúszó ártól.
-- **Az agresszor oldalát** a pump/dump szintén nem nézi (csak a forduló, és ott is
-  csak az utolsó 3 másodpercben).
-- **Az order book mélységét** egyik sem használja döntésre — a fal csak
-  információként kerül az üzenetbe.
-- **Az EMA-t** egyik sem használja döntésre.
-- **A többi pár mozgását** egyik sem nézi: ha az egész piac egyszerre esik, mindkét
-  detektor pár-specifikus jelzésként kezeli.
-- **Nincs semmilyen historikus adat, tanulás vagy előrejelzés.** A rendszer csak
-  azt állítja, hogy MOST valami szokatlan történt — arról nem mond semmit, hogy
-  ezután mi fog.
+**Érvénytelenítés → IDLE:**
+- `setupTimeoutSec` (90 mp) letelt, VAGY
+- az ár túlment az impulzus kiindulópontján `invalidateBeyondOriginPct`-nál
+  (a `leg` arányában) — a mozgás megfordult, nincs mit folytatni vagy fordítani
+
+Amint a visszahúzás eléri a `minPullbackPct`-ot, a **pivot rögzül**, és az
+állapot `WAITING_CONFIRMATION`-re vált.
+
+### 3a. Folytatás
+
+```
+LONG_CONTINUATION, ha:
+  1. a visszahuzas SOHA nem lepte tul a maxPullbackPct-ot
+  2. az ar attori a pivotot + breakoutOfLegPct
+  3. a kotesaramlas (flowWindowSec) a belepo iranyaba mutat (>= minConfirmImbalance)
+  4. a konyv nem all ellen (topImbalance, kozeli fal)
+  5. (alapbol) az EMA trend is egyezik
+```
+
+### 3b. Fordulás
+
+A `counter` szint csak akkor **rögzül**, ha attól legalább `counterPullbackPct`
+ellen-visszahúzás történt — pontosan úgy, ahogy egy csúcsból swing-csúcs lesz.
+Enélkül a szint folyamatosan az árral csúszna.
+
+```
+LONG_REVERSAL, ha:
+  1. exhaustionSec ota nincs uj szelsoertek (a mozgas kifullad)
+  2. a counter szint mar rogzult
+  3. az ar attori a counter szintet + reclaimOfLegPct
+  4. az attores reclaimHoldSec-ig TART (folyamatosan ellenorizve --
+     ha visszaesik, a jelzes elmarad, de a setup nem all le)
+  5. a kotesaramlas megfordult (>= minReversalImbalance)
+  6. a belepoig a mozgas legfeljebb maxEntryRetracePct-at jott vissza
+  7. a konyv nem all ellen. Az EMA trend SZANDEKOSAN NEM felteteltel --
+     a fordulo epp azt keresi, amikor a trend megfordul
+```
+
+## 3. Kimenet
+
+Cooldown: páronként `symbolCooldownSec` (10 perc) két jelzés között.
+
+## Az eredménymérés (`app/outcome.py`)
+
+A jelzés után `outcomeTrackSec`-ig (10 perc) **minden kötést** figyel a párról,
+és iránnyal korrigált hozamot számol:
+
+```
+LONG :  r(t) = (p(t) - entry) / entry * 100
+SHORT:  r(t) = (entry - p(t)) / entry * 100
+```
+
+Ebből: MFE/MAE (a legjobb és legrosszabb pont, és mikor érte el), és minden
+`tpLevels`/`slLevels` szinthez az ELSŐ pillanat, amikor elérte. Mivel minden
+kötést látunk, utólag **bármelyik** TP/SL párra eldönthető, melyiket érte el
+előbb — külön mérés nélkül.
+
+Ez **nem kapuz semmit** — a detektor döntésétől független, tisztán megfigyelés.

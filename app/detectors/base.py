@@ -16,19 +16,21 @@ Trade = namedtuple("Trade", "symbol price qty ts buy_taker")
 
 
 def make_signal(detector, config_key, symbol, direction, price, ts, *,
-                reasons, metrics, history):
+                reasons, metrics, history, setup=None):
     """A detektorok egysegesen ilyen dictet adnak vissza -- ez meg CANDIDATE.
 
     reasons       emberi allitasok arrol, miert erdekes ez a mozgas
     metrics       a hozzajuk tartozo mert szamok (Mongo-ba is ez kerul)
     history       [(ts, ar), ...] a market_snapshots-hoz
+    setup         a belepo tipusa, pl. LONG_CONTINUATION / SHORT_REVERSAL
 
-    Nincs score es nincs kereskedelmi terv: a detektor annyit allit, hogy tortent
-    valami rendkivuli, es megmondja, mibol gondolja.
+    Nincs score es nincs kereskedelmi terv: a detektor annyit allit, hogy egy
+    belepo setup megerositodott, es megmondja, mibol gondolja.
     """
     return {
         "detector": detector,
         "configKey": config_key,
+        "setup": setup,
         "symbol": symbol,
         "direction": direction,
         "price": price,
