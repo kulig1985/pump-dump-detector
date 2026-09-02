@@ -497,7 +497,13 @@ class MarketDataService:
             "kizarva": (self.eligibility.summary() or [""])[0],
             "setups": [(k, str(v)) for k, v in sorted(allapot.items()) if v],
             "kozel": det.readiness() if det else "",
-            "talalat": self.outcome.summary_lines() if self.outcome else [],
+            "hozam": self.outcome.return_lines(True) if self.outcome else [],
+            "kilenges": self.outcome.excursion_lines(True) if self.outcome else [],
+            "firstTouch": self.outcome.first_touch_lines(True) if self.outcome else [],
+            "hozamAllTime": (self.outcome.return_lines(False)
+                             if self.outcome and any(not t.current_run
+                                                     for t in self.outcome._mind())
+                             else []),
             "utolso": self.outcome.recent_lines(
                 self.cfg.telegram.get("statusRecentSignals", 3)) if self.outcome else [],
         }

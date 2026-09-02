@@ -69,22 +69,30 @@ Ha a whitelist nem üres, **kizárólag** azokat figyeljük.
 ### `maxSpreadPct` — alap: `0.05`
 Ennél szélesebb vétel/eladás résnél nincs jelzés.
 
-### `outcomeTrackSec` — alap: `600`
-A jelzés után ennyi másodpercig **minden kötést** figyelünk (10 perc).
+### `outcomeTrackSec` — alap: `1200`
+A jelzés után ennyi másodpercig **minden kötést** figyelünk — **20 perc**. A
+pozíciót kézzel nyitod és nem zárod automatikusan, ezért az számít, hol jár az ár
+10–20 perccel később, nem az, hogy egy mesterséges stopot érintett-e közben.
 
-### `outcomeMarkSec` — alap: `[60, 180, 300, 600]`
-Ezeknél a pontoknál rögzítjük az árat — 1 / 3 / 5 / 10 perc.
-> **Példa:** `marks["300"] = {price: 100.62, pct: +0.62}` — 5 perccel a jelzés
-> után az ár 100.62 volt, ami a jelzés irányában +0.62%.
+### `outcomeMarkSec` — alap: `[60, 180, 300, 600, 900, 1200]`
+Ezeknél a pontoknál rögzítjük az árat — 1 / 3 / 5 / 10 / 15 / 20 perc. Minden
+mérési pont külön, kereshető mezőt kap a signal dokumentumban:
+`return1m`, `return3m`, `return5m`, `return10m`, `return15m`, `return20m`.
+> **Példa:** `return5m: +0.62` — 5 perccel a jelzés után az ár a jelzés irányában
+> 0.62%-kal állt jobban. LONG-nál a felfelé, SHORT-nál a lefelé mozgás a pozitív.
 
 ### `tpLevels` — alap: `[0.3, 0.5, 0.8, 1.0]`
 ### `slLevels` — alap: `[0.2, 0.3, 0.5]`
-Ezekre a szintekre mérjük, **mikor** érte el először a jelzés irányában, illetve
-ellene. Mivel minden kötést látunk, utólag bármelyik TP/SL párra eldönthető,
-melyiket érte el előbb.
+**Diagnosztikai adat.** Ezekre a szintekre mérjük, mikor érte el először a jelzés
+irányában, illetve ellene (`tpFirstTouch` / `slFirstTouch`).
+
+> **Ez NEM minősíti a jelzést nyerőnek vagy bukónak.** Egy trade lehet előbb
+> mínuszban, majd 20 perccel később érdemi profitban — kézi kereskedésnél a
+> `-0.3%` korábbi érintése nem jelent bukott trade-et. A fő eredmény az időalapú
+> `returnPct` tábla.
 
 ### `reportTp` / `reportSl` — alap: `0.5` / `0.3`
-Az összesítésben ez a TP/SL pár szerepel.
+A first-touch diagnosztikai táblában ez a pár szerepel.
 
 ### `statusIntervalSec` — alap: `60`
 

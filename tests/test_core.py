@@ -1018,56 +1018,74 @@ def test_cjk_symbol_column_alignment():
     assert width(_pad("龙虾USDT", 15)) == width(_pad("NEARUSDT", 15)) == 15
 
 
-def _outcome_cfg(tp=None, sl=None, track_sec=600):
-    m = {**MARKET, "outcomeTrackSec": track_sec,
-         "tpLevels": tp or [0.3, 0.5, 0.8], "slLevels": sl or [0.2, 0.3, 0.5],
+def _outcome_cfg(track_sec=1200, markok=(60, 180, 300, 600, 900, 1200)):
+    m = {**MARKET, "outcomeTrackSec": track_sec, "outcomeMarkSec": list(markok),
+         "tpLevels": [0.3, 0.5, 0.8], "slLevels": [0.2, 0.3, 0.5],
          "reportTp": 0.5, "reportSl": 0.3}
     return types.SimpleNamespace(market=m)
 
 
-def test_outcome_mfe_mae_and_direction_correction():
-    """LONG-nal a felfele mozgas MFE, SHORT-nal a lefele -- iranyhelyesen."""
+def _tracker(symbol="XUSDT", direction="LONG", entry=100.0, markok=(60, 180, 300,
+                                                                    600, 900, 1200),
+             current_run=True):
     from app.outcome import Tracker
-
-    long_t = Tracker("id1", "AUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0, [], [])
-    for price, ts in ((101.0, 1.0), (99.0, 2.0), (100.5, 3.0)):
-        long_t.on_price(price, ts)
-    assert abs(long_t.mfe - 1.0) < 1e-9 and long_t.t_mfe == 1.0
-    assert abs(long_t.mae - (-1.0)) < 1e-9 and long_t.t_mae == 2.0
-    assert abs(long_t.final - 0.5) < 1e-9
-
-    short_t = Tracker("id2", "BUSDT", "SHORT_REVERSAL", "SHORT", 100.0, 0.0, 600.0, [], [])
-    for price, ts in ((99.0, 1.0), (101.0, 2.0)):
-        short_t.on_price(price, ts)
-    assert abs(short_t.mfe - 1.0) < 1e-9, "SHORT-nal a leeso ar a nyereseg"
-    assert abs(short_t.mae - (-1.0)) < 1e-9, "SHORT-nal a felmeno ar a veszteseg"
+    return Tracker(symbol, symbol, direction, direction, entry, 0.0, 1200.0,
+                   [0.3, 0.5, 0.8], [0.2, 0.3, 0.5], markok, current_run)
 
 
-def test_outcome_tp_sl_first_touch_decides_the_winner():
-    """Mivel minden kotest latunk, barmely TP/SL parra utolag eldontheto, melyiket
-    erte el elobb -- kulon meres nelkul."""
-    from app.outcome import Tracker
-
-    # eloszor eleri a TP 0.5-ot, csak utana esik SL 0.3 ala
-    t = Tracker("id", "XUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0,
-                [0.3, 0.5], [0.2, 0.3])
-    for price, ts in ((100.4, 1.0), (100.6, 2.0), (99.6, 3.0)):
-        t.on_price(price, ts)
-    assert t.tp["0.5"] == 2.0 and t.tp["0.3"] == 1.0
-    assert t.sl["0.3"] == 3.0 and t.sl["0.2"] == 3.0, "a -0.4% mindket SL szintet eleri"
-    assert t.eredmeny(0.5, 0.3) == "nyero", "a TP 0.5 hamarabb jott, mint az SL 0.3"
-    assert t.eredmeny(0.3, 0.2) == "nyero", "a TP 0.3 (t=1) hamarabb jott, mint az SL 0.2 (t=3)"
-
-    # forditva: eloszor SL, csak utana TP
-    t2 = Tracker("id2", "YUSDT", "LONG_CONTINUATION", "LONG", 100.0, 0.0, 600.0,
-                 [0.5], [0.3])
-    for price, ts in ((99.6, 1.0), (100.6, 2.0)):
-        t2.on_price(price, ts)
-    assert t2.eredmeny(0.5, 0.3) == "buko", "az SL hamarabb jott"
+def test_config_tracks_for_twenty_minutes():
+    """A kezi kereskedeshez 20 perc kell, hat merespontal."""
+    assert C_CFG.MARKET_DEFAULTS["outcomeTrackSec"] == 1200
+    assert C_CFG.MARKET_DEFAULTS["outcomeMarkSec"] == [60, 180, 300, 600, 900, 1200]
 
 
-def test_outcome_tracks_after_signal_without_touching_the_detector():
-    """Az eredmenymeres nem kapuz semmit: a jelzes UTAN jegyzi fel az arat."""
+def test_long_return_pct_has_the_right_sign():
+    """LONG: a felfele mozgas POZITIV."""
+    t = _tracker(direction="LONG", entry=100.0)
+    assert abs(t.hozam(101.0) - 1.0) < 1e-9
+    assert abs(t.hozam(99.0) - (-1.0)) < 1e-9
+    assert t.hozam(100.0) == 0.0
+
+
+def test_short_return_pct_has_the_right_sign():
+    """SHORT: a LEFELE mozgas a pozitiv -- a jelzes iranyaba."""
+    t = _tracker(direction="SHORT", entry=100.0)
+    assert abs(t.hozam(99.0) - 1.0) < 1e-9, "SHORT-nal az eso ar a nyereseg"
+    assert abs(t.hozam(101.0) - (-1.0)) < 1e-9
+    assert t.hozam(100.0) == 0.0
+
+
+def test_all_six_marks_are_recorded():
+    """1 / 3 / 5 / 10 / 15 / 20 perc -- mindegyik a sajat idejeben."""
+    t = _tracker(direction="LONG", entry=100.0)
+    utvonal = [(30, 100.5), (61, 100.2), (181, 99.8), (301, 100.9),
+               (601, 101.5), (901, 101.1), (1201, 102.0)]
+    for ts, ar in utvonal:
+        t.on_price(ar, ts)
+
+    assert t.marks["60"] is None or t.hozam_at(60) is not None
+    assert abs(t.hozam_at(60) - 0.2) < 1e-9, "1 perc"
+    assert abs(t.hozam_at(180) - (-0.2)) < 1e-9, "3 perc"
+    assert abs(t.hozam_at(300) - 0.9) < 1e-9, "5 perc"
+    assert abs(t.hozam_at(600) - 1.5) < 1e-9, "10 perc"
+    assert abs(t.hozam_at(900) - 1.1) < 1e-9, "15 perc"
+    assert abs(t.hozam_at(1200) - 2.0) < 1e-9, "20 perc"
+
+    d = t.doc()
+    for nev, ertek in (("return1m", 0.2), ("return3m", -0.2), ("return5m", 0.9),
+                       ("return10m", 1.5), ("return15m", 1.1), ("return20m", 2.0)):
+        assert abs(d[nev] - ertek) < 1e-9, f"{nev} = {d[nev]}"
+
+
+def test_mark_is_not_overwritten_later():
+    t = _tracker(direction="LONG", entry=100.0)
+    t.on_price(101.0, 61)
+    t.on_price(95.0, 120)
+    assert abs(t.hozam_at(60) - 1.0) < 1e-9, "a mar rogzitett merespont nem valtozik"
+
+
+def test_tracking_closes_after_1200_seconds():
+    """A meres 20 perc utan lezarul."""
     import asyncio
     from app.outcome import OutcomeTracker
 
@@ -1075,38 +1093,147 @@ def test_outcome_tracks_after_signal_without_touching_the_detector():
         def __init__(self): self.updates = []
         async def update_one(self, q, u): self.updates.append((q, u))
 
-    coll = FakeSignals()
-    o = OutcomeTracker(_outcome_cfg(track_sec=1), types.SimpleNamespace(signals=coll))
-    o.track("id-long", "AUSDT", "LONG_CONTINUATION", "LONG", 100.0)
-    o.on_trade(Trade("AUSDT", 100.5, 1.0, 0.0, True))
+    o = OutcomeTracker(_outcome_cfg(track_sec=1200),
+                       types.SimpleNamespace(signals=FakeSignals()))
+    o.track("id", "AUSDT", "LONG", "LONG", 100.0)
+    t = o.aktiv["AUSDT"][0]
+    assert abs(t.deadline - t.t0 - 1200) < 1e-6, "a hatarido 1200 masodperc"
+
     asyncio.run(o._flush())
-    assert coll.updates, "az elo merest is menteni kell (dirty flush)"
-    doc = coll.updates[-1][1]["$set"]["outcome"]
-    assert doc["mfePct"] > 0 and doc["done"] is False
+    assert not t.done and "AUSDT" in o.aktiv, "20 percen belul meg fut"
 
-    # amirol nem erkezik kotes, arrol nem talalunk ki adatot -- a belepo marad az entry
-    o2 = OutcomeTracker(_outcome_cfg(track_sec=0.001),
-                        types.SimpleNamespace(signals=FakeSignals()))
-    o2.track("id-nema", "CUSDT", "LONG_CONTINUATION", "LONG", 100.0)
-    time.sleep(0.01)
-    asyncio.run(o2._flush())
-    assert o2.keszek[0].final == 0.0
+    t.deadline = time.time() - 1                    # a hatarido lejart
+    asyncio.run(o._flush())
+    assert t.done and "AUSDT" not in o.aktiv, "20 perc utan lezarult"
+    assert o.keszek == [t]
 
 
-def test_outcome_records_interval_prices():
-    """1 / 3 / 5 / 10 perces ar rogzitese a jelzes utan."""
-    from app.outcome import Tracker
-    t = Tracker("id", "XUSDT", "LONG", "LONG", 100.0, 0.0, 600.0,
-                [], [], mark_sec=[60, 180])
-    t.on_price(100.5, 30.0)                 # meg egyik merespont sem jart le
-    assert t.marks["60"] is None and t.marks["180"] is None
-    t.on_price(101.0, 65.0)                 # az 1 perces pont lejart
-    assert t.marks["60"]["price"] == 101.0
-    assert abs(t.marks["60"]["pct"] - 1.0) < 1e-9
-    assert t.marks["180"] is None
-    t.on_price(99.0, 200.0)                 # a 3 perces is
-    assert t.marks["180"]["price"] == 99.0
-    assert t.marks["60"]["price"] == 101.0, "a mar rogzitett pontot nem irjuk felul"
+def test_mfe_mae_for_long():
+    t = _tracker(direction="LONG", entry=100.0)
+    for ar, ts in ((101.2, 30), (98.5, 90), (100.4, 200)):
+        t.on_price(ar, ts)
+    assert abs(t.mfe - 1.2) < 1e-9 and t.t_mfe == 30
+    assert abs(t.mae - (-1.5)) < 1e-9 and t.t_mae == 90
+    assert t.max_price == 101.2 and t.min_price == 98.5
+
+
+def test_mfe_mae_for_short():
+    """SHORT: az ESO ar a kedvezo -- a min_price adja az MFE-t."""
+    t = _tracker(direction="SHORT", entry=100.0)
+    for ar, ts in ((98.8, 30), (101.5, 90), (99.6, 200)):
+        t.on_price(ar, ts)
+    assert abs(t.mfe - 1.2) < 1e-9 and t.t_mfe == 30, "a 98.8 a legjobb pont"
+    assert abs(t.mae - (-1.5)) < 1e-9 and t.t_mae == 90, "a 101.5 a legrosszabb"
+    assert t.max_price == 101.5 and t.min_price == 98.8
+
+
+def test_positive_ratio_per_horizon():
+    """Horizontonkent hany szazalek volt pozitiv (returnPct > 0)."""
+    from app.outcome import OutcomeTracker
+    o = OutcomeTracker(_outcome_cfg(markok=(60, 180)), None)
+
+    def kesz(irany, r60, r180):
+        t = _tracker(direction=irany, markok=(60, 180))
+        t.marks["60"] = {"price": 0, "returnPct": r60}
+        t.marks["180"] = {"price": 0, "returnPct": r180}
+        t.done = True
+        return t
+
+    o.keszek = [kesz("LONG", 0.5, -0.2), kesz("LONG", -0.1, 0.4),
+                kesz("LONG", 0.3, 0.6), kesz("LONG", -0.4, 0.8)]
+    sorok = "\n".join(o.return_lines(current_run_only=True))
+    assert "POZITIV ARANY" in sorok
+    long_arany = [x for x in sorok.split("\n") if x.startswith("LONG")][-1]
+    # 1m: 2/4 pozitiv = 50%, 3m: 3/4 = 75%
+    assert "50%" in long_arany and "75%" in long_arany, long_arany
+    # es az atlag: 1m (0.5-0.1+0.3-0.4)/4 = +0.075
+    atlag_sor = [x for x in sorok.split("\n") if x.startswith("LONG")][0]
+    assert "+0.08%" in atlag_sor or "+0.07%" in atlag_sor, atlag_sor
+
+
+def test_current_run_is_not_mixed_with_history():
+    """A CURRENT RUN tabla csak az ebben a futasban keletkezett jelzesekbol szamol."""
+    from app.outcome import OutcomeTracker
+    o = OutcomeTracker(_outcome_cfg(markok=(60,)), None)
+
+    def kesz(r, current):
+        t = _tracker(markok=(60,), current_run=current)
+        t.marks["60"] = {"price": 0, "returnPct": r}
+        t.done = True
+        return t
+
+    o.keszek = [kesz(1.0, True), kesz(-3.0, False), kesz(-3.0, False)]
+
+    most = "\n".join(o.return_lines(current_run_only=True))
+    mind = "\n".join(o.return_lines(current_run_only=False))
+    assert "LONG       1" in most, f"a current run 1 jelzesbol szamol: {most}"
+    assert "+1.00%" in most, most
+    assert "LONG       3" in mind, f"az all-time mind a 3-bol: {mind}"
+    assert "-1.67%" in mind, mind
+
+    # es a heartbeat is kulon cimke alatt mutatja
+    szoveg = "\n".join(o.status_lines())
+    assert "EREDMENY -- CURRENT RUN" in szoveg
+    assert "EREDMENY -- HISTORICAL / ALL TIME" in szoveg
+
+
+def test_first_touch_is_diagnostic_not_a_verdict():
+    """A TP/SL first-touch megmarad, de NEM minositi a jelzest nyerove/bukova.
+
+    Ez a valos eset: a -0.3%-ot elobb erintette, de 20 perccel kesobb +1.27%-on
+    allt. Kezi kereskedesnel ez NEM buko trade.
+    """
+    t = _tracker(direction="LONG", entry=100.0)
+    t.on_price(99.6, 40)                      # eloszor az SL 0.3 szintet erinti
+    t.on_price(101.3, 300)                    # majd a TP 0.5-ot
+    t.on_price(101.27, 1201)                  # es 20 perckor +1.27%-on all
+
+    assert t.sl["0.3"] == 40 and t.tp["0.5"] == 300
+    assert t.first_touch(0.5, 0.3) == "SL", "a diagnosztika szerint az SL volt elobb"
+    assert abs(t.hozam_at(1200) - 1.27) < 1e-6, "de 20 perckor +1.27%"
+
+    # a Tracker NEM ad "nyero"/"buko" minositest
+    assert not hasattr(t, "eredmeny"), "a nyero/buko minosites megszunt"
+    d = t.doc()
+    assert "tpFirstTouch" in d and "slFirstTouch" in d, "diagnosztikakent megmarad"
+    assert "winner" not in d and "loser" not in d
+
+    # es a heartbeat is diagnosztikakent jeloli
+    from app.outcome import OutcomeTracker
+    o = OutcomeTracker(_outcome_cfg(), None)
+    t.done = True
+    o.keszek = [t]
+    szoveg = "\n".join(o.first_touch_lines(True))
+    assert "diagnosztika" in szoveg and "TP elobb" in szoveg
+    assert "nyero" not in szoveg and "buko" not in szoveg
+
+
+def test_signal_price_is_the_measurement_base():
+    """A meres a jelzes arabol indul. Az adatmodell keszen all egy kesobbi
+    actualEntryPrice mezore, de most nem szukseges."""
+    t = _tracker(entry=0.52276)
+    d = t.doc()
+    assert d["signalPrice"] == 0.52276
+    assert "actualEntryPrice" not in d, "most meg nincs -- de a nev szabad"
+
+
+def test_recent_lines_show_the_full_path():
+    """Az utolso jelzeseknel a teljes arut latszik, nem egy nyero/buko cimke."""
+    from app.outcome import OutcomeTracker
+    o = OutcomeTracker(_outcome_cfg(markok=(60, 180, 1200)), None)
+    t = _tracker("MAGMAUSDT", "LONG", 0.52276, markok=(60, 180, 1200))
+    t.marks["60"] = {"price": 0, "returnPct": -0.22}
+    t.marks["180"] = {"price": 0, "returnPct": -0.48}
+    t.mfe, t.mae = 1.46, -0.62
+    t.done = True
+    o.keszek = [t]
+
+    szoveg = "\n".join(o.recent_lines())
+    assert "MAGMAUSDT" in szoveg and "0.52276" in szoveg
+    assert "1m -0.22%" in szoveg and "3m -0.48%" in szoveg
+    assert "20m ..." in szoveg, "a meg hianyzo merespont"
+    assert "MFE +1.46%" in szoveg and "MAE -0.62%" in szoveg
+    assert "nyero" not in szoveg and "buko" not in szoveg
 
 
 def test_outcome_starts_before_the_telegram_call():
@@ -1118,35 +1245,8 @@ def test_outcome_starts_before_the_telegram_call():
     assert mentes < telegram_hivas, "eloszor mentes + outcome.track, csak utana halozat"
 
 
-def test_outcome_summary_groups_by_setup_type():
-    o_cfg = _outcome_cfg()
-    from app.outcome import OutcomeTracker, Tracker
-    o = OutcomeTracker(o_cfg, None)
-
-    def kesz(sid, setup, direction, tp_hit, sl_hit):
-        t = Tracker(sid, "XUSDT", setup, direction, 100.0, 0.0, 600.0, [0.5], [0.3])
-        t.tp["0.5"] = tp_hit
-        t.sl["0.3"] = sl_hit
-        t.mfe, t.mae = 0.5, -0.1
-        t.done = True
-        return t
-
-    o.keszek = [
-        kesz("a", "LONG_CONTINUATION", "LONG", 1.0, None),   # nyero
-        kesz("b", "LONG_CONTINUATION", "LONG", None, 1.0),   # buko
-        kesz("c", "SHORT_REVERSAL", "SHORT", 1.0, None),     # nyero
-    ]
-    sorok = o.summary_lines()
-    szoveg = "\n".join(sorok)
-    assert "LONG_CONTINUATION" in szoveg and "SHORT_REVERSAL" in szoveg
-    assert "SL -0.3%" in szoveg or "SL -0.3" in szoveg
-
-    utolso = "\n".join(o.recent_lines())
-    assert "UTOLSO" in utolso and "nyero" in utolso
-
-
-def test_outcome_history_is_loaded_at_startup():
-    """Az osszesites ne nullazodjon minden ujrainditasnal."""
+def test_outcome_history_is_loaded_as_not_current_run():
+    """A korabbi futasok jelzesei betoltodnek, de KULON jelolve."""
     import asyncio
     from app.outcome import OutcomeTracker
 
@@ -1163,19 +1263,20 @@ def test_outcome_history_is_loaded_at_startup():
     import datetime as _dt
     most = _dt.datetime(2026, 9, 1, 6, 56, tzinfo=_dt.timezone.utc)
     docs = [{
-        "_id": "a", "timestamp": most, "symbol": "BTRUSDT",
-        "detector": "scalp", "setup": "LONG_CONTINUATION", "direction": "LONG",
-        "price": 100.0,
-        "outcome": {"entry": 100.0, "setup": "LONG_CONTINUATION",
-                   "mfePct": 1.2, "maePct": -0.3, "timeToMfeSec": 30,
-                   "timeToMaeSec": 5, "maxPrice": 101.2, "minPrice": 99.7,
-                   "tp": {"0.5": 25.0}, "sl": {"0.3": None},
-                   "finalPct": 0.8, "done": True},
+        "_id": "a", "timestamp": most, "symbol": "BTRUSDT", "detector": "scalp",
+        "setup": "LONG", "direction": "LONG", "price": 100.0,
+        "outcome": {"signalPrice": 100.0, "direction": "LONG", "mfePct": 1.2,
+                    "maePct": -0.3, "timeToMfeSec": 30, "timeToMaeSec": 5,
+                    "marks": {"60": {"price": 100.5, "returnPct": 0.5}},
+                    "tpFirstTouch": {"0.5": 25.0}, "slFirstTouch": {"0.3": None},
+                    "finalPct": 0.8, "done": True},
     }]
     o = OutcomeTracker(_outcome_cfg(), types.SimpleNamespace(signals=FakeSignals(docs)))
     asyncio.run(o.load_history())
     assert len(o.keszek) == 1
-    assert o.keszek[0].mfe == 1.2 and o.keszek[0].done is True
+    assert o.keszek[0].current_run is False, "korabbi futasbol valo"
+    assert o.return_lines(current_run_only=True) == [], "a current run meg ures"
+    assert o.return_lines(current_run_only=False), "az all-time viszont nem"
 
 
 # ---------------------------------------------------------------- telegram

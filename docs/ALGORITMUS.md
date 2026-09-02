@@ -133,16 +133,38 @@ hosszabb kimaradás után viszont a régi baseline elavul, és nincs jelzés, am
 
 ## Eredménymérés (`app/outcome.py`)
 
-A mérés **a jelzés létrejöttekor indul, még a Telegram HTTP hívás előtt**.
-`outcomeTrackSec`-ig (10 perc) minden kötést figyel:
+A mérés **a jelzés létrejöttekor indul, még a Telegram HTTP hívás előtt**, és
+`outcomeTrackSec`-ig (**20 perc**) minden kötést figyel. Iránnyal korrigált hozam:
 
 ```
-LONG :  r(t) = (p(t) - entry) / entry * 100
-SHORT:  r(t) = (entry - p(t)) / entry * 100
+LONG :  returnPct = (ar - signalPrice) / signalPrice * 100
+SHORT:  returnPct = (signalPrice - ar) / signalPrice * 100
 ```
 
-Ebből: MFE/MAE (érték + mikor), `outcomeMarkSec` pontokban az ár (1/3/5/10 perc),
-és minden TP/SL szinthez az **első** érintés ideje. Mivel minden kötést látunk,
-utólag bármelyik TP/SL párra eldönthető, melyiket érte el előbb.
+Pozitív érték **mindig** a jelzés irányába történő kedvező mozgás.
+
+Jelzésenként mentve:
+
+```
+return1m .. return20m   az outcomeMarkSec pontokban mert hozam
+mfePct / maePct         a legjobb es a legrosszabb pont
+timeToMfeSec / MaeSec   mikor erte el
+maxPrice / minPrice     a nyers szelsoertekek
+tpFirstTouch / slFirstTouch   DIAGNOSZTIKA: melyik szintet mikor erte el eloszor
+```
+
+A mérés alapja a `signalPrice` (a detektor által adott ár). Az adatmodell készen
+áll egy későbbi `actualEntryPrice` mezőre, ha egyszer a tényleges belépő árat is
+vissza tudjuk küldeni — most nem szükséges.
+
+**A TP/SL first-touch nem minősíti a jelzést.** Egy trade lehet előbb mínuszban,
+majd 20 perccel később érdemi profitban; kézi kereskedésnél a `-0.3%` korábbi
+érintése nem bukott trade. A heartbeat ezért külön, `TP/SL FIRST-TOUCH
+(diagnosztika)` cím alatt mutatja.
+
+**Current run és historical külön.** Az induláskor betöltött, korábbi futásokból
+származó mérések `current_run = False` jelöléssel jönnek be, és külön táblában
+(`EREDMENY -- HISTORICAL / ALL TIME`) jelennek meg — nem keverednek az aktuális
+futás statisztikájába.
 
 Ez **nem kapuz semmit** — tisztán megfigyelés.

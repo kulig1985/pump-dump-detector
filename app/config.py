@@ -35,11 +35,16 @@ MARKET_DEFAULTS = {
 
     # ---- eredmenymeres: a jelzes UTAN folyamatosan kovetjuk az arat ----
     # Nem kapuz semmit, nem backteszt. Ebbol derul ki, melyik setup mukodik.
-    "outcomeTrackSec": 600,            # ennyi ideig kovetunk minden jelzest
-    "outcomeMarkSec": [60, 180, 300, 600],   # ezeknel a pontoknal rogzitjuk az arat
+    # A poziciot kezzel nyitod es nem zarod automatikusan: egy trade lehet
+    # elobb minuszban, majd 10-20 perccel kesobb erdemi profitban. Ezert a fo
+    # eredmeny az IDOALAPU arut, nem egy mesterseges TP/SL kimenetel.
+    "outcomeTrackSec": 1200,           # 20 percig kovetunk minden jelzest
+    "outcomeMarkSec": [60, 180, 300, 600, 900, 1200],   # 1/3/5/10/15/20 perc
+    # A TP/SL first-touch DIAGNOSZTIKAI adat marad -- nem ettol lesz egy jelzes
+    # "nyero" vagy "buko".
     "tpLevels": [0.3, 0.5, 0.8, 1.0],  # ezeket a TP szinteket merjuk (%)
     "slLevels": [0.2, 0.3, 0.5],       # es ezeket a SL szinteket (%)
-    "reportTp": 0.5,                   # az osszesitesben ez a TP/SL par szerepel
+    "reportTp": 0.5,                   # a first-touch tablaban ez a par szerepel
     "reportSl": 0.3,
 
     # ---- megjelenites ----

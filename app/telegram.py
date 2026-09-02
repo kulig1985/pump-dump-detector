@@ -108,10 +108,18 @@ def format_status(info):
     if info.get("kozel"):
         veg += f"\n\n<b>DETEKTOR ALLAPOT</b>\n  • {esc(info['kozel'])}"
 
+    def blokk(cim, sorok):
+        if not sorok:
+            return ""
+        fej = f"{cim}\n" if cim else ""
+        return "\n\n" + fej + "\n".join(esc(x) for x in sorok)
+
     meres = ""
-    if info.get("talalat"):
-        meres += ("\nEREDMENY  (melyiket erte el elobb: TP vagy SL)\n"
-                  + "\n".join(esc(x) for x in info["talalat"]))
+    if info.get("hozam"):
+        meres += blokk("EREDMENY -- CURRENT RUN", info["hozam"])
+    for kulcs in ("kilenges", "firstTouch"):
+        meres += blokk("", info.get(kulcs))
+    meres += blokk("EREDMENY -- HISTORICAL / ALL TIME", info.get("hozamAllTime"))
     if info.get("utolso"):
         meres += "\n\n" + "\n".join(esc(x) for x in info["utolso"])
     if meres:
