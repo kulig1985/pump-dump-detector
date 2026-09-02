@@ -54,7 +54,11 @@ Két normál (medián, `baselineMinutes` visszatekintéssel): a pár normál
 5. singleStep <= maxSingleStepPct
 ```
 
-Rögzül: `p0` (az ablak eleje), `pivot` (az ablak vége), `leg = |pivot − p0|`.
+Rögzül: `p0` (az ablak eleje), `pivot` = **az ablak tényleges high-ja (UP) /
+low-ja (DOWN)** — nem az utolsó kötés ára. Enélkül előfordulhatna, hogy az ár már
+járt magasabban, de a rendszer egy későbbi, alacsonyabb pontot venne pivotnak, és
+egy már bejárt szintet látna „kitörésnek". `leg = |pivot − p0|`.
+
 **Az impulzus önmagában nem jelzés.**
 
 ## 2. Pullback
@@ -96,12 +100,27 @@ időpontja `breakoutTimestamp`-ként rögzül. Utána:
 ## 4. Megerősítés — három dolog
 
 ```
-1. kotesaramlas: flow >= minConfirmImbalance a belepo iranyaba (flowWindowSec)
+1. kotesaramlas: flow >= minConfirmImbalance a belepo iranyaba
 2. friss konyv-adat (maxDataAgeSec)  -- FAIL-CLOSED
-3. spread: az eligibility szuri, a jelzes kiadasanal
+3. eligibility: spread + white/blacklist
 ```
 
 Ennyi. Se EMA, se fal, se könyv-imbalance.
+
+**A flow csak a pivot rögzítése óta érkezett kötésekből számol**
+(`Setup.wait_breakout_ts`). Az impulzus alatti erős egyirányú áramlás különben
+magától „megerősítené" a későbbi kitörést.
+
+**Az eligibility a commit ELŐTT fut.** Ha bármelyik feltétel nem teljesül, a setup
+**életben marad** — nem törlődik, és **nem indul cooldown**. Cooldown kizárólag
+ténylegesen kiküldött jelzés után indul.
+
+## Adatszakadás
+
+Ha az `aggTrade` kapcsolat megszakad, az érintett párok setupja és `prev_price`
+értéke törlődik (`ScalpDetector.reset`). Reconnect után az első kötés különben egy
+régen megtörtént kitörés „friss keresztezésének" látszana. A baseline megmarad —
+az a pár hosszú távú normálja, nem setup-állapot.
 
 ## Eredménymérés (`app/outcome.py`)
 

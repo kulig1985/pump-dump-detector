@@ -77,6 +77,15 @@ class DetectorManager:
                 out.extend(sorok)
         return out
 
+    def reset(self, symbols):
+        """Adatszakadas: minden detektor dobja el az erintett parok allapotat."""
+        for d in self.detectors:
+            if hasattr(d, "reset"):
+                try:
+                    d.reset(symbols)
+                except Exception as e:
+                    log.warning("[%s] reset hiba: %s", d.name, e)
+
     def take_ticks(self):
         n, self.ticks = self.ticks, 0
         return n

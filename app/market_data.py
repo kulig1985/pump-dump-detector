@@ -20,8 +20,8 @@ eseten) -- a _stream ciklus ezt automatikusan ujraepiti.
 """
 import os
 import json
+import itertools
 import time
-import uuid
 import asyncio
 import logging
 
@@ -47,6 +47,15 @@ WS_HOST = ("wss://stream.binancefuture.com" if os.getenv("FUTURES_TESTNET") == "
 WS_BASES = [f"{WS_HOST}/market/stream", f"{WS_HOST}/stream", f"{WS_HOST}/ws"]
 BOOK_BASES = [f"{WS_HOST}/public/stream", f"{WS_HOST}/stream", f"{WS_HOST}/ws"]
 STREAMS_PER_CONNECTION = 150
+
+# A SUBSCRIBE/UNSUBSCRIBE kerelmek azonositoja: egyszeru, novekvo unsigned int.
+# (A hivatalos WSS leiras unsigned INT-et ir; az OpenAPI spec stringet mutat --
+# a Binance mindkettot elfogadja, de az int a dokumentalt alak.)
+_req_id = itertools.count(1)
+
+
+def next_request_id():
+    return next(_req_id)
 SILENCE_SEC = 15        # ennyi nemasag utan ujracsatlakozunk (esetleg mas utvonalon)
 
 # A Binance az IP-t tiltja ki (429 -> 418), ha tul suru a kapcsolodasi kiserlet.
@@ -219,7 +228,7 @@ class MarketDataService:
                 async with websockets.connect(base, ping_interval=20,
                                               ping_timeout=20) as ws:
                     # a dokumentacio szerint az id kotelezo es string tipusu
-                    req_id = uuid.uuid4().hex
+                    req_id = next_request_id()
                     await ws.send(json.dumps({"method": "SUBSCRIBE",
                                               "params": streams, "id": req_id}))
                     self.connected += 1
@@ -251,6 +260,11 @@ class MarketDataService:
             except Exception as e:
                 log.warning("WS #%d szakadas: %s", index, e)
 
+            # ADATSZAKADAS: az erintett parok felepitett setupjai NEM folytathatok.
+            # Reconnect utan az elso kotes kulonben egy regen megtortent kitores
+            # "friss keresztezesenek" latszana.
+            self.detectors.reset(symbols)
+
             # MINDEN bontas utan varunk -- a nemasag-timeout utan is. Enelkul egy
             # szakadozo alagut mellett 15 masodpercenkent ujracsatlakoznank, ami
             # egyenes ut a 418-as IP tiltashoz.
@@ -281,7 +295,7 @@ class MarketDataService:
                                               ping_timeout=20) as ws:
                     await ws.send(json.dumps({"method": "SUBSCRIBE",
                                               "params": streams,
-                                              "id": uuid.uuid4().hex}))
+                                              "id": next_request_id()}))
                     log.info("Konyv-melyseg #%d csatlakozva: %s | %d stream",
                              index, base, len(streams))
                     kapott = False
@@ -331,7 +345,7 @@ class MarketDataService:
                                               ping_timeout=20) as ws:
                     await ws.send(json.dumps({"method": "SUBSCRIBE",
                                               "params": ["!bookTicker"],
-                                              "id": uuid.uuid4().hex}))
+                                              "id": next_request_id()}))
                     log.info("Order book stream csatlakozva: %s", base)
                     kapott = False
                     try:

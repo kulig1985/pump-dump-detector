@@ -39,21 +39,23 @@ class Setup:
     """Egy symbol eppen fejlodo setupja egy impulzus utan."""
 
     __slots__ = ("up", "p0", "pivot", "pivot_ts", "leg", "t1", "state", "extreme_back",
-                 "max_retrace", "impulse", "breakout_ts", "breakout_level")
+                 "max_retrace", "impulse", "breakout_ts", "breakout_level",
+                 "wait_breakout_ts")
 
-    def __init__(self, up, p0, p1, t1, impulse):
+    def __init__(self, up, p0, pivot, pivot_ts, t1, impulse):
         self.up = up                    # felfele volt-e az impulzus
         self.p0 = p0                    # az impulzus kiindulopontja
-        self.pivot = p1                 # a szelsoertek -- a pullbackig meg mozog
-        self.pivot_ts = t1
-        self.leg = abs(p1 - p0)         # a lab; a pivottal EGYUTT frissul
+        self.pivot = pivot              # az ablak TENYLEGES szelsoerteke
+        self.pivot_ts = pivot_ts
+        self.leg = abs(pivot - p0)      # a lab; a pivottal EGYUTT frissul
         self.t1 = t1
         self.impulse = impulse          # a mert impulzus-adatok (Mongo-ba is)
         self.state = IMPULSE
-        self.extreme_back = p1          # a visszahuzas szelsoerteke (kijelzeshez)
+        self.extreme_back = pivot       # a visszahuzas szelsoerteke (kijelzeshez)
         self.max_retrace = 0.0          # a legmelyebb visszahuzas a lab %-aban
         self.breakout_ts = None         # mikor tortent a kitores (a keresztezes)
         self.breakout_level = None
+        self.wait_breakout_ts = None    # mikor rogzult a pivot -- a flow innentol szamit
 
     def uj_szelsoertek(self, ar, ts):
         """Uj csucs/melypont: a pivot ES a lab is frissul.
@@ -89,13 +91,14 @@ class ScalpDetector(Detector):
     name = "scalp"
     config_key = "detector"
 
-    def __init__(self, cfg, baseline=None, book=None):
+    def __init__(self, cfg, baseline=None, book=None, eligibility=None):
         self.cfg = cfg
+        self.eligibility = eligibility  # a spread/lista ellenorzes a commit ELOTT
         self.baseline = baseline or Baseline(cfg)
         perc = cfg.detector["baselineMinutes"]
         # a forgalom normalja: ugyanaz a median-logika, de az idovel LINEARISAN
         # skalazodik, ezert nem hasznaljuk ra a Baseline gyok-skalazasat
-        self.notional_baseline = RollingMedian(perc * 60, min(60, int(perc * 60 / 2)))
+        self.notional_baseline = RollingMedian(perc * 60, int(perc * 60 * 0.5))
         self.book = book                    # BookCache (frissesseg + snapshot)
         self.window = defaultdict(deque)    # symbol -> deque[(ts, ar, notional, buy, sell)]
         self.history = defaultdict(deque)   # symbol -> deque[(ts, ar)] a bizonyitekhoz
@@ -106,6 +109,20 @@ class ScalpDetector(Detector):
         self.last_ts = 0.0
         self.ticks = 0
         self.total_candidates = 0
+
+    def reset(self, symbols=None):
+        """Adatszakadas utan: a felepitett allapot NEM folytathato.
+
+        Reconnect utan az elso kotes kulonben egy regen megtortent kitores "friss
+        keresztezesenek" latszana (a prev_price a szakadas elottrol maradt volna).
+        A baseline megmarad: az a par hosszu tavu normalja, nem setup-allapot.
+        """
+        celok = list(symbols) if symbols is not None else list(self.setups)
+        for symbol in celok:
+            self.setups.pop(symbol, None)
+            self.prev_price.pop(symbol, None)
+            self.window.pop(symbol, None)
+        return len(celok)
 
     # ------------------------------------------------------------------ fo utvonal
 
@@ -168,7 +185,11 @@ class ScalpDetector(Detector):
         if c["maxSingleStepPct"] and m["singleStepPct"] > c["maxSingleStepPct"]:
             return None                 # egyetlen arlepes adta -> konyv-sopres
 
-        self.setups[trade.symbol] = Setup(up, m["startPrice"], trade.price,
+        # A pivot az ablak TENYLEGES szelsoerteke (UP-nal a high, DOWN-nal a low),
+        # nem az utolso kotes ara -- kulonben hamis kitorest latnank.
+        pivot = m["high"] if up else m["low"]
+        pivot_ts = m["highTs"] if up else m["lowTs"]
+        self.setups[trade.symbol] = Setup(up, m["startPrice"], pivot, pivot_ts,
                                           trade.ts, dict(m))
         log.info("IMPULSE %-4s %-14s ar %.8g  %+.2f%% / %.1fs  normal %.3f%%  "
                  "forgalom %s USDT (%.1fx)  flow %+.2f",
@@ -207,6 +228,9 @@ class ScalpDetector(Detector):
                 return None
             # eleg mely a visszahuzas: a pivot ROGZUL, jon a kitoresi szint
             setup.state = WAIT_BREAKOUT
+            # A megerosito flow CSAK innentol szamit: az impulzus alatti regi
+            # buy/sell aramlas ne erositse mesterségesen a kesobbi kitorest.
+            setup.wait_breakout_ts = trade.ts
             setup.breakout_level = setup.pivot + (1 if setup.up else -1) \
                 * setup.leg * c["breakoutOfLegPct"] / 100.0
             log.info("WAIT_BREAKOUT %-14s %-4s pivot %.8g  kitores %.8g  "
@@ -247,9 +271,15 @@ class ScalpDetector(Detector):
     # ------------------------------------------------------------------ 4. megerosites
 
     def _confirm(self, trade, setup, c):
-        """A kitores pillanataban: kotesaramlas + FRISS konyv-adat. Semmi mas."""
-        flow = self._flow(trade.symbol, trade.ts, c["flowWindowSec"],
-                          c["minTradesInWindow"])
+        """A kitores pillanataban: kotesaramlas + FRISS konyv-adat. Semmi mas.
+
+        Ha barmelyik feltetel nem teljesul, a setup ELETBEN MARAD -- nem torlunk,
+        es NEM inditunk cooldownt. Egy elutasitas nem "elhasznalt" jelzes.
+        """
+        # A flow ablaka nem nyulhat vissza a pivot rogzitese ele: az impulzus
+        # alatti egyiranyu aramlas kulonben magatol "megerositene" a kitorest.
+        eleje = max(trade.ts - c["flowWindowSec"], setup.wait_breakout_ts or 0.0)
+        flow = self._flow(trade.symbol, eleje, c["minTradesInWindow"])
         if flow is None:
             return None                 # nincs eleg friss kotes -> NINCS jelzes
         if (flow if setup.up else -flow) < c["minConfirmImbalance"]:
@@ -258,6 +288,16 @@ class ScalpDetector(Detector):
         # FAIL-CLOSED: elavult vagy hianyzo konyv-adattal nem jelzunk
         if not (self.book and self.book.fresh(trade.symbol)):
             return None
+
+        # Az eligibility (spread, white/blacklist) MEG A COMMIT ELOTT: kulonben
+        # a setup torlodne es a cooldown elindulna egy olyan jelzes utan, amit a
+        # manager amugy is eldob.
+        if self.eligibility is not None:
+            mehet, ok, _ = self.eligibility.check(trade.symbol)
+            if not mehet:
+                log.info("VAR        %-14s a kitores kesz, de %s -- a setup el tovabb",
+                         trade.symbol, ok)
+                return None
 
         return self._kiad(trade, setup, c, flow)
 
@@ -299,6 +339,11 @@ class ScalpDetector(Detector):
         notional = sum(x[2] for x in w)
         buy = sum(x[3] for x in w)
         sell = sum(x[4] for x in w)
+        # Az ablak TENYLEGES szelsoertekei. A pivot ezekbol lesz, nem az utolso
+        # kotes arabol: kulonben ha az ar mar jart magasabban, egy kesobbi,
+        # alacsonyabb pont lenne a pivot -- es a rendszer hamis kitorest latna.
+        hi = max(w, key=lambda x: x[1])
+        lo = min(w, key=lambda x: x[1])
         return {
             "movePct": round(move_pct, 4),
             "spanSec": round(span, 2),
@@ -309,14 +354,15 @@ class ScalpDetector(Detector):
             "imbalance": round((buy - sell) / notional, 4) if notional > 0 else 0.0,
             "singleStepPct": round(min(egy_lepes, 100.0), 1),
             "startPrice": ys[0],
+            "high": hi[1], "highTs": hi[0],
+            "low": lo[1], "lowTs": lo[0],
         }
 
-    def _flow(self, symbol, now, seconds, min_trades):
-        """Kotesaramlas-imbalance az utolso par masodpercben: -1 .. +1.
+    def _flow(self, symbol, start, min_trades):
+        """Kotesaramlas-imbalance a `start` ota erkezett kotesekbol: -1 .. +1.
 
         None, ha nincs eleg friss kotes -- ilyenkor NINCS jelzes (fail-closed).
         """
-        start = now - seconds
         buy = sell = 0.0
         db = 0
         for ts, _, _, b, s in self.window[symbol]:

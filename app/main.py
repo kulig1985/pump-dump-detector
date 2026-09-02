@@ -102,7 +102,7 @@ async def main():
     # Uj detektor hozzaadasa: egy uj osztaly az app/detectors/ ala, es egy sor ide.
     # A konyv a detektorba megy: a frissesseg a belepo feltetele, es a dontes
     # pillanataban mar cache-bol jon, halozati varakozas nelkul.
-    detectors = DetectorManager(cfg, [ScalpDetector(cfg, baseline, book)],
+    detectors = DetectorManager(cfg, [ScalpDetector(cfg, baseline, book, eligibility)],
                                 eligibility)
     log.info("Detektorok: %s", ", ".join(
         f"{d.name} ({'BE' if detectors.enabled(d) else 'KI'})" for d in detectors.detectors))

@@ -249,6 +249,158 @@ def test_entry_extension_blocks_a_late_entry():
     assert futtat(det, "EXUSDT", tape(breakout_frac=1.0, breakout_lepes=2)) == []
 
 
+# ---------------------------------------------------------------- stabilizalas
+
+def test_measure_returns_the_real_window_high_and_low():
+    """A meres az ablak TENYLEGES szelsoertekeit adja vissza, nem a vegpontokat."""
+    # felszuras 101.0-ig az ablak KOZEPEN, a vegen 100.9
+    w = []
+    t = 1000.0
+    for ar in ([100.0 + 0.5 * i / 10 for i in range(10)]      # 100.0 -> 100.45
+               + [101.0, 100.98]                              # a csucs KOZEPEN
+               + [100.9] * 10):                               # a vegen lejjebb
+        w.append((t, ar, 5_000.0, 5_000.0, 0.0))
+        t += 0.12          # a teljes tape ferjen bele a 3 mp-es ablakba
+    m = ScalpDetector._measure(w, t, CFG)
+    assert m is not None
+    assert m["high"] == 101.0, f"az ablak tenyleges maximuma: {m['high']}"
+    assert m["low"] == 100.0, f"az ablak tenyleges minimuma: {m['low']}"
+    assert m["high"] > w[-1][1], "a high MAGASABB az utolso kotesnel"
+
+
+def test_pivot_is_the_window_high_not_the_last_trade():
+    """A setup pivotja az ablak high-ja (UP) / low-ja (DOWN).
+
+    Kulonben: az ar mar jart 101.0-n, de az impulzus vegen 100.9-en all -> a
+    rendszer 100.9-et venne pivotnak, es a 100.95 mar "kitoresnek" latszana,
+    pedig az ar ott mar jart.
+    """
+    det = uj_detektor()
+    m = {"movePct": 0.9, "spanSec": 2.5, "trades": 30, "notional": 500_000.0,
+         "delta": 400_000.0, "imbalance": 0.8, "singleStepPct": 10.0,
+         "startPrice": 100.0, "high": 101.0, "highTs": 1005.0,
+         "low": 100.0, "lowTs": 1000.0,
+         "baseline": 0.02, "notionalBaseline": 20_000.0}
+    # az UTOLSO kotes ara 100.9 -- a csucs (101.0) mar mogottunk van
+    det._detect_impulse(Trade("PVUSDT", 100.9, 10.0, 1008.0, True), m, CFG)
+
+    s = det.setups["PVUSDT"]
+    assert s.pivot == 101.0, f"a pivot az ablak high-ja, nem 100.9: {s.pivot}"
+    assert s.pivot_ts == 1005.0, "a pivot idobelyege is a high-e"
+    assert abs(s.leg - 1.0) < 1e-9, "a lab a pivothoz igazodik (101.0 - 100.0)"
+
+    # DOWN impulzusnal a low a pivot
+    det2 = uj_detektor()
+    m2 = dict(m, movePct=-0.9, imbalance=-0.8, startPrice=101.0)
+    det2._detect_impulse(Trade("PDUSDT", 100.1, 10.0, 1008.0, False), m2, CFG)
+    s2 = det2.setups["PDUSDT"]
+    assert s2.pivot == 100.0, f"DOWN-nal a low a pivot: {s2.pivot}"
+
+
+def test_pivot_update_also_updates_the_leg():
+    """Uj szelsoertek: a pivot ES a leg is frissul.
+
+    Korabban a pivot elmozdult, de a leg regi erteken maradt, igy a visszahuzas
+    szazaleka rossz alaphoz merodott.
+    """
+    det = uj_detektor()
+    kesz_baseline(det, "LGUSDT")
+    futtat(det, "LGUSDT", [(100.0 + 1.2 * (i + 1) / 80, True, 20_000, 0.1)
+                           for i in range(80)])
+    s = det.setups["LGUSDT"]
+    assert abs(s.leg - abs(s.pivot - s.p0)) < 1e-9, \
+        f"leg={s.leg} de |pivot-p0|={abs(s.pivot - s.p0)}"
+    assert s.leg > 1.0, "a lab a MEGNOTT mozgast tukrozi, nem a kezdetit"
+
+
+def test_reconnect_resets_the_setup_and_prev_price():
+    """Adatszakadas utan a regi setupbol nem lehet jelzes.
+
+    A reconnect utani elso kotes kulonben egy regen megtortent kitores "friss
+    keresztezesenek" latszana, mert a prev_price a szakadas elottrol maradt.
+    """
+    det = uj_detektor()
+    kesz_baseline(det, "RCUSDT")
+    t = tape(retrace_frac=0.30)
+    futtat(det, "RCUSDT", t[:60])                  # impulzus + pullback
+    assert det.setups["RCUSDT"].state == "WAIT_BREAKOUT"
+    assert det.prev_price.get("RCUSDT") is not None
+
+    det.reset(["RCUSDT"])                          # WS szakadas
+    assert "RCUSDT" not in det.setups, "a setup torlodott"
+    assert "RCUSDT" not in det.prev_price, "a prev_price is torlodott"
+
+    # a reconnect utani kitoresi szakasz onmagaban nem adhat jelzest
+    assert futtat(det, "RCUSDT", t[60:], t0=3000.0) == []
+
+
+def test_manager_reset_reaches_the_detector():
+    det = uj_detektor()
+    kesz_baseline(det, "MRUSDT")
+    mgr = DetectorManager(cfg_obj, [det], eligible_stub())
+    futtat(det, "MRUSDT", tape(retrace_frac=0.30)[:60])
+    assert "MRUSDT" in det.setups
+    mgr.reset(["MRUSDT"])
+    assert "MRUSDT" not in det.setups
+
+
+def test_confirmation_flow_ignores_the_impulse_flow():
+    """A kitores megerositese CSAK a pivot rogzitese ota erkezett kotesekbol szamol.
+
+    Az impulzus alatti eros egyiranyu aramlas kulonben magatol "megerositene" a
+    kesobbi kitorest.
+    """
+    det = uj_detektor()
+    kesz_baseline(det, "FWUSDT")
+    # GYORS szekvencia: a kitoreskor az 5 mp-es flow ablak MEG VISSZANYULNA az
+    # impulzusba. Az impulzus vegig eros veteli, a kitores viszont semleges.
+    imp = [(100.0 + 0.6 * (i + 1) / 40, True, 20_000, 0.1) for i in range(40)]
+    pull = [(100.6 - 0.6 * 0.25 * (i + 1) / 8, False, 3_000, 0.1) for i in range(8)]
+    also = 100.6 - 0.6 * 0.25
+    kitores = [(also + (100.64 - also) * (i + 1) / 14, i % 2 == 0, 8_000, 0.1)
+               for i in range(14)]
+    assert futtat(det, "FWUSDT", imp + pull + kitores) == [], \
+        "a regi impulzus-flow nem szamithat bele a megerositesbe"
+    s = det.setups.get("FWUSDT")
+    assert s is not None and s.wait_breakout_ts is not None
+
+
+def test_rejected_eligibility_does_not_start_a_cooldown():
+    """breakout -> eligibility reject eseten a setup ELETBEN MARAD, es NINCS cooldown."""
+    e = Eligibility(cfg_obj)
+    _book(e, "REJUSDT", 1.000, 1.002)          # szeles spread -> elutasitva
+    det = ScalpDetector(cfg_obj, book=FrissKonyv(), eligibility=e)
+    kesz_baseline(det, "REJUSDT")
+
+    assert futtat(det, "REJUSDT", tape(retrace_frac=0.30)) == []
+    assert "REJUSDT" not in det.cooldown, "elutasitas NEM indit cooldownt"
+    assert "REJUSDT" in det.setups, "a setup el tovabb, ujra probalkozhat"
+
+
+def test_only_an_accepted_signal_starts_the_cooldown():
+    e = Eligibility(cfg_obj)
+    _book(e, "OKUSDT", 1.0000, 1.0001)         # szuk spread -> atmegy
+    det = ScalpDetector(cfg_obj, book=FrissKonyv(), eligibility=e)
+    kesz_baseline(det, "OKUSDT")
+
+    jelek = futtat(det, "OKUSDT", tape(retrace_frac=0.30))
+    assert len(jelek) == 1, jelek
+    assert "OKUSDT" in det.cooldown, "elfogadott jelzes UTAN indul a cooldown"
+    assert "OKUSDT" not in det.setups, "es a setup lezarul"
+
+
+def test_websocket_request_id_is_an_unsigned_integer():
+    """A SUBSCRIBE/UNSUBSCRIBE id mezoje novekvo unsigned int, nem UUID string."""
+    from app.market_data import next_request_id
+    a, b = next_request_id(), next_request_id()
+    assert isinstance(a, int) and isinstance(b, int)
+    assert a > 0 and b == a + 1, "novekvo, pozitiv egesz"
+
+    forras = (pathlib.Path(__file__).parent.parent / "app" / "market_data.py").read_text()
+    assert "uuid" not in forras, "nincs tobb UUID a request ID-ban"
+    assert forras.count('"id": next_request_id()') >= 2
+
+
 # ---------------------------------------------------------------- adat-frissesseg
 
 def test_no_signal_without_fresh_order_book():
@@ -283,13 +435,38 @@ def test_eligibility_rejects_stale_book_data():
 # ---------------------------------------------------------------- baseline / RollingMedian
 
 def test_rolling_median_ignores_outliers():
-    rm = RollingMedian(window_sec=300, min_samples=5)
+    rm = RollingMedian(window_sec=30, min_samples=5)
     assert rm.value("X") is None
-    for i in range(20):
+    for i in range(30):
         rm.add("X", 1000.0 + i, 10.0)
     assert rm.value("X") == 10.0
-    rm.add("X", 1021.0, 10_000.0)             # egyetlen kiugro ertek
+    rm.add("X", 1030.0, 10_000.0)             # egyetlen kiugro ertek
     assert rm.value("X") == 10.0, "a median nem viheto el egy kiugro ertekkel"
+
+
+def test_baseline_is_not_ready_too_early():
+    """5 perces baseline-hoz kb. 5 percnyi elozmeny kell -- nem 1 percnyi.
+
+    Korabban 60 minta mar keszne nyilvanitotta, igy restart utan a rendszer
+    percekkel korabban jelezhetett, hianyos elozmenybol.
+    """
+    b = Baseline(cfg_obj)
+    perc = CFG["baselineMinutes"]
+    for i in range(70):                       # ~70 masodpercnyi adat
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    assert b.value("XUSDT") is None, "70 mp adat NEM eleg egy 5 perces normalhoz"
+
+    # 200 masodperc: a MINTASZAM mar eleg lenne, de az IDOTARTAM meg nem
+    for i in range(70, 200):
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    assert len(b.median.samples["XUSDT"]) >= b.median._min_samples, \
+        "a mintaszam-feltetel mar teljesul"
+    assert b.value("XUSDT") is None, \
+        "de 200 mp meg mindig nem 5 percnyi elozmeny"
+
+    for i in range(200, perc * 60):           # a teljes ablak
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    assert b.value("XUSDT") == 0.02, "a teljes ablak utan kesz"
 
 
 def test_baseline_value_for_scales_with_sqrt_of_time():
@@ -895,12 +1072,13 @@ def test_telegram_signal_is_short_and_plain():
     }
     sorok = format_signal(sig).split("\n")
     assert "LONG" in sorok[0] and "BTCUSDT" in sorok[0]
-    assert sorok[1] == "Entry: 123.45"
-    assert sorok[2] == "Impulse: +0.72%"
-    assert sorok[3] == "Pullback: 28%"
-    assert sorok[4] == "Buy flow: 67%"
-    assert sorok[5] == "Breakout age: 0.8s"
-    assert len(sorok) == 7, "hat sor + a link, semmi tobb"
+    assert sorok[1] == "2026-09-01 12:00:00 UTC", "a jelzes IDOPONTJA"
+    assert sorok[2] == "Entry: 123.45"
+    assert sorok[3] == "Impulse: +0.72%"
+    assert sorok[4] == "Pullback: 28%"
+    assert sorok[5] == "Buy flow: 67%"
+    assert sorok[6] == "Breakout age: 0.8s"
+    assert len(sorok) == 8, "het sor + a link, semmi tobb"
 
     # SHORT-nal az ELADOI oldalt mutatjuk
     sig["direction"] = "SHORT"

@@ -62,6 +62,7 @@ def format_signal(sig, app_link_template=""):
     emoji = "🟢" if direction == "LONG" else "🔴"
 
     sorok = [f"{emoji} <b>{direction} {esc(sig['symbol'])}</b>",
+             f"{sig['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} UTC",
              f"Entry: {fprice(sig['price'])}"]
     if m.get("impulsePct") is not None:
         sorok.append(f"Impulse: {m['impulsePct']:+.2f}%")

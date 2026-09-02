@@ -104,7 +104,9 @@ a végpontok különbsége — egyetlen kiugró print nem tud impulzust csináln
 
 ### `minTradesInWindow` — alap: `10`
 ### `baselineMinutes` — alap: `5`
-Ennyi perc visszatekintéssel épül a pár normálja (ár **és** forgalom).
+Ennyi perc visszatekintéssel épül a pár normálja (ár **és** forgalom). A normál
+akkor „kész", ha a minták **tényleg lefedik** az ablak ~90%-át — indulás/restart
+után tehát valóban kb. 5 percet vár, nem 1-et.
 
 ### `minImpulsePct` — alap: `0.40`  ⭐
 Abszolút padló a mozgásra.
@@ -175,7 +177,9 @@ A kitörés pillanatában semmi más nem számít:
 
 ### `flowWindowSec` — alap: `5.0`
 ### `minConfirmImbalance` — alap: `0.15`  ⭐
-A kötésáramlásnak ennyire kell a belépő irányába mutatnia. LONG-nál a vételi,
+A kötésáramlásnak ennyire kell a belépő irányába mutatnia. **Csak a pivot
+rögzítése óta érkezett kötésekből számol** — az impulzus alatti áramlás nem
+erősítheti meg a későbbi kitörést. LONG-nál a vételi,
 SHORT-nál az eladói taker oldalnak kell dominálnia.
 
 ### `maxDataAgeSec` — alap: `5.0`  ⭐
