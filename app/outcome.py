@@ -36,10 +36,10 @@ class Tracker:
 
     __slots__ = ("id", "symbol", "setup", "direction", "entry", "t0", "deadline",
                  "mfe", "mae", "t_mfe", "t_mae", "max_price", "min_price",
-                 "tp", "sl", "final", "done", "dirty")
+                 "tp", "sl", "marks", "final", "done", "dirty")
 
     def __init__(self, sid, symbol, setup, direction, entry, t0, deadline,
-                 tp_levels, sl_levels):
+                 tp_levels, sl_levels, mark_sec=()):
         self.id, self.symbol, self.setup = sid, symbol, setup
         self.direction, self.entry, self.t0 = direction, entry, t0
         self.deadline = deadline
@@ -48,6 +48,8 @@ class Tracker:
         self.max_price = self.min_price = entry
         self.tp = {_kulcs(x): None for x in tp_levels}
         self.sl = {_kulcs(x): None for x in sl_levels}
+        # 1 / 3 / 5 / 10 perces ar -- az elso kotes, ami a merespont utan erkezik
+        self.marks = {_kulcs(x): None for x in mark_sec}
         self.final = 0.0
         self.done = False
         self.dirty = True
@@ -75,6 +77,9 @@ class Tracker:
         for kulcs, mikor in self.sl.items():
             if mikor is None and r <= -float(kulcs):
                 self.sl[kulcs] = eltelt
+        for kulcs, ertek in self.marks.items():
+            if ertek is None and ts - self.t0 >= float(kulcs):
+                self.marks[kulcs] = {"price": price, "pct": round(r, 4)}
         self.dirty = True
 
     def doc(self):
@@ -83,7 +88,7 @@ class Tracker:
             "mfePct": round(self.mfe, 4), "maePct": round(self.mae, 4),
             "timeToMfeSec": self.t_mfe, "timeToMaeSec": self.t_mae,
             "maxPrice": self.max_price, "minPrice": self.min_price,
-            "tp": dict(self.tp), "sl": dict(self.sl),
+            "tp": dict(self.tp), "sl": dict(self.sl), "marks": dict(self.marks),
             "finalPct": self.final, "done": self.done,
         }
 
@@ -117,7 +122,8 @@ class OutcomeTracker:
         c = self.cfg.market
         most = time.time()
         t = Tracker(signal_id, symbol, setup, direction, price, most,
-                    most + c["outcomeTrackSec"], c["tpLevels"], c["slLevels"])
+                    most + c["outcomeTrackSec"], c["tpLevels"], c["slLevels"],
+                    c["outcomeMarkSec"])
         self.aktiv.setdefault(symbol, []).append(t)
 
     # ---------------------------------------------------------------- kiertekeles
@@ -167,6 +173,7 @@ class OutcomeTracker:
                             o.get("setup") or doc.get("setup") or doc["detector"],
                             doc["direction"], o.get("entry") or doc["price"],
                             doc["timestamp"].timestamp(), 0, [], [])
+                t.marks = o.get("marks", {})
                 t.mfe, t.mae = o.get("mfePct", 0.0), o.get("maePct", 0.0)
                 t.t_mfe, t.t_mae = o.get("timeToMfeSec", 0), o.get("timeToMaeSec", 0)
                 t.tp, t.sl = o.get("tp", {}), o.get("sl", {})

@@ -36,6 +36,7 @@ MARKET_DEFAULTS = {
     # ---- eredmenymeres: a jelzes UTAN folyamatosan kovetjuk az arat ----
     # Nem kapuz semmit, nem backteszt. Ebbol derul ki, melyik setup mukodik.
     "outcomeTrackSec": 600,            # ennyi ideig kovetunk minden jelzest
+    "outcomeMarkSec": [60, 180, 300, 600],   # ezeknel a pontoknal rogzitjuk az arat
     "tpLevels": [0.3, 0.5, 0.8, 1.0],  # ezeket a TP szinteket merjuk (%)
     "slLevels": [0.2, 0.3, 0.5],       # es ezeket a SL szinteket (%)
     "reportTp": 0.5,                   # az osszesitesben ez a TP/SL par szerepel
@@ -48,9 +49,11 @@ MARKET_DEFAULTS = {
 # ==========================================================================
 #  A SCALP DETEKTOR PARAMETEREI
 #
+#  EGYETLEN setup:  IMPULZUS -> PULLBACK -> FRISS KITORES -> JELZES
+#
 #  MINDEN ERTEK ITT KIINDULASI PARAMETER. Nem "helyes" ertekek: ezek olyan
 #  kezdopontok, amelyeket az outcome meres (MFE/MAE, TP/SL) adataibol kell
-#  hangolni. A hangolas a KODBAN tortenik, nem a DB-ben -- lasd docs/PARAMETEREK.md.
+#  hangolni. A hangolas a KODBAN tortenik, nem a DB-ben.
 # ==========================================================================
 DETECTOR_DEFAULTS = {
     "_id": "detector",
@@ -67,41 +70,26 @@ DETECTOR_DEFAULTS = {
     "minImpulseImbalance": 0.25,       # a taker oldal ennyire legyen egyiranyu (0-1)
     "maxSingleStepPct": 35,            # egyetlen arlepes ne adja a mozgas tobbet
 
-    # ---- 2. SETUP: az impulzus utani szerkezet kovetese ----
+    # ---- 2. PULLBACK: normalis visszahuzas, se tul kicsi, se tul mely ----
     "setupTimeoutSec": 90,             # ennyi ido utan eldobjuk a setupot
     "invalidateBeyondOriginPct": 20,   # ha az ar ennyivel az impulzus ala megy, vege
-    "flowWindowSec": 5.0,              # a megerosito kotesaramlas ablaka
-
-    # ---- 3a. FOLYTATAS: sekely visszahuzas, majd a pivot ujratorese ----
     "minPullbackPct": 15,              # ennyi visszahuzas kell (a lab %-aban)
-    "maxPullbackPct": 62,              # ennel melyebb visszahuzas utan mar nem folytatas
+    "maxPullbackPct": 62,              # ennel melyebb visszahuzas -> ervenytelen
+
+    # ---- 3. FRISS KITORES: MOST kell keresztezni a szintet ----
     "breakoutOfLegPct": 5,             # ekkora attores kell a pivot folott
-    "minConfirmImbalance": 0.15,       # es ennyi kotesaramlas a belepo iranyaba
+    "maxBreakoutAgeSec": 3.0,          # ennel regebbi kitoresre nem szallunk be
+    "maxEntryExtensionPct": 25,        # es az ar ne legyen ennel messzebb a szinttol
 
-    # ---- 3b. FORDULO: kifulladas, majd a counter szint letorese ----
-    "exhaustionSec": 10.0,             # ennyi ideje nincs uj szelsoertek
-    "minReversalImbalance": 0.20,      # a kotesaramlas ennyire fordult meg
-    "counterPullbackPct": 30,          # ennyi ellen-visszahuzas rogziti a fordulo szintjet
-    "reclaimOfLegPct": 5,              # ekkora attores kell a counter szinten
-    "reclaimHoldSec": 3.0,             # es ennyi ideig tartania is kell
-    "maxEntryRetracePct": 50,          # ennel tobb mar ne jojjon vissza a belepoig
-
-    # ---- 4. KONYV es TREND: ezek BEFOLYASOLJAK a dontest ----
-    "maxOpposingBookImbalance": 0.40,  # ennyi ellentetes konyv-tulsuly meg elfogadhato
-    "wallBlockDistPct": 0.15,          # ilyen kozeli fal a mozgas iranyaban -> nincs jelzes
-    "depthLevels": 20,                 # a partial book depth stream szintjei (5/10/20)
-    "depthUpdateSpeed": "500ms",       # frissitesi sebesseg (100ms/500ms)
-    "wallSensitivity": 3.0,            # fal = a tobbi szint medianjanak ennyiszerese
-    "wallMaxDistancePct": 1.5,         # ennel tavolabbi falat figyelmen kivul hagyunk
-    "requireTrendForContinuation": True,   # a folytatas egyezzen az EMA iranyaval
-    "requireTrendForReversal": False,      # a fordulo szandekosan szembe megy
-    "emaFast": 9,
-    "emaSlow": 21,
-    "emaInterval": "1m",
-    "emaRefreshSec": 60,               # ennyi idonkent frissul minden par EMA-ja
+    # ---- 4. MEGEROSITES: csak kotesaramlas + FRISS adat ----
+    "flowWindowSec": 5.0,              # a megerosito kotesaramlas ablaka
+    "minConfirmImbalance": 0.15,       # ennyi tulsuly kell a belepo iranyaba
+    "maxDataAgeSec": 5.0,              # ennel regebbi konyv-adattal NINCS jelzes
 
     # ---- 5. KIMENET ----
     "symbolCooldownSec": 600,          # paronkent ennyi szunet ket jelzes kozott
+    "depthLevels": 20,                 # a partial book depth stream szintjei (5/10/20)
+    "depthUpdateSpeed": "500ms",       # frissitesi sebesseg (100ms/500ms)
 }
 
 TRADING_DEFAULTS = {

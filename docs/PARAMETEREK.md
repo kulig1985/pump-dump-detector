@@ -7,9 +7,8 @@ A MongoDB `config` collection csak egy másolat, amit induláskor a kód hoz lé
 
 ```
 app/config.py            ->  config collection (MongoDB)
-  MARKET_DEFAULTS              market     KÖZÖS: melyik párokat figyeljük, és
-                                            hogyan mérjük az eredményt
-  DETECTOR_DEFAULTS            detector   a scalp detektor (impulzus + setup)
+  MARKET_DEFAULTS              market     melyik párokat figyeljük + eredménymérés
+  DETECTOR_DEFAULTS            detector   a scalp detektor
   TRADING_DEFAULTS             trading    pozíciónyitás (alapból KI)
   TELEGRAM_DEFAULTS            telegram   a bot és az üzenet
 ```
@@ -23,45 +22,40 @@ git pull && docker compose up -d --build
 ```
 
 A `config` collectiont bármikor törölheted: a következő induláskor **minden
-beállítás újra létrejön** a kódban lévő alapértékekkel. Ezt teszt őrzi
-(`test_cold_start_creates_every_setting`) — egyetlen beállítás sem maradhat ki
-hidegindításnál, és semmi nem várhat kézi beavatkozásra.
+beállítás újra létrejön**. Ezt teszt őrzi (`test_cold_start_creates_every_setting`).
 
 > **MINDEN ÉRTÉK ITT KIINDULÁSI PARAMÉTER.** Nem "helyes" értékek — kezdőpontok,
-> amelyeket az `EREDMENY` mérésből (MFE/MAE, TP/SL) kell hangolni. Ne találgass:
-> nézd meg, mit mutat a mérés, és onnan indulj el.
+> amelyeket az `EREDMENY` mérésből (MFE/MAE, TP/SL) kell hangolni.
 
 ---
 
-## Az alapelv: impulzus ≠ jelzés
-
-A korábbi rendszer minden hirtelen mozgásból automatikusan jelzést csinált
-(PUMP→LONG, DUMP→SHORT). A mérés megmutatta: ez érmefeldobás — a mozgás
-gyakran visszajön, mielőtt bármit tehetnél vele.
-
-Most az **impulzus csak egy setup kezdete**. A jelzés csak azután megy ki, hogy
-a szerkezet (visszahúzás + újratörés, vagy kifulladás + a szint visszavétele) és
-a kötésáramlás **megerősítette**:
+## Az algoritmus: egyetlen út
 
 ```
-IDLE -> IMPULSE_DETECTED -> WAITING_CONFIRMATION
-     -> CONTINUATION_CONFIRMED | REVERSAL_CONFIRMED -> SIGNAL -> COOLDOWN -> IDLE
+IMPULZUS  ->  PULLBACK  ->  FRISS KITÖRÉS  ->  JELZÉS
 ```
 
-Minden méret az **impulzus-láb** (`leg = |P1 − P0|`) arányában értendő, nem
-abszolút százalékban — így ugyanaz a beállítás működik egy 0.4%-os és egy
-4%-os impulzusnál is.
+Állapotgép páronként, egyszerre **egy** aktív setup:
+
+```
+IDLE -> IMPULSE -> WAIT_PULLBACK -> WAIT_BREAKOUT -> SIGNAL -> COOLDOWN -> IDLE
+```
+
+Nincs reversal ág, nincs EMA a belépő döntésben, nincs fal- vagy
+könyv-imbalance kapu. Egy jól érthető setup, amit mérni lehet.
+
+Minden méret az **impulzus-láb** (`leg = |pivot − p0|`) arányában értendő — így
+ugyanaz a beállítás működik egy 0.4%-os és egy 4%-os impulzusnál. A `leg` a
+pivottal **együtt frissül**, amíg az ár új szélsőértéket csinál.
 
 ---
 
-# `market` — közös piaci beállítások és eredménymérés
+# `market` — melyik párokat figyeljük, és hogyan mérjük az eredményt
 
 ### `enabled` — alap: `true`
 Az egész feldolgozás ki-/bekapcsolása.
 
 ### `quoteAssets` — alap: `["USDT", "USDC"]`
-Milyen elszámoló devizás párokat figyelünk.
-
 ### `minQuoteVolume24h` — alap: `120 000 000`
 Ennél kisebb 24 órás forgalmú párok kiesnek.
 
@@ -69,39 +63,30 @@ Ennél kisebb 24 órás forgalmú párok kiesnek.
 A forgalom szerint rendezett lista első ennyi eleme.
 
 ### `symbolRefreshMinutes` — alap: `60`
-Ennyi percenként frissül a figyelt lista.
-
 ### `symbolWhitelist` / `symbolBlacklist` — alap: `[]` / `[]`
-Ha a whitelist nem üres, **kizárólag** azokat figyeljük. A blacklist mindig kizár.
-> **Példa:** `symbolWhitelist: ["BTCUSDT","ETHUSDT"]` — teszteléshez, két páron.
+Ha a whitelist nem üres, **kizárólag** azokat figyeljük.
 
 ### `maxSpreadPct` — alap: `0.05`
-A legjobb vétel/eladás közti rés felső határa. Ennél szélesebb páron nincs jelzés.
+Ennél szélesebb vétel/eladás résnél nincs jelzés.
 
 ### `outcomeTrackSec` — alap: `600`
-A jelzés után ennyi másodpercig **folyamatosan** figyeljük az árat — minden
-kötést, nem csak pár mérési pontot. Ebből épül fel az MFE/MAE és a TP/SL mérés.
-> **Példa:** `600` = 10 perc. Ez illeszkedik a rendszer céljához: 5–10 perces
-> scalp belépők.
+A jelzés után ennyi másodpercig **minden kötést** figyelünk (10 perc).
+
+### `outcomeMarkSec` — alap: `[60, 180, 300, 600]`
+Ezeknél a pontoknál rögzítjük az árat — 1 / 3 / 5 / 10 perc.
+> **Példa:** `marks["300"] = {price: 100.62, pct: +0.62}` — 5 perccel a jelzés
+> után az ár 100.62 volt, ami a jelzés irányában +0.62%.
 
 ### `tpLevels` — alap: `[0.3, 0.5, 0.8, 1.0]`
-Ezekre a take-profit szintekre (százalék) mérjük, **mikor** érte el először a
-jelzés irányában az árfolyam.
-> **Példa:** egy LONG jelzés 100.00-nál. Ha az ár eléri a 100.50-et 40
-> másodperc múlva, akkor `tp["0.5"] = 40`.
-
 ### `slLevels` — alap: `[0.2, 0.3, 0.5]`
-Ugyanez stop-loss szintekre, ellenkező irányban.
+Ezekre a szintekre mérjük, **mikor** érte el először a jelzés irányában, illetve
+ellene. Mivel minden kötést látunk, utólag bármelyik TP/SL párra eldönthető,
+melyiket érte el előbb.
 
 ### `reportTp` / `reportSl` — alap: `0.5` / `0.3`
-Az összesítésben (`EREDMENY` blokk) ez a TP/SL pár szerepel: melyiket érte el
-előbb. Mivel minden kötést látunk, ez utólag **bármelyik** TP/SL párra
-kiszámítható a `tp`/`sl` mezőkből — ez a kettő csak a megjelenítéshez kell.
-> **Példa:** `reportTp: 0.8, reportSl: 0.3` — szigorúbb kiértékelés (nagyobb
-> nyereségcél a kis stophoz képest).
+Az összesítésben ez a TP/SL pár szerepel.
 
 ### `statusIntervalSec` — alap: `60`
-Ennyi másodpercenként egy STATUS sor a logba.
 
 ---
 
@@ -109,157 +94,99 @@ Ennyi másodpercenként egy STATUS sor a logba.
 
 ### `enabled` — alap: `true`
 
-## 1. Impulzus — rendkívüli-e a mozgás ÉS a mögötte álló pénz
+## 1. Impulzus — ár + forgalom + kötésáramlás
 
-A régi rendszer csak az árat nézte. Ez az **egyetlen bemenete a kötés méretét
-(`qty`) és az agresszor oldalát (`buy_taker`) is használja** — ez a fő különbség.
+Az impulzus **önmagában nem jelzés**, csak egy setup kezdete.
 
 ### `impulseWindowSec` — alap: `3.0`
 Ekkora időablakban mérünk. A mozgást az ablakra **illesztett egyenes** adja, nem
 a végpontok különbsége — egyetlen kiugró print nem tud impulzust csinálni.
 
 ### `minTradesInWindow` — alap: `10`
-Ennyi kötés kell az ablakba, különben nem mérhető.
-
 ### `baselineMinutes` — alap: `5`
 Ennyi perc visszatekintéssel épül a pár normálja (ár **és** forgalom).
 
-### `minImpulsePct` — alap: `0.40`
+### `minImpulsePct` — alap: `0.40`  ⭐
 Abszolút padló a mozgásra.
 
 ### `impulseBaselineRatio` — alap: `6.0`  ⭐
-A mozgás a pár normáljának ennyiszerese legyen.
-> **Példa:** a pár normálja 0.05% → `6.0` mellett 0.30% kell (vagy a padló, ha az nagyobb).
+És a pár saját normáljának ennyiszerese.
 
 ### `minImpulseNotional` — alap: `50 000`
 Abszolút padló az agresszív (taker) forgalomra USDT-ben.
 
 ### `notionalRatio` — alap: `3.0`  ⭐
-És a pár normál ablak-forgalmának ennyiszerese.
-> **Példa (a ZECUSDT eset, amivel a régi rendszer megbukott):** egy nagy kötés
-> átsöpörte a könyvet kevés valódi forgalommal — ez a szűrő pont ezt fogja meg:
-> ha a mozgáshoz **nem** kellett a normálishoz képest sok pénz, nincs impulzus.
+És a pár normál ablak-forgalmának ennyiszerese. Ez fogja meg azt, amikor egy
+nagy kötés átsöpri a könyvet kevés valódi pénzből.
 
 ### `minImpulseImbalance` — alap: `0.25`  ⭐
 A taker oldal ennyire legyen egyirányú, `-1..1` skálán
-(`(vétel − eladás) / összes`). `0.25` = legalább 62.5%-a a forgalomnak egy oldalra.
-> **Példa:** +0.6%-os mozgás, de a taker forgalom fele-fele vétel/eladás →
-> `imbalance ≈ 0` → **nincs impulzus**, mert nem egyirányú a kötésáramlás.
+(`(vétel − eladás) / összes`). `0.25` = a forgalom legalább 62.5%-a egy oldalra.
 
 ### `maxSingleStepPct` — alap: `35`
-Ha a mozgás ennél nagyobb részét egyetlen árlépés adta (könyv-söprés), nincs impulzus.
+Ha a mozgás ennél nagyobb részét egyetlen árlépés adta, nincs impulzus.
 
-## 2. Setup — az impulzus utáni szerkezet követése
-
-### `setupTimeoutSec` — alap: `90`
-Ennyi idő után a setupot eldobjuk, ha nem konfirmálódott. Ez teszi lehetővé,
-hogy 30–90 másodperces szerkezetet is végigkövessünk, ne csak a másodperces V-t.
-
-### `invalidateBeyondOriginPct` — alap: `20`
-Ha az ár az impulzus **lábának** ennyi %-ával az impulzus kiindulópontja alá megy,
-a setup azonnal érvénytelen — a mozgás megfordult, nincs mit folytatni vagy fordítani.
-
-### `flowWindowSec` — alap: `5.0`
-A megerősítő kötésáramlás mérési ablaka a döntés pillanatában.
-
-## 3a. Folytatás — sekély visszahúzás, majd a pivot újratörése
+## 2. Pullback
 
 ```
-   pivot  ─────────────────────────  100%   ← az impulzus csúcsa
-                                      62%   ← eddig még folytatás (maxPullbackPct)
+   pivot  ─────────────────────────  100%   ← az impulzus csúcsa (a leggel EGYÜTT frissül)
+                                      62%   ← ennél mélyebb -> érvénytelen (maxPullbackPct)
                                       15%   ← eddig kell visszahúznia (minPullbackPct)
-   origin ─────────────────────────    0%   ← az impulzus kiindulópontja
+   p0     ─────────────────────────    0%   ← az impulzus kiindulópontja
 ```
 
-### `minPullbackPct` — alap: `15`
-Legalább ennyi visszahúzás kell a lábból, hogy a pivot **rögzüljön** — enélkül a
-pivot folyamatosan követné az árat, és sosem lenne mit áttörni.
+### `minPullbackPct` — alap: `15`  ⭐
+Legalább ennyi visszahúzás kell a lábból. Ekkor a **pivot rögzül**, és megszületik
+a kitörési szint.
 
 ### `maxPullbackPct` — alap: `62`  ⭐
-Ha a visszahúzás ennél mélyebbre ment, ez már nem "sekély" — inkább fordulóra
-utal, nem folytatásra.
+Ennél mélyebb visszahúzás után a setup érvénytelen.
+
+### `setupTimeoutSec` — alap: `90`
+Ennyi idő után eldobjuk a setupot.
+
+### `invalidateBeyondOriginPct` — alap: `20`
+Ha az ár a láb ennyi %-ával az impulzus kiindulópontja alá megy, azonnal vége.
+
+## 3. Friss kitörés
+
+**A jelzés CSAK a keresztezés pillanatában születhet.** Nem elég, hogy az ár
+valamikor korábban áttörte a szintet és még mindig fölötte áll:
+
+```
+LONG :  előző_ár <= szint  ÉS  aktuális_ár > szint
+SHORT:  előző_ár >= szint  ÉS  aktuális_ár < szint
+```
 
 ### `breakoutOfLegPct` — alap: `5`
-Ekkora áttörés kell a pivot fölött (a láb %-ában), hogy ne legyen zaj.
+Ekkora áttörés kell a pivot fölött (a láb %-ában).
 
-### `minConfirmImbalance` — alap: `0.15`
-Az újratörés pillanatában a kötésáramlásnak ennyire kell a belépő irányába
-mutatnia.
+### `maxBreakoutAgeSec` — alap: `3.0`  ⭐
+Ha a kitörés megtörtént, de a megerősítés nem jött össze ennyi időn belül, a
+setupot eldobjuk. Nem szállunk be egy réges-régi kitörésre.
 
-## 3b. Fordulás — kifulladás, majd a szint visszavétele
+### `maxEntryExtensionPct` — alap: `25`  ⭐
+Ha az ár már ennyivel (a láb %-ában) túl van a kitörési szinten, **nincs jelzés** —
+a belépő már nem éri meg.
 
-```
-   pivot (szélsőérték) ─────────────  100%
-   counter (a fordulás szintje)         *   ← ez rögzül, ha van ellen-visszahúzás
-   maxEntryRetracePct-ig lehet belépni  ↑
-   origin ─────────────────────────    0%
-```
+## 4. Megerősítés — csak ez a három
 
-### `exhaustionSec` — alap: `10.0`  ⭐
-Ennyi ideje nem volt új szélsőérték — enélkül egy még élő mozgás közepén
-próbálnánk fordulót jelezni.
+A kitörés pillanatában semmi más nem számít:
 
-### `minReversalImbalance` — alap: `0.20`  ⭐
-A kötésáramlásnak ennyire meg kell fordulnia a belépő irányába.
+### `flowWindowSec` — alap: `5.0`
+### `minConfirmImbalance` — alap: `0.15`  ⭐
+A kötésáramlásnak ennyire kell a belépő irányába mutatnia. LONG-nál a vételi,
+SHORT-nál az eladói taker oldalnak kell dominálnia.
 
-### `counterPullbackPct` — alap: `30`
-A fordulás szintje (`counter`) csak akkor **rögzül**, ha az ártól legalább
-ennyi ellen-visszahúzás történt — pontosan úgy, ahogy egy csúcsból swing-csúcs
-lesz. Enélkül a szint folyamatosan az árral csúszna, és sosem lenne mit áttörni.
-
-### `reclaimOfLegPct` — alap: `5`
-Ekkora áttörés kell a rögzült szinten.
-
-### `reclaimHoldSec` — alap: `3.0`  ⭐
-Az áttörésnek **ennyi ideig tartania is kell** — minden kötésnél ellenőrizve.
-Ha visszaesik a szint mögé, a jelzés elmarad (de a setup nem áll le, újra
-várakozik).
-
-### `maxEntryRetracePct` — alap: `50`
-A belépő pillanatáig a mozgásnak legfeljebb ennyi %-a jöhetett vissza — efölött
-a kereskedhető rész már elfogyott.
-
-## 4. Könyv és trend — ezek BEFOLYÁSOLJÁK a döntést
-
-A régi rendszerben az order book és az EMA csak az üzenetbe került, döntésre nem
-hatott. Most **folyamatosan streamel** (`<symbol>@depth20@500ms`), és a döntés
-pillanatában már készen áll.
-
-### `maxOpposingBookImbalance` — alap: `0.40`
-Ha a legjobb szinten ennél nagyobb túlsúly áll a **belépő ellen**, nincs jelzés.
-
-### `wallBlockDistPct` — alap: `0.15`
-Ha a belépő irányában ilyen közeli falat találunk, nincs jelzés.
-
-### `depthLevels` — alap: `20`
-A partial book depth stream szintjei: `5`, `10` vagy `20` lehet (Binance limit).
-
-### `depthUpdateSpeed` — alap: `"500ms"`
-`100ms` vagy `500ms` lehet (Binance limit).
-
-### `wallSensitivity` — alap: `3.0`
-Fal = a többi szint mediánjának ennyiszerese.
-
-### `wallMaxDistancePct` — alap: `1.5`
-Ennél távolabbi falat figyelmen kívül hagyunk.
-
-### `requireTrendForContinuation` — alap: `true`
-A folytatás egyezzen az 1 perces EMA trend irányával.
-
-### `requireTrendForReversal` — alap: `false`
-A forduló **szándékosan szembe megy** a rövid távú trenddel — épp azt keresi,
-amikor a trend megfordul.
-
-### `emaFast` / `emaSlow` / `emaInterval` — alap: `9` / `21` / `"1m"`
-
-### `emaRefreshSec` — alap: `60`
-Ennyi időnként frissül minden figyelt pár EMA-ja, egyenletesen elosztva (nem
-egyszerre) — így egy frissítési kör sem üti meg a rate limitet.
+### `maxDataAgeSec` — alap: `5.0`  ⭐
+**FAIL-CLOSED:** ennél régebbi order book / bookTicker adattal **nincs jelzés**.
+Nincs „nincs adat, hát akkor átengedjük" viselkedés.
 
 ## 5. Kimenet
 
 ### `symbolCooldownSec` — alap: `600`
-Páronként ennyi szünet két jelzés között.
+### `depthLevels` — alap: `20`   (`5` / `10` / `20`)
+### `depthUpdateSpeed` — alap: `"500ms"`   (`100ms` / `500ms`)
 
 ---
 
@@ -267,90 +194,28 @@ Páronként ennyi szünet két jelzés között.
 
 ### `enabled` — alap: `true`
 ### `statusEveryMinutes` — alap: `20`
-Ennyi percenként egy életjel Telegramra. `0` = nincs.
-
 ### `statusRecentSignals` — alap: `3`
-Az életjel táblázatában **típusonként** (setup-onként) ennyi legutóbbi jelzés
-jelenik meg.
-
 ### `botToken` / `chatId` / `chatIds` / `appLinkTemplate`
-Mint korábban — a `chatIds` most `{"scalp": ""}` alakú, ha külön csatornára
-akarod vinni a scalp jelzéseket.
 
 ---
 
-# Mit mutat a STATUS sor és az életjel
+# Így néz ki egy jelzés
 
 ```
-🟦 ELETJEL
-14:20:03 UTC  ·  3h 12p ota fut
-
-ALLAPOT
-  figyelt par          58 db
-  WS kapcsolat         1/1
-  kotes / perc         1,932
-  jelzes indulas ota   7 db
-  kizarva              kizarva 2: tul szeles a spread: 2
-
-ELO SETUPOK
-  IMPULSE_DETECTED       3
-  WAITING_CONFIRMATION   1
-  COOLDOWN               4
-
-DETEKTOR ALLAPOT
-  • setup: impulzus 3, megerositesre var 1, cooldown 4 | normal kesz: 55/58 par
-    | legkozelebb: SOLUSDT 0.31% (kell 0.80%)
-
-NYERO / BUKO JELZESEK
-tipus              db nyero  buko nyitott arany atlag MFE atlag MAE
-LONG_CONTINUATION   7     4     2       1   67%    +0.60%    -0.35%
-LONG_REVERSAL       3     2     0       1   100%    +0.90%    -0.15%
-
-UTOLSO 3 LONG_CONTINUATION
-SOLUSDT     09-01 04:02  belepo 184.21        MFE  +0.60%  MAE  -0.20%  -> nyero
+🟢 LONG HEMIUSDT
+Entry: 0.01318400
+Impulse: +1.12%
+Pullback: 28%
+Buy flow: 67%
+Breakout age: 0.8s
+https://www.binance.com/en/futures/HEMIUSDT
 ```
 
-- **`ELO SETUPOK`** — hány setup van épp az egyes állapotokban.
-- **`NYERO / BUKO JELZESEK`** — a `reportTp`/`reportSl` pár alapján: melyiket
-  érte el előbb a jelzés. `nyitott` = egyiket sem érte még el ebben a mérésben.
-- **`atlag MFE` / `atlag MAE`** — a legjobb, illetve legrosszabb pont átlaga a
-  mérés alatt, a jelzés irányában (a `reportTp`/`reportSl`-től függetlenül).
-- **`UTOLSO ... JELZES`** — setup-típusonként a legutóbbi jelzések, a tényleges
-  belépő árral és a mért MFE/MAE-vel.
-
-## Így néz ki egy jelzés
-
-```
-🚀 LONG belepo  ·  HEMIUSDT
-az emelkedes folytatodik
-04:14:37 UTC
-
-  belepo ar      0.01318400
-  24h forgalom   179M USDT
-
-PIAC MOST
-  spread           0.030%   (szuk)
-  order book       +0.13   (tobb vetel all a konyvben)
-  1 perces trend   bullish   (egyezik)
-  setup kora       13 masodperc
-
-MI TORTENT
-  1. Az ar 3 masodperc alatt 1.12%-ot emelkedett (0.01302200 -> 0.01317600)
-  2. Ezt 55,691 USDT agressziv vetel hajtotta -- 7x annyi, mint amennyi
-     ezen a paron szokasos
-  3. Ezutan visszahuzodott a mozgas 44%-aig, majd ujra attorte a
-     0.01317600 csucsot -- ez a belepo jel
-  4. A belepo pillanataban a vetel van tulsulyban (33%-os tobblet)
-```
-
-**Fordulónál az impulzus iránya ellentétes a jelzésével** — egy lefelé irányuló
-impulzus után jön a LONG belépő. Az üzenet ezt külön jelzi: az „esett" az
-impulzusra vonatkozik, a „vétel van túlsúlyban" pedig a belépő pillanatára.
-
-## Elutasítási okok
+# Elutasítási okok
 
 | ok | mit jelent |
 |---|---|
 | `blacklisted` / `not_whitelisted` | kézi kizárás a `market` dokumentumban |
-| `no_book_data` | még nem láttuk a pár order book tetejét |
+| `no_book_data` | még nem láttuk a pár könyvét |
+| `stale_book_data` | a könyv-adat régebbi, mint `maxDataAgeSec` |
 | `spread_too_wide` | a spread szélesebb, mint `maxSpreadPct` |

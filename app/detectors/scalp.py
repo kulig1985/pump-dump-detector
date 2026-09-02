@@ -1,27 +1,21 @@
-"""ScalpDetector -- impulzus utani belepo setupok 5-10 perces scalpre.
+"""ScalpDetector -- impulzus utani continuation belepo, 5-10 perces kezi scalpre.
 
-A regi logika (PUMP -> LONG, DUMP -> SHORT) azt feltetelezte, hogy a hirtelen
-mozgas folytatodik. A meres szerint nem: onmagaban ermefeldobas. Itt az impulzus
-NEM jelzes, hanem egy setup KEZDETE.
+EGYETLEN setup-tipus, egyetlen ut:
 
-    IDLE -> IMPULSE_DETECTED -> WAITING_CONFIRMATION
-         -> CONTINUATION_CONFIRMED | REVERSAL_CONFIRMED -> SIGNAL -> COOLDOWN -> IDLE
+    IMPULSE  ->  PULLBACK  ->  FRISS BREAKOUT  ->  SIGNAL
 
-A ket ag ugyanabbol a ket szerkezeti szintbol dolgozik. Egy FELFELE impulzus utan:
+Allapotgep symbolonkent, egyszerre EGY aktiv setup:
 
-    pivot     az impulzus csucsa, amint kialakult egy erdemi visszahuzas: ROGZUL
-    counter   a visszahuzas melypontja (a pivot rogzitese ota mert legalacsonyabb ar)
+    IDLE -> IMPULSE -> WAIT_PULLBACK -> WAIT_BREAKOUT -> SIGNAL -> COOLDOWN -> IDLE
 
-    CONTINUATION (LONG)   az ar visszatori a pivot fole    -> folytatodik a mozgas
-    REVERSAL     (SHORT)  az ar letori a counter szintet   -> megfordult
+Amit a rendszer szandekosan NEM csinal: nincs reversal ag, nincs EMA a belepo
+dontesben, nincs fal- es konyv-imbalance kapu. Egy jol ertheto setup, amit merni
+lehet -- ha ez mukodik, arra lehet epiteni.
 
-Lefele impulzusnal minden tukorkepe. Igy egyetlen, szimmetrikus allapotgep fedi
-mindket esetet -- ez valtja ki a korabbi kulon ReversalDetectort is.
-
-Minden meret az IMPULZUS-LAB (leg = |P1 - P0|) aranyaban ertendo, nem abszolut
+Minden meret az IMPULZUS-LAB (leg = |pivot - p0|) aranyaban ertendo, nem abszolut
 szazalekban: igy ugyanaz a parameter mukodik egy 0.4%-os es egy 4%-os impulzusnal.
+A leg a pivottal EGYUTT frissul, amig az ar uj szelsoerteket csinal.
 """
-import time
 import logging
 from collections import deque, defaultdict
 
@@ -33,8 +27,9 @@ from .baseline import Baseline, RollingMedian
 log = logging.getLogger("scalp")
 
 IDLE = "IDLE"
-IMPULSE_DETECTED = "IMPULSE_DETECTED"
-WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
+IMPULSE = "IMPULSE"                 # az ar meg uj szelsoerteket csinal
+WAIT_PULLBACK = "WAIT_PULLBACK"     # visszahuzodik, de meg nem eleget
+WAIT_BREAKOUT = "WAIT_BREAKOUT"     # a pivot rogzult, a kitoresre varunk
 COOLDOWN = "COOLDOWN"
 
 MAX_HISTORY_SEC = 180.0     # ennyi arelozmenyt tartunk a bizonyitekhoz
@@ -43,31 +38,47 @@ MAX_HISTORY_SEC = 180.0     # ennyi arelozmenyt tartunk a bizonyitekhoz
 class Setup:
     """Egy symbol eppen fejlodo setupja egy impulzus utan."""
 
-    __slots__ = ("up", "p0", "p1", "leg", "t1", "state", "pivot", "pivot_ts",
-                 "counter", "counter_locked", "max_retrace", "impulse",
-                 "break_ts", "break_level")
+    __slots__ = ("up", "p0", "pivot", "pivot_ts", "leg", "t1", "state", "extreme_back",
+                 "max_retrace", "impulse", "breakout_ts", "breakout_level")
 
     def __init__(self, up, p0, p1, t1, impulse):
         self.up = up                    # felfele volt-e az impulzus
         self.p0 = p0                    # az impulzus kiindulopontja
-        self.p1 = p1                    # az impulzus vege
-        self.leg = abs(p1 - p0)         # az impulzus-lab arban -- MINDEN ehhez merodik
+        self.pivot = p1                 # a szelsoertek -- a pullbackig meg mozog
+        self.pivot_ts = t1
+        self.leg = abs(p1 - p0)         # a lab; a pivottal EGYUTT frissul
         self.t1 = t1
         self.impulse = impulse          # a mert impulzus-adatok (Mongo-ba is)
-        self.state = IMPULSE_DETECTED
-        self.pivot = p1                 # a szelsoertek; a visszahuzasig meg mozog
-        self.pivot_ts = t1
-        self.counter = p1               # a visszahuzas szelsoerteke (a fordulo szintje)
-        self.counter_locked = False     # rogzult-e mar (volt ellen-visszahuzas)
+        self.state = IMPULSE
+        self.extreme_back = p1          # a visszahuzas szelsoerteke (kijelzeshez)
         self.max_retrace = 0.0          # a legmelyebb visszahuzas a lab %-aban
-        self.break_ts = None            # mikor tortent a REVERSAL attores
-        self.break_level = None
+        self.breakout_ts = None         # mikor tortent a kitores (a keresztezes)
+        self.breakout_level = None
 
-    def retrace_pct(self, price):
+    def uj_szelsoertek(self, ar, ts):
+        """Uj csucs/melypont: a pivot ES a lab is frissul.
+
+        Ez volt a hiba korabban: a pivot elmozdult, de a leg a regi erteken maradt,
+        igy a visszahuzas szazaleka rossz alaphoz merodott.
+        """
+        self.pivot = ar
+        self.pivot_ts = ts
+        self.leg = abs(ar - self.p0)
+        self.extreme_back = ar
+        self.max_retrace = 0.0
+
+    def retrace_pct(self, ar):
         """A pivottol mert visszahuzas a lab szazalekaban."""
         if self.leg <= 0:
             return 0.0
-        tav = (self.pivot - price) if self.up else (price - self.pivot)
+        tav = (self.pivot - ar) if self.up else (ar - self.pivot)
+        return max(0.0, tav) / self.leg * 100.0
+
+    def extension_pct(self, ar):
+        """Mennyivel ment tul az ar a kitoresi szinten, a lab szazalekaban."""
+        if self.leg <= 0 or self.breakout_level is None:
+            return 0.0
+        tav = (ar - self.breakout_level) if self.up else (self.breakout_level - ar)
         return max(0.0, tav) / self.leg * 100.0
 
     def kor(self, ts):
@@ -78,19 +89,19 @@ class ScalpDetector(Detector):
     name = "scalp"
     config_key = "detector"
 
-    def __init__(self, cfg, baseline=None, book=None, trend=None):
+    def __init__(self, cfg, baseline=None, book=None):
         self.cfg = cfg
         self.baseline = baseline or Baseline(cfg)
         perc = cfg.detector["baselineMinutes"]
         # a forgalom normalja: ugyanaz a median-logika, de az idovel LINEARISAN
         # skalazodik, ezert nem hasznaljuk ra a Baseline gyok-skalazasat
         self.notional_baseline = RollingMedian(perc * 60, min(60, int(perc * 60 / 2)))
-        self.book = book                # BookCache vagy None
-        self.trend = trend              # ta modul (get(symbol)) vagy None
+        self.book = book                    # BookCache (frissesseg + snapshot)
         self.window = defaultdict(deque)    # symbol -> deque[(ts, ar, notional, buy, sell)]
         self.history = defaultdict(deque)   # symbol -> deque[(ts, ar)] a bizonyitekhoz
-        self.setups = {}                    # symbol -> Setup
+        self.setups = {}                    # symbol -> Setup (EGYSZERRE EGY)
         self.cooldown = {}                  # symbol -> eddig nincs uj setup
+        self.prev_price = {}                # symbol -> az elozo kotes ara
         self.latest = {}                    # symbol -> utolso mert allapot (STATUS)
         self.last_ts = 0.0
         self.ticks = 0
@@ -102,6 +113,8 @@ class ScalpDetector(Detector):
         c = self.cfg.detector
         self.ticks += 1
         self.last_ts = trade.ts
+        elozo = self.prev_price.get(trade.symbol)
+        self.prev_price[trade.symbol] = trade.price
 
         notional = trade.price * trade.qty
         w = self.window[trade.symbol]
@@ -128,13 +141,13 @@ class ScalpDetector(Detector):
 
         setup = self.setups.get(trade.symbol)
         if setup is not None:
-            return self._track(trade, setup, m, c)
+            return self._track(trade, setup, elozo, c)
         return self._detect_impulse(trade, m, c)
 
-    # ------------------------------------------------------------------ 1. impulzus
+    # ------------------------------------------------------------------ 1. IMPULZUS
 
     def _detect_impulse(self, trade, m, c):
-        """Az impulzus NEM jelzes: csak setupot indit."""
+        """Eros rovid tavu mozgas: ar + forgalom + kotesaramlas. NEM jelzes."""
         if m is None:
             return None
         if trade.ts < self.cooldown.get(trade.symbol, 0):
@@ -151,13 +164,13 @@ class ScalpDetector(Detector):
             return None
         up = m["movePct"] > 0
         if (m["imbalance"] if up else -m["imbalance"]) < c["minImpulseImbalance"]:
-            return None                 # nem egyiranyu a kotesaramlas -> nem impulzus
+            return None                 # nem egyiranyu a kotesaramlas
         if c["maxSingleStepPct"] and m["singleStepPct"] > c["maxSingleStepPct"]:
             return None                 # egyetlen arlepes adta -> konyv-sopres
 
         self.setups[trade.symbol] = Setup(up, m["startPrice"], trade.price,
                                           trade.ts, dict(m))
-        log.info("IMPULSE_%-4s %-14s ar %.8g  %+.2f%% / %.1fs  normal %.3f%%  "
+        log.info("IMPULSE %-4s %-14s ar %.8g  %+.2f%% / %.1fs  normal %.3f%%  "
                  "forgalom %s USDT (%.1fx)  flow %+.2f",
                  "UP" if up else "DOWN", trade.symbol, trade.price, m["movePct"],
                  m["spanSec"], m["baseline"], f"{m['notional']:,.0f}",
@@ -167,130 +180,86 @@ class ScalpDetector(Detector):
                    f"{m['movePct']:+.2f}%")
         return None
 
-    # ------------------------------------------------------------------ 2. setup
+    # ------------------------------------------------------------------ 2-3. setup
 
-    def _track(self, trade, setup, m, c):
-        """A setup kovetese: szerkezet + megerosites, vagy ervenytelenites."""
+    def _track(self, trade, setup, elozo, c):
         ar = trade.price
 
         # ---- ervenytelenites ----
         if setup.kor(trade.ts) > c["setupTimeoutSec"]:
-            return self._eldob(trade, setup, "lejart a setup ideje")
+            return self._eldob(trade, "lejart a setup ideje")
         tul = (setup.p0 - ar) if setup.up else (ar - setup.p0)
         if setup.leg > 0 and tul > setup.leg * c["invalidateBeyondOriginPct"] / 100.0:
-            return self._eldob(trade, setup, "az ar visszament az impulzus ala")
+            return self._eldob(trade, "az ar visszament az impulzus ala")
 
-        # ---- a szerkezet karbantartasa ----
-        if setup.state == IMPULSE_DETECTED:
-            # amig nincs erdemi visszahuzas, a pivot meg kovetheti az uj szelsoerteket
+        # ---- IMPULSE / WAIT_PULLBACK: a pivot es a lab meg egyutt mozog ----
+        if setup.state in (IMPULSE, WAIT_PULLBACK):
             if (ar > setup.pivot) if setup.up else (ar < setup.pivot):
-                setup.pivot, setup.pivot_ts, setup.counter = ar, trade.ts, ar
+                setup.uj_szelsoertek(ar, trade.ts)
+                setup.state = IMPULSE
+                return None
             visszahuzas = setup.retrace_pct(ar)
             setup.max_retrace = max(setup.max_retrace, visszahuzas)
-            if visszahuzas >= c["minPullbackPct"]:
-                setup.state = WAITING_CONFIRMATION   # a pivot innentol ROGZITETT
-                setup.counter = ar
-                setup.counter_locked = False
-                log.info("WAITING    %-14s %-5s pivot %.8g  visszahuzas %.0f%% a labbol",
-                         trade.symbol, "UP" if setup.up else "DOWN", setup.pivot,
-                         visszahuzas)
+            if (ar < setup.extreme_back) if setup.up else (ar > setup.extreme_back):
+                setup.extreme_back = ar
+            if visszahuzas < c["minPullbackPct"]:
+                setup.state = WAIT_PULLBACK
+                return None
+            # eleg mely a visszahuzas: a pivot ROGZUL, jon a kitoresi szint
+            setup.state = WAIT_BREAKOUT
+            setup.breakout_level = setup.pivot + (1 if setup.up else -1) \
+                * setup.leg * c["breakoutOfLegPct"] / 100.0
+            log.info("WAIT_BREAKOUT %-14s %-4s pivot %.8g  kitores %.8g  "
+                     "visszahuzas %.0f%%", trade.symbol, "UP" if setup.up else "DOWN",
+                     setup.pivot, setup.breakout_level, visszahuzas)
             return None
 
-        # WAITING_CONFIRMATION: a pivot fix. A counter a visszahuzas szelsoerteke --
-        # de a fordulohoz ROGZULNIE kell, kulonben nincs mit attorni: amig az ar
-        # egyfolytaban tovabb megy a visszahuzas iranyaba, a szint vele csuszna.
-        # A rogzites feltetele egy ellen-visszahuzas (counterPullbackPct), pontosan
-        # ugy, ahogy egy csucsbol swing-csucs lesz.
-        if not setup.counter_locked:
-            if (ar < setup.counter) if setup.up else (ar > setup.counter):
-                setup.counter = ar
-            else:
-                bounce = abs(setup.counter - setup.pivot)
-                vissza = abs(setup.counter - ar)
-                if bounce > 0 and vissza >= bounce * c["counterPullbackPct"] / 100.0:
-                    setup.counter_locked = True
-                    log.info("SZINT      %-14s a fordulo szintje rogzult: %.8g",
-                             trade.symbol, setup.counter)
+        # ---- WAIT_BREAKOUT ----
         setup.max_retrace = max(setup.max_retrace, setup.retrace_pct(ar))
+        if setup.max_retrace > c["maxPullbackPct"]:
+            return self._eldob(trade, "a visszahuzas tul melyre ment")
 
-        jel = self._continuation(trade, setup, c) or self._reversal(trade, setup, c)
-        return jel
+        if setup.breakout_ts is None:
+            # FRISS kitores: MOST kell keresztezni a szintet, nem eleg folotte allni
+            if elozo is None:
+                return None
+            szint = setup.breakout_level
+            keresztezte = (elozo <= szint < ar) if setup.up else (elozo >= szint > ar)
+            if not keresztezte:
+                return None
+            setup.breakout_ts = trade.ts
+            log.info("BREAKOUT   %-14s %-4s ar %.8g  szint %.8g",
+                     trade.symbol, "UP" if setup.up else "DOWN", ar, szint)
+        elif trade.ts - setup.breakout_ts > c["maxBreakoutAgeSec"]:
+            return self._eldob(trade, "a kitores megerosites nelkul elavult")
 
-    def _eldob(self, trade, setup, ok):
+        # az ar mar tul messze jart a kitoresi szinttol -> nincs ertelme beszallni
+        if setup.extension_pct(ar) > c["maxEntryExtensionPct"]:
+            return self._eldob(trade, "az ar tul messze ment a kitoresi szinttol")
+
+        return self._confirm(trade, setup, c)
+
+    def _eldob(self, trade, ok):
         self.setups.pop(trade.symbol, None)
         log.info("IDLE       %-14s setup eldobva: %s", trade.symbol, ok)
         return None
 
-    # ------------------------------------------------------------------ 3a. folytatas
+    # ------------------------------------------------------------------ 4. megerosites
 
-    def _continuation(self, trade, setup, c):
-        """Sekely visszahuzas utan a pivot ujratorese, valtozatlan kotesaramlassal."""
-        if setup.max_retrace > c["maxPullbackPct"]:
-            return None                 # tul melyre jott vissza -> ez mar nem folytatas
-        kuszob = setup.pivot + (1 if setup.up else -1) * setup.leg \
-            * c["breakoutOfLegPct"] / 100.0
-        if (trade.price < kuszob) if setup.up else (trade.price > kuszob):
-            return None
-
-        irany = "LONG" if setup.up else "SHORT"
-        flow = self._flow(trade.symbol, trade.ts, c["flowWindowSec"])
+    def _confirm(self, trade, setup, c):
+        """A kitores pillanataban: kotesaramlas + FRISS konyv-adat. Semmi mas."""
+        flow = self._flow(trade.symbol, trade.ts, c["flowWindowSec"],
+                          c["minTradesInWindow"])
         if flow is None:
-            return None
+            return None                 # nincs eleg friss kotes -> NINCS jelzes
         if (flow if setup.up else -flow) < c["minConfirmImbalance"]:
             return None
-        if not self._book_ok(trade.symbol, irany, c):
-            return None
-        if c["requireTrendForContinuation"] and not self._trend_ok(trade.symbol, irany):
-            return None
 
-        return self._kiad(trade, setup, f"{irany}_CONTINUATION", irany, c, flow,
-                          extra=[f"visszahuzas a lab {setup.max_retrace:.0f}%-aig, "
-                                 f"majd a {fprice(setup.pivot)} pivot ujratorese"])
-
-    # ------------------------------------------------------------------ 3b. fordulo
-
-    def _reversal(self, trade, setup, c):
-        """Az impulzus kifullad, a kotesaramlas fordul, es letorik a counter szint."""
-        if trade.ts - setup.pivot_ts < c["exhaustionSec"]:
-            return None                 # meg friss a szelsoertek -> nincs kifulladas
-
-        if not setup.counter_locked:
-            return None                 # meg nincs mit attorni
-
-        irany = "SHORT" if setup.up else "LONG"
-        kuszob = setup.counter - (1 if setup.up else -1) * setup.leg \
-            * c["reclaimOfLegPct"] / 100.0
-        atment = (trade.price < kuszob) if setup.up else (trade.price > kuszob)
-
-        # az attoresnek TARTANIA kell -- egy azonnal visszaveszett szint nem fordulo
-        if not atment:
-            setup.break_ts = None
-            return None
-        if setup.break_ts is None:
-            setup.break_ts = trade.ts
-            setup.break_level = kuszob
-            return None
-        if trade.ts - setup.break_ts < c["reclaimHoldSec"]:
+        # FAIL-CLOSED: elavult vagy hianyzo konyv-adattal nem jelzunk
+        if not (self.book and self.book.fresh(trade.symbol)):
             return None
 
-        flow = self._flow(trade.symbol, trade.ts, c["flowWindowSec"])
-        if flow is None:
-            return None
-        if (-flow if setup.up else flow) < c["minReversalImbalance"]:
-            return None                 # nem fordult meg a kotesaramlas
-        if setup.retrace_pct(trade.price) > c["maxEntryRetracePct"]:
-            return None                 # a mozgas nagy resze mar lefutott
-        if not self._book_ok(trade.symbol, irany, c):
-            return None
-        if c["requireTrendForReversal"] and not self._trend_ok(trade.symbol, irany):
-            return None
-
-        return self._kiad(trade, setup, f"{irany}_REVERSAL", irany, c, flow,
-                          extra=[f"az impulzus kifulladt ({trade.ts - setup.pivot_ts:.0f} mp "
-                                 f"ota nincs uj szelsoertek)",
-                                 f"a {fprice(setup.counter)} szint "
-                                 f"{'letorve' if setup.up else 'visszaveve'}, es "
-                                 f"{c['reclaimHoldSec']:.0f} mp-ig tartotta is"])
+        return self._kiad(trade, setup, c, flow)
 
     # ------------------------------------------------------------------ meresek
 
@@ -335,8 +304,6 @@ class ScalpDetector(Detector):
             "spanSec": round(span, 2),
             "trades": n,
             "notional": round(notional, 2),
-            "buyNotional": round(buy, 2),
-            "sellNotional": round(sell, 2),
             "delta": round(buy - sell, 2),
             # -1 .. +1, nincs vegtelen es szimmetrikus -- ezert nem aranyt hasznalunk
             "imbalance": round((buy - sell) / notional, 4) if notional > 0 else 0.0,
@@ -344,8 +311,11 @@ class ScalpDetector(Detector):
             "startPrice": ys[0],
         }
 
-    def _flow(self, symbol, now, seconds):
-        """Kotesaramlas-imbalance az utolso par masodpercben: -1 .. +1."""
+    def _flow(self, symbol, now, seconds, min_trades):
+        """Kotesaramlas-imbalance az utolso par masodpercben: -1 .. +1.
+
+        None, ha nincs eleg friss kotes -- ilyenkor NINCS jelzes (fail-closed).
+        """
         start = now - seconds
         buy = sell = 0.0
         db = 0
@@ -356,89 +326,41 @@ class ScalpDetector(Detector):
             sell += s
             db += 1
         total = buy + sell
-        if db < self.cfg.detector["minTradesInWindow"] or total <= 0:
+        if db < min_trades or total <= 0:
             return None
         return (buy - sell) / total
 
-    def _book_ok(self, symbol, direction, c):
-        """A konyv ne alljon ellen: se a legjobb szint tulsulya, se egy kozeli fal."""
-        ctx = self.book.context(symbol) if self.book else None
-        if not ctx:
-            return True                 # nincs konyv-adat -> nem nemitunk el mindent
-        imb = ctx.get("topImbalance")
-        if imb is not None:
-            ellen = -imb if direction == "LONG" else imb
-            if ellen > c["maxOpposingBookImbalance"]:
-                return False
-        fal = ctx.get("wallAsk") if direction == "LONG" else ctx.get("wallBid")
-        if fal and fal["distancePct"] <= c["wallBlockDistPct"]:
-            return False
-        return True
-
-    def _trend_ok(self, symbol, direction):
-        t = self.trend.get(symbol) if self.trend else None
-        if not t:
-            return True                 # nincs adat -> nem kapuz
-        return t["trend"] == ("bullish" if direction == "LONG" else "bearish")
-
     # ------------------------------------------------------------------ jelzes
 
-    def _kiad(self, trade, setup, setup_nev, direction, c, flow, extra):
+    def _kiad(self, trade, setup, c, flow):
         self.setups.pop(trade.symbol, None)
         self.cooldown[trade.symbol] = trade.ts + c["symbolCooldownSec"]
         self.total_candidates += 1
+        irany = "LONG" if setup.up else "SHORT"
         imp = setup.impulse
-        ctx = (self.book.context(trade.symbol) if self.book else None) or {}
-        t = (self.trend.get(trade.symbol) if self.trend else None) or {}
+        kitores_kor = trade.ts - setup.breakout_ts
 
         metrics = {
-            "setup": setup_nev,
             "impulsePct": imp["movePct"],
             "impulseSec": imp["spanSec"],
-            "impulseFrom": setup.p0,
-            "impulseTo": setup.p1,
             "impulseNotional": imp["notional"],
-            "impulseImbalance": imp["imbalance"],
-            "impulseBaseline": imp["baseline"],
-            # hanyszorosa a par szokasos ablak-forgalmanak -- ez mondja meg, hogy
-            # valodi penz hajtotta-e, vagy csak vekony konyvon csuszott at az ar
-            "notionalRatio": round(imp["notional"] / imp["notionalBaseline"], 1)
-                             if imp.get("notionalBaseline") else None,
             "legPct": round(setup.leg / setup.p0 * 100.0, 4) if setup.p0 else None,
-            "pivot": setup.pivot,
-            "counter": setup.counter,
-            "maxRetracePct": round(setup.max_retrace, 1),
-            "exhaustionSec": round(trade.ts - setup.pivot_ts, 1),
+            "pullbackPct": round(setup.max_retrace, 1),
+            "breakoutLevel": setup.breakout_level,
+            "breakoutAgeSec": round(kitores_kor, 2),
+            # a taker forgalom hany szazaleka volt veteli (0-100)
+            "flowPct": round((1 + flow) / 2 * 100, 1),
+            "entryExtensionPct": round(setup.extension_pct(trade.price), 1),
             "setupAgeSec": round(setup.kor(trade.ts), 1),
-            "confirmImbalance": round(flow, 4),
-            "spreadPct": ctx.get("spreadPct"),
-            "bookImbalance": ctx.get("topImbalance"),
-            "trend": t.get("trend"),
         }
-        reasons = [
-            f"impulzus {imp['movePct']:+.2f}% / {imp['spanSec']:.1f}s "
-            f"({fprice(setup.p0)} -> {fprice(setup.p1)}), "
-            f"{imp['notional']:,.0f} USDT forgalom, flow {imp['imbalance']:+.2f}",
-        ] + extra + [
-            f"kotesaramlas a belepo iranyaba {flow:+.2f} "
-            f"({c['flowWindowSec']:.0f} mp)",
-            f"setup kora {setup.kor(trade.ts):.0f} mp",
-        ]
-        if ctx.get("spreadPct") is not None:
-            reasons.append(f"spread {ctx['spreadPct']:.3f}%, konyv-imbalance "
-                           f"{ctx.get('topImbalance', 0):+.2f}")
-        if t.get("trend"):
-            reasons.append(f"EMA trend {t['trend']}")
-
-        log.info("SETUP OK   %-14s %-18s ar %.8g  lab %.2f%%  visszahuzas %.0f%%  "
-                 "flow %+.2f  kor %.0f mp", trade.symbol, setup_nev, trade.price,
-                 metrics["legPct"] or 0, setup.max_retrace, flow,
-                 setup.kor(trade.ts))
-        events.add(f"{trade.symbol:<14} {setup_nev}")
+        log.info("SIGNAL     %-14s %-5s ar %.8g  impulzus %+.2f%%  visszahuzas %.0f%%  "
+                 "flow %.0f%%  kitores kora %.1f mp", trade.symbol, irany, trade.price,
+                 imp["movePct"], setup.max_retrace, metrics["flowPct"], kitores_kor)
+        events.add(f"{trade.symbol:<14} {irany} belepo")
 
         return make_signal(
-            self.name, self.config_key, trade.symbol, direction, trade.price,
-            trade.ts, reasons=reasons, metrics=metrics, setup=setup_nev,
+            self.name, self.config_key, trade.symbol, irany, trade.price,
+            trade.ts, reasons=[], metrics=metrics, setup=irany,
             history=_thin(self.history[trade.symbol]))
 
     # ------------------------------------------------------------------ statusz
@@ -447,15 +369,14 @@ class ScalpDetector(Detector):
         szamlalo = defaultdict(int)
         for s in self.setups.values():
             szamlalo[s.state] += 1
-        most = self.last_ts
-        szamlalo[COOLDOWN] = sum(1 for t in self.cooldown.values() if t > most)
+        szamlalo[COOLDOWN] = sum(1 for t in self.cooldown.values() if t > self.last_ts)
         return szamlalo
 
     def readiness(self):
         c = self.cfg.detector
         a = self.allapotok()
-        sor = (f"setup: impulzus {a[IMPULSE_DETECTED]}, megerositesre var "
-               f"{a[WAITING_CONFIRMATION]}, cooldown {a[COOLDOWN]} | "
+        sor = (f"setup: impulzus {a[IMPULSE]}, visszahuzas {a[WAIT_PULLBACK]}, "
+               f"kitoresre var {a[WAIT_BREAKOUT]}, cooldown {a[COOLDOWN]} | "
                f"normal kesz: {self.baseline.kesz_parok()}/{len(self.latest)} par")
         legjobb = None
         for symbol, m in self.latest.items():
@@ -474,10 +395,10 @@ class ScalpDetector(Detector):
         """Reszletes allapot -- csak DEBUG szinten."""
         if not self.setups:
             return ["  eppen egy setup sem epul"]
-        out = [f"  {pad('par', 14)}{'allapot':<22}{'lab %':>8}{'visszahuzas':>13}"]
+        out = [f"  {pad('par', 14)}{'allapot':<16}{'lab %':>8}{'visszahuzas':>13}"]
         for symbol, s in list(self.setups.items())[:top]:
             lab = s.leg / s.p0 * 100.0 if s.p0 else 0.0
-            out.append(f"  {pad(symbol, 14)}{s.state:<22}{lab:>7.2f}%"
+            out.append(f"  {pad(symbol, 14)}{s.state:<16}{lab:>7.2f}%"
                        f"{s.max_retrace:>12.0f}%")
         return out
 

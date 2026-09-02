@@ -2,18 +2,18 @@
 
 Valós idejű **scalp belépő-detektor** a **Binance USDⓈ-M Futures** perpetual piacra.
 Egy hirtelen impulzus (ár + agresszív forgalom + kötésáramlás) önmagában NEM jelzés
-— csak egy setup kezdete. A rendszer utána figyeli a szerkezetet, és csak akkor
-jelez, ha az **folytatódik** (sekély visszahúzás, majd újratörés) vagy **megfordul**
-(kifulladás, majd a szint visszavétele). **Telegramra** küld, és opcionálisan
-(alapból **kikapcsolva**) pozíciót is nyit.
+— csak egy setup kezdete. A rendszer megvárja a visszahúzódást, majd a **friss
+kitörést**: a jelzés abban a pillanatban születik, amikor az ár ténylegesen
+keresztezi a szintet. **Telegramra** küld, és opcionálisan (alapból
+**kikapcsolva**) pozíciót is nyit.
 
 ```
 Binance WebSocket  (aggTrade + !bookTicker + depth20, FOLYAMATOSAN)
         ↓
   KERESKEDHETOSÉG      spread / white- és blacklist
         ↓
-  ScalpDetector  →  IMPULZUS  →  SetupTracker  →  folytatás / fordulás
-        ↓                         (a könyv és az EMA MÁR itt számít, cache-ből)
+  ScalpDetector  →  IMPULZUS → PULLBACK → FRISS KITÖRÉS
+        ↓                         (friss könyv-adat nélkül NINCS jelzés)
    SIGNAL
         ↓
   MongoDB → Telegram → [TradingService]
@@ -21,10 +21,11 @@ Binance WebSocket  (aggTrade + !bookTicker + depth20, FOLYAMATOSAN)
   OutcomeTracker  →  MFE/MAE + TP/SL mérés, folyamatosan
 ```
 
-| setup típusa | mit keres |
-|---|---|
-| `LONG_CONTINUATION` / `SHORT_CONTINUATION` | impulzus, sekély visszahúzás, majd a csúcs/mélypont újratörése |
-| `LONG_REVERSAL` / `SHORT_REVERSAL` | impulzus kifullad, a kötésáramlás fordul, a visszahúzás szintje visszavéve |
+**Egyetlen setup**, egyetlen út — nincs reversal ág, nincs EMA a belépő döntésben:
+
+```
+IDLE -> IMPULSE -> WAIT_PULLBACK -> WAIT_BREAKOUT -> SIGNAL -> COOLDOWN -> IDLE
+```
 
 ---
 
@@ -146,10 +147,10 @@ STATUS  60 par | 1,932 tick/60s | konyv-melyseg: 60 par | 0 candidate, 0 jelzes 
 Amint egy impulzus elindul, majd megerősödik, ez látszik:
 
 ```
-IMPULSE_UP SOLUSDT   ar 184.21  +0.62% / 1.9s  normal 0.041%  forgalom 560,000 USDT (28.0x)  flow +0.80
-WAITING    SOLUSDT   pivot 184.40  visszahuzas 22% a labbol
-SETUP OK   SOLUSDT   LONG_CONTINUATION  ar 184.55  lab 0.62%  visszahuzas 22%  flow +0.60  kor 14 mp
-SIGNAL     SOLUSDT   LONG_CONTINUATION  ar 184.55  https://www.binance.com/en/futures/SOLUSDT
+IMPULSE UP    SOLUSDT  ar 184.21  +0.62% / 1.9s  normal 0.041%  forgalom 560,000 USDT (28.0x)  flow +0.80
+WAIT_BREAKOUT SOLUSDT  UP  pivot 184.40  kitores 184.45  visszahuzas 22%
+BREAKOUT      SOLUSDT  UP  ar 184.46  szint 184.45
+SIGNAL        SOLUSDT  LONG  ar 184.46  impulzus +0.62%  visszahuzas 22%  flow 80%  kitores kora 0.0 mp
 ```
 
 Ha nem érkezik adat, `ERROR` szintű sort kapsz helyette. Ugyanez a Mongo `status`
@@ -164,12 +165,12 @@ A gyakoriságot és a tábla méretét a `statusIntervalSec` állítja.
 Ha van mozgás:
 
 ```
-12:05:22 WARN  detector  [PEPEUSDT] TRIGGER LONG | 1s +0.34% | 3s +0.71% | 5s +1.02%
-12:05:22 INFO  orderbook [PEPEUSDT] 20 szint | akadaly LONG iranyban: 0.83% tavolsagra (4.2x atlag)
-12:05:22 INFO  ta        [PEPEUSDT] EMA9 0.0000124 > EMA21 0.0000123 -> bullish (ar van EMA9 felett)
-12:05:22 WARN  signal    [PEPEUSDT] SCORE 78/100 | mozgas 1.1x kuszob, gyorsulo, EMA bullish, wall 0.83%-ra
-12:05:23 INFO  telegram  [PEPEUSDT] ertesites elkuldve
-12:05:23 INFO  trading   [PEPEUSDT] auto trading KI -- nincs megbizas
+12:05:22 INFO  scalp     IMPULSE UP    PEPEUSDT  ar 0.0000124  +0.71% / 2.8s  forgalom 88,000 USDT (12.4x)  flow +0.62
+12:05:31 INFO  scalp     WAIT_BREAKOUT PEPEUSDT  UP  pivot 0.0000125  kitores 0.00001252  visszahuzas 24%
+12:05:44 INFO  scalp     BREAKOUT      PEPEUSDT  UP  ar 0.00001253  szint 0.00001252
+12:05:44 INFO  signal    SIGNAL        PEPEUSDT  LONG  ar 0.00001253  https://www.binance.com/en/futures/PEPEUSDT
+12:05:44 INFO  telegram  [PEPEUSDT] scalp ertesites elkuldve
+12:05:44 INFO  trading   [PEPEUSDT] auto trading KI -- nincs megbizas
 ```
 
 ### Tényleg az új kód fut?
@@ -269,38 +270,30 @@ Teszt hálózat és Mongo nélkül: `python3 tests/test_core.py`
 
 ## Hogyan dönt a rendszer
 
-**Nem fix küszöbbel.** A kérdés nem az, hogy „mozdult-e 0.3%-ot", hanem hogy *szokatlan-e
-ez a mozgás ÉS a mögötte álló pénz ezen a páron*. Futás közben, páronként mérjük, mi a
-normális — ár ÉS forgalom is:
+**Nem fix küszöbbel.** A kérdés nem az, hogy „mozdult-e 0.3%-ot", hanem hogy
+*szokatlan-e ez a mozgás ÉS a mögötte álló pénz ezen a páron*:
 
 ```
-jelzeshez kell:  |mozgas| >= max( minImpulsePct , priceBaseline × impulseBaselineRatio )
-             ES  forgalom >= max( minImpulseNotional , notionalBaseline × notionalRatio )
-             ES  a kotesaramlas egyiranyu (imbalance >= minImpulseImbalance)
+1. IMPULZUS   mozgas >= max(minImpulsePct, arNormal × impulseBaselineRatio)
+              ES forgalom >= max(minImpulseNotional, forgalomNormal × notionalRatio)
+              ES a kotesaramlas egyiranyu
+2. PULLBACK   visszahuzas a lab 15-62%-a kozott -> a pivot rogzul
+3. KITORES    az ar MOST keresztezi a szintet (elozo <= szint < aktualis)
+              max 3 mp regi, es max 25%-ra a szinttol
+4. MEGEROSITES  kotesaramlas a belepo iranyaba + FRISS konyv-adat
 ```
 
-Ez az **impulzus** — de önmagában még nem jelzés, csak egy setup kezdete. A setup
-csak akkor válik jelzéssé, ha a szerkezet (visszahúzás + újratörés, vagy kifulladás +
-a szint visszavétele) és a könyv/EMA is megerősíti:
+Az impulzus önmagában **nem** jelzés. A logban végigkövethető:
 
 ```
-IMPULSE_UP SOLUSDT   ar 184.21  +0.62% / 1.9s  forgalom 560,000 USDT (28.0x)  flow +0.80
-WAITING    SOLUSDT   pivot 184.40  visszahuzas 22% a labbol
-SETUP OK   SOLUSDT   LONG_CONTINUATION  ar 184.55  lab 0.62%  visszahuzas 22%  flow +0.60
-SIGNAL     SOLUSDT   LONG_CONTINUATION  ar 184.55  https://www.binance.com/en/futures/SOLUSDT
+IMPULSE UP    SOLUSDT  ar 184.21  +0.62% / 1.9s  forgalom 560,000 USDT (28.0x)  flow +0.80
+WAIT_BREAKOUT SOLUSDT  UP  pivot 184.40  kitores 184.45  visszahuzas 22%
+BREAKOUT      SOLUSDT  UP  ar 184.46  szint 184.45
+SIGNAL        SOLUSDT  LONG  ar 184.46  impulzus +0.62%  visszahuzas 22%  flow 80%  kitores kora 0.0 mp
 ```
 
-Az elutasítási okoknak gépi nevük van, a `signals` collectionbe kerülnek:
-
-```js
-db.signals.aggregate([{$group:{_id:"$setup", db:{$sum:1}}}, {$sort:{db:-1}}])
-```
-
-Részletes detektor-állapot: `LOG_LEVEL=DEBUG`.
-
-**Minden jelzés azonnal megy Telegramra.** Az eredménymérés (MFE/MAE, TP/SL) a jelzés
-után folyamatosan fut, de semmit nem kapuz — csak utólag mutatja meg, melyik setup
-működik.
+**Friss adat nélkül nincs jelzés.** Ha a bookTicker vagy az order book adat
+régebbi, mint `maxDataAgeSec`, a jelzés elmarad — nincs fail-open.
 
 Minden beállítás leírása: **[docs/PARAMETEREK.md](docs/PARAMETEREK.md)**
 
@@ -333,7 +326,7 @@ WebSocket (`wss://fstream.binance.com`):
 WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/account.position`.
 
 REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
-`/fapi/v1/exchangeInfo`, `/fapi/v1/ticker/24hr` (symbol univerzum), `/fapi/v1/klines` (EMA),
+`/fapi/v1/exchangeInfo`, `/fapi/v1/ticker/24hr` (symbol univerzum),
 `/fapi/v1/leverage`, `/fapi/v1/marginType` (a WS API-ban nincs rájuk metódus).
 
 ## Hibakeresés

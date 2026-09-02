@@ -1,10 +1,9 @@
 # pump-dump-detect
 
-Binance USDⓈ-M Futures perpetual piac valós idejű scalp belépő-detektora. Egy
-hirtelen impulzus (ár + agresszív forgalom + kötésáramlás) után figyeli a
-szerkezetet, és csak akkor jelez, ha az FOLYTATÓDIK vagy MEGFORDUL — nem a puszta
-mozgásra. Telegram értesítést küld, és opcionálisan (alapból **kikapcsolva**)
-pozíciót is nyit.
+Binance USDⓈ-M Futures perpetual piac valós idejű scalp belépő-detektora.
+**Egyetlen setup:** impulzus → pullback → friss kitörés → jelzés. Telegramra küld
+LONG/SHORT belépőt 5–10 perces kézi trade-ekhez, és opcionálisan (alapból
+**kikapcsolva**) pozíciót is nyit.
 
 ## Futtatás
 
@@ -25,8 +24,8 @@ Teszt hálózat nélkül: `python tests/test_core.py`
 ```
 Binance WebSocket (aggTrade + !bookTicker + depth20, folyamatosan)
    → eligibility (spread, white/blacklist)
-   → ScalpDetector: IMPULZUS -> SetupTracker (folytatas/fordulo) -> SIGNAL
-     (a konyv es az EMA MAR a dontesben szamit, cache-bol, varakozas nelkul)
+   → ScalpDetector: IMPULZUS -> PULLBACK -> FRISS KITORES -> SIGNAL
+     (allapotgep symbolonkent, EGY aktiv setup; a konyv frissessege feltetel)
    → MongoDB → Telegram → [TradingService]
    → OutcomeTracker: MFE/MAE + TP/SL meres a jelzes utan
 ```
@@ -41,15 +40,13 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 | `app/main.py` | wiring, logging setup |
 | `app/db.py` | Mongo kapcsolat, collectionök, indexek |
 | `app/config.py` | config seed + betöltés Mongo-ból, 30 mp-enként újratöltve |
-| `app/binance_rest.py` | exchangeInfo / ticker24hr / klines, aláírt REST (leverage, marginType) |
+| `app/binance_rest.py` | exchangeInfo / ticker24hr, aláírt REST (leverage, marginType) |
 | `app/market_data.py` | aggTrade WS-ek 150-es chunkokban, reconnect |
 | `app/detectors/base.py` | közös `Trade` / `Signal` alak, `Detector` interfész |
 | `app/detectors/manager.py` | fan-out a detektorokra, detektoronkénti hibakezelés |
-| `app/detectors/scalp.py` | IMPULZUS-detektálás + `SetupTracker` állapotgép (folytatás/fordulás) |
+| `app/detectors/scalp.py` | impulzus + pullback + friss kitörés állapotgép |
 | `app/detectors/baseline.py` | páronkénti normál (ár ÉS forgalom), `RollingMedian` |
-| `app/bookcache.py` | a partial book depth pillanatképek memóriában, folyamatosan |
-| `app/orderbook.py` | tiszta függvények a fal/likviditás számításához (a `BookCache` hívja) |
-| `app/ta.py` | 1m EMA9/EMA21, háttérben frissítve, cache-ből olvasva |
+| `app/bookcache.py` | depth20 pillanatképek memóriában, **időbélyeggel** (fail-closed) |
 | `app/eligibility.py` | realtime kereskedhetőség (spread, white/blacklist) |
 | `app/fmt.py` | közös formázók a logoláshoz |
 | `app/signals.py` | mentés, Telegram, trade indítás — halózati várakozás NÉLKÜL |
@@ -59,11 +56,10 @@ egy sor a `main.py`-ban. A többi réteget nem kell módosítani.
 
 Paraméterek részletes leírása: `docs/PARAMETEREK.md`
 
-**Ami szándékosan NINCS a rendszerben:** score, kereskedelmi terv, díjszámítás,
-backteszt. A detektor annyit csinál, hogy egy impulzus utáni setupot lát
-megerősödni (folytatás vagy fordulás), és megmondja, miből gondolja. Az
-eredménymérés (MFE/MAE, TP/SL) **van**, de nem kapuz semmit — csak megmutatja
-utólag, melyik setup működik.
+**Ami szándékosan NINCS a rendszerben:** reversal ág, EMA a belépő döntésben,
+fal- és könyv-imbalance kapu, score, kereskedelmi terv, backteszt. Egy setup,
+amit mérni lehet. Az eredménymérés (MFE/MAE, TP/SL, 1/3/5/10 perces ár) **van**,
+de nem kapuz semmit.
 
 ## Konfiguráció
 
@@ -89,11 +85,13 @@ a configot, tehát a DB-be írt érték elveszne.
 "autoTradingEnabled": True,     # TRADING_DEFAULTS, elobb testneten!
 ```
 
+**FAIL-CLOSED:** elavult vagy hiányzó könyv-adattal (`maxDataAgeSec`) nincs jelzés.
+
 ## Collectionök
 
 - `config` — a fenti négy dokumentum
-- `signals` — minden jelzés (setup típusa, indoklás, mért számok, Telegram és trade
-  státusz, plusz az `outcome` mezőben a folyamatos MFE/MAE + TP/SL mérés)
+- `signals` — minden jelzés (irány, mért számok, Telegram és trade státusz, plusz
+  az `outcome` mezőben MFE/MAE + 1/3/5/10 perces ár + TP/SL first-touch)
 - `market_snapshots` — a setup körüli nyers adat (ártörténet, order book), `signalId`-vel visszaköthető
 - `orders` — a TradingService eredményei és hibái
 - `status` — élő állapot (uptime, tick/s, WS kapcsolatok, symbol lista cache)
@@ -114,7 +112,6 @@ WebSocket API (`wss://ws-fapi.binance.com/ws-fapi/v1`): `order.place`, `v2/accou
 
 REST (`https://fapi.binance.com`) — csak ahol nincs WS megfelelő:
 - `/fapi/v1/exchangeInfo`, `/fapi/v1/ticker/24hr` — symbol univerzum + forgalmi szűrés
-- `/fapi/v1/klines` — EMA
 - `/fapi/v1/leverage`, `/fapi/v1/marginType` — **a WS API-ban nincs rájuk metódus**
 
 Testnet: `FUTURES_TESTNET=1` — REST és WS API a `testnet.binancefuture.com`-ra,

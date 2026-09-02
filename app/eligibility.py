@@ -6,6 +6,7 @@ Az adat egyetlen  !bookTicker  feliratkozasbol jon, ami az EGESZ piac legjobb
 bid/ask arat es mennyiseget adja (a hivatalos spec szerinti b / B / a / A mezok).
 Ez egy feliratkozas az osszes parra, tehat nincs erdemi tobbletterheles.
 """
+import time
 import logging
 from collections import defaultdict
 
@@ -17,6 +18,7 @@ OKOK = {
     "blacklisted":     "kezzel kizarva",
     "not_whitelisted": "nincs a figyelt listan",
     "no_book_data":    "meg nem lattuk a konyvet",
+    "stale_book_data": "elavult a konyv-adat",
     "spread_too_wide": "tul szeles a spread",
 }
 
@@ -28,7 +30,7 @@ def szoveg(ok):
 class Eligibility:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.book = {}              # symbol -> (bid, bidQty, ask, askQty)
+        self.book = {}              # symbol -> (ts, bid, bidQty, ask, askQty)
         self.book_messages = 0      # kaptunk-e egyaltalan konyv-adatot
         self.rejected = {}          # symbol -> ok (a percenkenti osszesitohoz)
 
@@ -39,7 +41,7 @@ class Eligibility:
         try:
             bid, bid_qty = float(data["b"]), float(data["B"])
             ask, ask_qty = float(data["a"]), float(data["A"])
-            self.book[data["s"]] = (bid, bid_qty, ask, ask_qty)
+            self.book[data["s"]] = (time.time(), bid, bid_qty, ask, ask_qty)
             self.book_messages += 1
         except (KeyError, TypeError, ValueError):
             pass
@@ -47,11 +49,11 @@ class Eligibility:
     # ---------------------------------------------------------------- dontes
 
     def metrics(self, symbol):
-        """A parra jellemzo pillanatnyi spread."""
+        """A parra jellemzo pillanatnyi spread. Elavult adatnal ures."""
         b = self.book.get(symbol)
         m = {}
-        if b:
-            bid, _, ask, _ = b
+        if b and time.time() - b[0] <= self.cfg.detector["maxDataAgeSec"]:
+            _, bid, _, ask, _ = b
             kozep = (bid + ask) / 2
             if kozep > 0:
                 m["spreadPct"] = round((ask - bid) / kozep * 100, 5)
@@ -68,13 +70,11 @@ class Eligibility:
         if feher and symbol not in feher:
             return self._nem(symbol, "not_whitelisted", m)
 
+        # FAIL-CLOSED: friss konyv-adat nelkul NINCS jelzes. Korabban atengedtunk,
+        # ha semmilyen adat nem jott -- ez orakon at rossz jelzeseket adott.
         if "spreadPct" not in m:
-            # Ha SEMMILYEN konyv-adat nem erkezik, az rendszerszintu baj (rossz WS
-            # utvonal), nem a paron mulik. Ilyenkor nem nemitjuk el az egesz
-            # rendszert: atengedunk, es a STATUS sor hangosan szol rola.
-            if self.book_messages == 0:
-                return True, None, m
-            return self._nem(symbol, "no_book_data", m)
+            return self._nem(symbol, "stale_book_data" if symbol in self.book
+                             else "no_book_data", m)
 
         if c["maxSpreadPct"] and m["spreadPct"] > c["maxSpreadPct"]:
             return self._nem(symbol, "spread_too_wide", m)
