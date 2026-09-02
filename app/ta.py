@@ -31,7 +31,11 @@ def ema(values, period):
 
 async def refresh(symbol, cfg):
     fast_n, slow_n = cfg["emaFast"], cfg["emaSlow"]
-    closes = await binance_rest.get_closes(symbol, cfg["emaInterval"], slow_n * 5)
+    # A klines sulya a limit-tol fugg: 100-ig 1, 101-500 kozott 2. Az EMA-hoz
+    # boven eleg 100 gyertya (EMA21-nel ez ~5x a periodus), viszont igy feleannyi
+    # sulyt hasznalunk -- elesben 429-et kaptunk a 105-os limittel.
+    limit = min(100, slow_n * 5)
+    closes = await binance_rest.get_closes(symbol, cfg["emaInterval"], limit)
     if len(closes) < slow_n:
         return None
     fast, slow = ema(closes, fast_n), ema(closes, slow_n)

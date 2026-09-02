@@ -993,26 +993,64 @@ def test_telegram_heartbeat_renders():
     assert "Meg nincs lemert jelzes" not in szoveg
 
 
-def test_telegram_format_signal_uses_setup_headers():
+def test_telegram_signal_is_a_single_readable_story():
+    """A jelzes EGYSZER mondja el, mi tortent, szakzsargon nelkul.
+
+    Korabban ket blokk (KONTEXTUS + MIERT) ismetelte ugyanazt "lab", "flow",
+    "pivot" szavakkal -- olvashatatlan volt.
+    """
+    from app.telegram import format_signal
+    import datetime as _dt
+
+    sig = {
+        "timestamp": _dt.datetime(2026, 9, 1, 12, 0, tzinfo=_dt.timezone.utc),
+        "detector": "scalp", "setup": "LONG_CONTINUATION", "symbol": "XUSDT",
+        "direction": "LONG", "price": 100.5, "url": "https://example.test/XUSDT",
+        "quoteVolume24h": 500_000_000, "reasons": [],
+        "metrics": {"impulsePct": 1.10, "impulseSec": 3.0, "impulseFrom": 99.0,
+                    "impulseTo": 100.1, "impulseNotional": 60_000,
+                    "notionalRatio": 7.0, "legPct": 1.10, "pivot": 100.1,
+                    "maxRetracePct": 40.0, "setupAgeSec": 22.0,
+                    "confirmImbalance": 0.33, "spreadPct": 0.01,
+                    "bookImbalance": 0.1, "trend": "bullish"},
+        "trade": {"executed": False},
+    }
+    szoveg = format_signal(sig)
+    assert "LONG belepo" in szoveg and "az emelkedes folytatodik" in szoveg
+    assert "MI TORTENT" in szoveg and "PIAC MOST" in szoveg
+    assert "KONTEXTUS" not in szoveg, "nincs ket blokk ugyanarrol"
+    for zsargon in ("lab ", "flow ", "pivot ", "imbalance "):
+        assert zsargon not in szoveg, f"szakzsargon maradt: {zsargon}"
+    assert "emelkedett" in szoveg and "7x annyi" in szoveg
+    assert "ujra attorte" in szoveg, "a belepo jel oka"
+
+
+def test_telegram_reversal_describes_the_impulse_direction_not_the_signal():
+    """FORDULONAL az impulzus iranya ELLENTETES a jelzesevel: lefele impulzus
+    utan jon a LONG belepo. Korabban 'esett' helyett 'emelkedett'-et irt."""
     from app.telegram import format_signal
     import datetime as _dt
 
     sig = {
         "timestamp": _dt.datetime(2026, 9, 1, 12, 0, tzinfo=_dt.timezone.utc),
         "detector": "scalp", "setup": "LONG_REVERSAL", "symbol": "XUSDT",
-        "direction": "LONG", "price": 100.0, "url": "https://example.test/XUSDT",
-        "quoteVolume24h": 500_000_000,
-        "reasons": ["impulzus -0.40% / 3.0s", "a szint reclaimelve"],
-        "metrics": {"legPct": 0.40, "maxRetracePct": 30.0, "confirmImbalance": 0.5,
-                   "bookImbalance": 0.1, "spreadPct": 0.01, "trend": "bearish",
-                   "setupAgeSec": 22.0},
+        "direction": "LONG", "price": 99.5, "url": "https://example.test/XUSDT",
+        "quoteVolume24h": 500_000_000, "reasons": [],
+        "metrics": {"impulsePct": -1.61, "impulseSec": 2.0, "impulseFrom": 101.0,
+                    "impulseTo": 99.4, "impulseNotional": 250_000,
+                    "notionalRatio": 28.0, "counter": 99.45,
+                    "exhaustionSec": 11.0, "setupAgeSec": 16.0,
+                    "confirmImbalance": 0.39, "spreadPct": 0.012,
+                    "bookImbalance": -0.05, "trend": "bearish"},
         "trade": {"executed": False},
     }
     szoveg = format_signal(sig)
-    assert "FORDULO FELFELE" in szoveg
-    assert "LONG" in szoveg
-    assert "impulzus -0.40%" in szoveg
-    assert "setup kora" in szoveg
+    assert "1.61%-ot esett" in szoveg, "az IMPULZUS esett, nem emelkedett"
+    assert "agressziv eladas hajtotta" in szoveg, "az impulzust eladas hajtotta"
+    assert "kifulladt" in szoveg and "visszavette" in szoveg
+    # de a BELEPO iranya LONG, es a belepo pillanataban a vetel van tulsulyban
+    assert "LONG belepo" in szoveg
+    assert "vetel van tulsulyban" in szoveg
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import html
 import logging
 
 from .links import binance_url
+from .fmt import price as fprice
 
 import aiohttp
 
@@ -10,22 +11,18 @@ log = logging.getLogger("telegram")
 
 API = "https://api.telegram.org/bot{token}/sendMessage"
 
-# detektor + irany -> (emoji, cim, mi tortent, mit jelent).
+# setup -> (emoji, cim, egysoros magyarazat).
 # A "SHORT REVERSAL" onmagaban ketertelmu volt: olvashato ugy is, hogy egy short
-# fordul meg. Ezert kiirjuk, mi tortent es milyen poziciot jelent.
+# fordul meg. Ezert emberi nyelven irjuk ki, mit jelent.
 HEADERS = {
     "LONG_CONTINUATION": (
-        "🚀", "FOLYTATAS FELFELE", "emelkedes, sekely visszahuzas, ujratores",
-        "LONG — veteli pozicio"),
+        "🚀", "LONG belepo", "az emelkedes folytatodik"),
     "SHORT_CONTINUATION": (
-        "🔻", "FOLYTATAS LEFELE", "eses, sekely visszapattanas, ujratores",
-        "SHORT — eladasi pozicio"),
+        "🔻", "SHORT belepo", "az eses folytatodik"),
     "LONG_REVERSAL": (
-        "🟢", "FORDULO FELFELE", "az eses kifulladt, a szint visszaveve",
-        "LONG — veteli pozicio"),
+        "🟢", "LONG belepo", "az eses kifulladt, az ar visszafordult"),
     "SHORT_REVERSAL": (
-        "🔴", "FORDULO LEFELE", "az emelkedes kifulladt, a szint letorve",
-        "SHORT — eladasi pozicio"),
+        "🔴", "SHORT belepo", "az emelkedes kifulladt, az ar lefordult"),
 }
 
 
@@ -73,49 +70,98 @@ class TelegramNotifier:
 
 
 def format_signal(sig, app_link_template=""):
-    """Kozos boritek + a jelzes indoklas-listaja.
+    """A jelzes emberi nyelven: EGYSZER elmondva, szakzsargon nelkul.
 
-    Nincs score: helyette az, hogy MIERT lett jelzes, es milyen mert szamokkal.
+    Korabban ket blokk (KONTEXTUS + MIERT) mondta el ugyanazt, "lab", "flow",
+    "pivot" szavakkal -- olvashatatlan volt. Most egy tortenet + a piaci allapot.
     """
     setup = sig.get("setup") or sig.get("detector", "")
     direction = sig["direction"]
-    emoji, cim, tortent, jelent = HEADERS.get(
-        setup, ("⚡", setup, "", f"{direction} pozicio"))
+    emoji, cim, magyarazat = HEADERS.get(setup, ("⚡", f"{direction} belepo", ""))
     url = sig.get("url") or binance_url(sig["symbol"])
+    m = sig.get("metrics") or {}
+    fel = direction == "LONG"
 
     fej = (f"{emoji} <b>{cim}</b>  ·  "
            f"<a href=\"{esc(url)}\"><b>{esc(sig['symbol'])}</b></a>\n"
-           f"{esc(tortent)}\n"
-           f"➜ <b>{esc(jelent)}</b>\n"
-           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC  ·  {esc(setup)}")
+           f"{esc(magyarazat)}\n"
+           f"{sig['timestamp'].strftime('%H:%M:%S')} UTC")
 
-    alap = [("ar", f"{sig['price']:.8g}")]
+    alap = [("belepo ar", fprice(sig["price"]))]
     if sig.get("quoteVolume24h"):
         alap.append(("24h forgalom", f"{sig['quoteVolume24h'] / 1e6:,.0f}M USDT"))
 
-    m = sig.get("metrics") or {}
-    kontextus = []
-    if m.get("legPct") is not None:
-        kontextus.append(("impulzus", f"{m.get('impulsePct', 0):+.2f}%  "
-                                      f"(lab {m['legPct']:.2f}%)"))
-    if m.get("maxRetracePct") is not None:
-        kontextus.append(("visszahuzas", f"a lab {m['maxRetracePct']:.0f}%-a"))
-    if m.get("confirmImbalance") is not None:
-        kontextus.append(("kotesaramlas", f"{m['confirmImbalance']:+.2f}"))
-    if m.get("bookImbalance") is not None:
-        kontextus.append(("konyv-imbalance", f"{m['bookImbalance']:+.2f}"))
-    if m.get("spreadPct") is not None:
-        kontextus.append(("spread", f"{m['spreadPct']:.3f}%"))
-    if m.get("trend"):
-        kontextus.append(("EMA trend", m["trend"]))
-    if m.get("setupAgeSec") is not None:
-        kontextus.append(("setup kora", f"{m['setupAgeSec']:.0f} mp"))
+    # ---- MI TORTENT: szamozott tortenet, minden lepes egyszer ----
+    #
+    # FONTOS: az impulzus iranya NEM azonos a jelzes iranyaval. Egy fordulonal
+    # eppen ellentetes: lefele impulzus utan jon a LONG belepo.
+    tortenet = []
+    if m.get("impulsePct") is not None:
+        imp_fel = m["impulsePct"] > 0
+        sor = (f"Az ar {m['impulseSec']:.0f} masodperc alatt "
+               f"{abs(m['impulsePct']):.2f}%-ot "
+               f"{'emelkedett' if imp_fel else 'esett'}"
+               if m.get("impulseSec") else
+               f"Az ar {abs(m['impulsePct']):.2f}%-ot "
+               f"{'emelkedett' if imp_fel else 'esett'}")
+        if m.get("impulseFrom") and m.get("impulseTo"):
+            sor += f" ({fprice(m['impulseFrom'])} -> {fprice(m['impulseTo'])})"
+        tortenet.append(sor)
+        if m.get("impulseNotional"):
+            tortenet.append(
+                f"Ezt {m['impulseNotional']:,.0f} USDT agressziv "
+                f"{'vetel' if imp_fel else 'eladas'} hajtotta -- "
+                f"{m.get('notionalRatio', 0):.0f}x annyi, mint amennyi ezen a "
+                f"paron szokasos")
 
-    blokkok = [("", alap), ("KONTEXTUS", kontextus)]
+    if setup.endswith("CONTINUATION"):
+        if m.get("maxRetracePct") is not None and m.get("pivot") is not None:
+            tortenet.append(
+                f"Ezutan visszahuzodott a mozgas {m['maxRetracePct']:.0f}%-aig, "
+                f"majd ujra attorte a {fprice(m['pivot'])} "
+                f"{'csucsot' if fel else 'melypontot'} -- ez a belepo jel")
+    else:
+        if m.get("exhaustionSec") is not None:
+            tortenet.append(
+                f"A mozgas kifulladt: {m['exhaustionSec']:.0f} masodpercig nem "
+                f"szuletett uj {'melypont' if fel else 'csucs'}")
+        if m.get("counter") is not None:
+            tortenet.append(
+                f"Az ar {'visszavette' if fel else 'letorte'} a "
+                f"{fprice(m['counter'])} szintet, es meg is tartotta -- "
+                f"ez a belepo jel")
+
+    if m.get("confirmImbalance") is not None:
+        eros = "vetel" if m["confirmImbalance"] > 0 else "eladas"
+        tortenet.append(
+            f"A belepo pillanataban a {eros} van tulsulyban "
+            f"({abs(m['confirmImbalance']) * 100:.0f}%-os tobblet)")
+
+    # ---- PIAC MOST: allapot, magyarazattal ----
+    piac = []
+    if m.get("spreadPct") is not None:
+        piac.append(("spread", f"{m['spreadPct']:.3f}%   "
+                               f"({'szuk' if m['spreadPct'] < 0.05 else 'tagabb'})"))
+    if m.get("bookImbalance") is not None:
+        oldal = "vetel" if m["bookImbalance"] > 0 else "eladas"
+        piac.append(("order book", f"{m['bookImbalance']:+.2f}   "
+                                   f"(tobb {oldal} all a konyvben)"))
+    if m.get("trend"):
+        egyezik = m["trend"] == ("bullish" if fel else "bearish")
+        piac.append(("1 perces trend", f"{m['trend']}   "
+                                       f"({'egyezik' if egyezik else 'szembe megy'})"))
+    if m.get("setupAgeSec") is not None:
+        piac.append(("setup kora", f"{m['setupAgeSec']:.0f} masodperc"))
+
+    blokkok = [("", alap)]
+    if piac:
+        blokkok.append(("PIAC MOST", piac))
     torzs = "\n\n".join(_blokk(nev, sorok) for nev, sorok in blokkok if sorok)
 
-    indok = "\n".join(f"  • {esc(x)}" for x in sig.get("reasons", []))
-    veg = f"\n\n<b>MIERT</b>\n{indok}" if indok else ""
+    veg = ""
+    if tortenet:
+        sorok = "\n".join(f"  {i}. {esc(x)}" for i, x in enumerate(tortenet, 1))
+        veg = f"\n\n<b>MI TORTENT</b>\n{sorok}"
     if sig.get("trade", {}).get("executed"):
         veg += f"\n\n<b>POZICIO NYITVA</b> (order {sig['trade']['orderId']})"
 

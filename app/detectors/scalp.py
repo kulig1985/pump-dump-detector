@@ -394,13 +394,21 @@ class ScalpDetector(Detector):
         metrics = {
             "setup": setup_nev,
             "impulsePct": imp["movePct"],
+            "impulseSec": imp["spanSec"],
+            "impulseFrom": setup.p0,
+            "impulseTo": setup.p1,
             "impulseNotional": imp["notional"],
             "impulseImbalance": imp["imbalance"],
             "impulseBaseline": imp["baseline"],
+            # hanyszorosa a par szokasos ablak-forgalmanak -- ez mondja meg, hogy
+            # valodi penz hajtotta-e, vagy csak vekony konyvon csuszott at az ar
+            "notionalRatio": round(imp["notional"] / imp["notionalBaseline"], 1)
+                             if imp.get("notionalBaseline") else None,
             "legPct": round(setup.leg / setup.p0 * 100.0, 4) if setup.p0 else None,
             "pivot": setup.pivot,
             "counter": setup.counter,
             "maxRetracePct": round(setup.max_retrace, 1),
+            "exhaustionSec": round(trade.ts - setup.pivot_ts, 1),
             "setupAgeSec": round(setup.kor(trade.ts), 1),
             "confirmImbalance": round(flow, 4),
             "spreadPct": ctx.get("spreadPct"),

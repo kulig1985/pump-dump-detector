@@ -318,6 +318,35 @@ SOLUSDT     09-01 04:02  belepo 184.21        MFE  +0.60%  MAE  -0.20%  -> nyero
 - **`UTOLSO ... JELZES`** — setup-típusonként a legutóbbi jelzések, a tényleges
   belépő árral és a mért MFE/MAE-vel.
 
+## Így néz ki egy jelzés
+
+```
+🚀 LONG belepo  ·  HEMIUSDT
+az emelkedes folytatodik
+04:14:37 UTC
+
+  belepo ar      0.01318400
+  24h forgalom   179M USDT
+
+PIAC MOST
+  spread           0.030%   (szuk)
+  order book       +0.13   (tobb vetel all a konyvben)
+  1 perces trend   bullish   (egyezik)
+  setup kora       13 masodperc
+
+MI TORTENT
+  1. Az ar 3 masodperc alatt 1.12%-ot emelkedett (0.01302200 -> 0.01317600)
+  2. Ezt 55,691 USDT agressziv vetel hajtotta -- 7x annyi, mint amennyi
+     ezen a paron szokasos
+  3. Ezutan visszahuzodott a mozgas 44%-aig, majd ujra attorte a
+     0.01317600 csucsot -- ez a belepo jel
+  4. A belepo pillanataban a vetel van tulsulyban (33%-os tobblet)
+```
+
+**Fordulónál az impulzus iránya ellentétes a jelzésével** — egy lefelé irányuló
+impulzus után jön a LONG belépő. Az üzenet ezt külön jelzi: az „esett" az
+impulzusra vonatkozik, a „vétel van túlsúlyban" pedig a belépő pillanatára.
+
 ## Elutasítási okok
 
 | ok | mit jelent |
