@@ -401,6 +401,155 @@ def test_websocket_request_id_is_an_unsigned_integer():
     assert forras.count('"id": next_request_id()') >= 2
 
 
+def test_breakout_invalidated_when_price_falls_back_long():
+    """LONG: ha az ar a megerositesre varva visszaesik a szint ALA, a kitores
+    ervenyet veszti. Csak egy UJ, valodi cross indithat uj ablakot."""
+    det = uj_detektor()
+    kesz_baseline(det, "BLUSDT")
+    t = tape(retrace_frac=0.30)
+    futtat(det, "BLUSDT", t[:60])                     # impulzus + pullback
+    s = det.setups["BLUSDT"]
+    assert s.state == "WAIT_BREAKOUT"
+    szint = s.breakout_level
+
+    ora = 2010.5                # kozvetlenul a tape utan: a setup meg nem jart le
+    def kot(ar, buy=True, dt=0.2):
+        nonlocal ora
+        ora += dt
+        return det.on_trade(Trade("BLUSDT", ar, 8_000 / ar, ora, buy))
+
+    kot(szint - 0.02)                                  # a szint alatt
+    assert kot(szint + 0.01) is None, "a cross pillanataban meg nincs jelzes"
+    assert s.breakout_ts is not None, "a kitores elindult"
+
+    kot(szint - 0.01, buy=False)                       # VISSZAESIK a szint ala
+    assert s.breakout_ts is None, "a kitores ervenyet vesztette"
+
+    # innentol a szint alatt maradva SOSEM lehet jelzes, akarmennyi veteli kotes jon
+    assert [j for _ in range(30) if (j := kot(szint - 0.005))] == [], \
+        "a szint alatt nincs LONG jelzes"
+    assert s.breakout_ts is None
+    assert "BLUSDT" in det.setups, "az ervenytelenites nem oli meg a setupot"
+
+
+def test_breakout_invalidated_when_price_comes_back_short():
+    """SHORT: ha az ar visszamegy a szint FOLE, a kitores ervenyet veszti."""
+    det = uj_detektor()
+    kesz_baseline(det, "BSUSDT")
+    t = tape(up=False, retrace_frac=0.30)
+    futtat(det, "BSUSDT", t[:60])
+    s = det.setups["BSUSDT"]
+    assert s.state == "WAIT_BREAKOUT" and s.up is False
+    szint = s.breakout_level
+
+    ora = 2010.5
+    def kot(ar, buy=False, dt=0.2):
+        nonlocal ora
+        ora += dt
+        return det.on_trade(Trade("BSUSDT", ar, 8_000 / ar, ora, buy))
+
+    kot(szint + 0.02)                                  # a szint folott
+    assert kot(szint - 0.01) is None
+    assert s.breakout_ts is not None, "a kitores elindult"
+
+    kot(szint + 0.01, buy=True)                        # VISSZAMEGY a szint fole
+    assert s.breakout_ts is None, "a kitores ervenyet vesztette"
+
+    assert [j for _ in range(30) if (j := kot(szint + 0.005))] == [], \
+        "a szint folott nincs SHORT jelzes"
+
+
+def test_a_new_cross_can_still_signal_after_invalidation():
+    """Az ervenytelenites nem oli meg a setupot: egy UJ valodi cross jelezhet."""
+    det = uj_detektor()
+    kesz_baseline(det, "NCUSDT")
+    t = tape(retrace_frac=0.30)
+    futtat(det, "NCUSDT", t[:60])
+    s = det.setups["NCUSDT"]
+    szint = s.breakout_level
+
+    ora = 2010.5
+    def kot(ar, buy=True, dt=0.15):
+        nonlocal ora
+        ora += dt
+        return det.on_trade(Trade("NCUSDT", ar, 8_000 / ar, ora, buy))
+
+    kot(szint - 0.02)
+    kot(szint + 0.01)                                  # 1. cross
+    kot(szint - 0.01, buy=False)                       # ervenytelenites
+    assert s.breakout_ts is None
+    assert "NCUSDT" in det.setups, "a setup EL tovabb"
+
+    jelek = [j for _ in range(20) if (j := kot(szint + 0.004))]   # 2. cross
+    assert len(jelek) == 1, f"az uj cross utan jon a jelzes: {jelek}"
+
+
+def test_short_reconnect_keeps_a_still_fresh_baseline():
+    """Rovid gap utan ne kelljen feleslegesen ujra 5 percet varni."""
+    b = Baseline(cfg_obj)
+    perc = CFG["baselineMinutes"]
+    for i in range(perc * 60):
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    kesz = 1000.0 + perc * 60 - 1
+    assert b.value("XUSDT", kesz) == 0.02
+
+    # 20 masodperces szakadas: a mintak tulnyomo resze meg friss
+    assert b.value("XUSDT", kesz + 20) == 0.02, "rovid gap utan meg hasznalhato"
+
+
+def test_long_gap_makes_the_baseline_stale():
+    """Hosszabb adatkimaradas utan a regi baseline NEM hasznalhato.
+
+    Korabban az add() csak uj minta erkezesekor vagott, tehat a value() egy
+    orakkal korabbi ablak medianjat adta vissza.
+    """
+    b = Baseline(cfg_obj)
+    perc = CFG["baselineMinutes"]
+    for i in range(perc * 60):
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    kesz = 1000.0 + perc * 60 - 1
+    assert b.value("XUSDT", kesz) == 0.02
+
+    # fel ablaknyi kimaradas: a maradek mar nem fedi le a szukseges idoszakot
+    assert b.value("XUSDT", kesz + perc * 60 * 0.5) is None
+    # teljes ablaknyi kimaradas: minden minta kiesett
+    assert b.value("XUSDT", kesz + perc * 60 + 1) is None
+
+
+def test_baseline_rebuilds_after_a_long_gap():
+    """Uj adatokkal ismet felepul -- a hosszu gap nem "meregezi meg" veglegesen."""
+    b = Baseline(cfg_obj)
+    perc = CFG["baselineMinutes"]
+    for i in range(perc * 60):
+        b.add("XUSDT", 1000.0 + i, 0.02)
+    gap_utan = 1000.0 + perc * 60 + 3600         # egy oras kimaradas
+    assert b.value("XUSDT", gap_utan) is None
+
+    for i in range(perc * 60):
+        b.add("XUSDT", gap_utan + i, 0.05)
+    most = gap_utan + perc * 60 - 1
+    assert b.value("XUSDT", most) == 0.05, "az UJ adatokbol epult fel"
+
+
+def test_status_readiness_uses_the_exchange_clock():
+    """A STATUS "normal kesz" szamlalojanak is az aktualis idot kell nezni.
+
+    Itt nincs add() hivas, ami trimmelne -- ha a value() nem vag az aktualis
+    idohoz, a sor orakkal kesobb is "keszet" mutatna.
+    """
+    friss = uj_detektor()
+    kesz_baseline(friss, "RDUSDT")
+    friss.last_ts = 2000.0
+    assert "normal kesz: 1/" in friss.readiness(), "frissen kesz"
+
+    # kulon detektor: a value() trimmelese mellekhatas, egy korabbi hivas
+    # elfedne a kulonbseget
+    elavult = uj_detektor()
+    kesz_baseline(elavult, "RDUSDT")
+    elavult.last_ts = 2000.0 + 3600              # egy oras kimaradas
+    assert "normal kesz: 0/" in elavult.readiness(), "elavult normal nem kesz"
+
+
 # ---------------------------------------------------------------- adat-frissesseg
 
 def test_no_signal_without_fresh_order_book():

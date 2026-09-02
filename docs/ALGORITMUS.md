@@ -94,6 +94,9 @@ SHORT:  elozo_ar >= szint  ES  aktualis_ar < szint
 Nem elég, hogy az ár már korábban áttörte és még fölötte áll. A keresztezés
 időpontja `breakoutTimestamp`-ként rögzül. Utána:
 
+- ha az ár **visszamegy a szint rossz oldalára** (LONG: `ár <= szint`), a kitörés
+  **érvényét veszti** (`breakout_ts = None`) — csak egy **új, valódi cross**
+  indíthat új megerősítési ablakot. A setup közben életben marad.
 - ha `maxBreakoutAgeSec`-en belül nincs megerősítés → a setup eldobva
 - ha az ár `maxEntryExtensionPct`-nél messzebb jár a szinttől → nincs belépő
 
@@ -119,8 +122,14 @@ ténylegesen kiküldött jelzés után indul.
 
 Ha az `aggTrade` kapcsolat megszakad, az érintett párok setupja és `prev_price`
 értéke törlődik (`ScalpDetector.reset`). Reconnect után az első kötés különben egy
-régen megtörtént kitörés „friss keresztezésének" látszana. A baseline megmarad —
-az a pár hosszú távú normálja, nem setup-állapot.
+régen megtörtént kitörés „friss keresztezésének" látszana.
+
+**A baseline NEM törlődik** — az a pár hosszú távú normálja, nem setup-állapot.
+Helyette a `RollingMedian` mindig az **aktuális időhöz** viszonyít: a `value()` is
+levágja a `now - baselineMinutes`-nél régebbi mintákat. Így egy rövid reconnect
+után a még friss minták használhatók maradnak (nem kell újra 5 percet várni), egy
+hosszabb kimaradás után viszont a régi baseline elavul, és nincs jelzés, amíg
+újra fel nem épül.
 
 ## Eredménymérés (`app/outcome.py`)
 

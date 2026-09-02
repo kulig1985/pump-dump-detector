@@ -151,8 +151,8 @@ class ScalpDetector(Detector):
         self.latest[trade.symbol] = m
         if m is not None:
             # eloszor hasonlitunk, csak utana frissitjuk a normalt
-            m["baseline"] = self.baseline.value(trade.symbol)
-            m["notionalBaseline"] = self.notional_baseline.value(trade.symbol)
+            m["baseline"] = self.baseline.value(trade.symbol, trade.ts)
+            m["notionalBaseline"] = self.notional_baseline.value(trade.symbol, trade.ts)
             self.baseline.add(trade.symbol, trade.ts, abs(m["movePct"]))
             self.notional_baseline.add(trade.symbol, trade.ts, m["notional"])
 
@@ -243,19 +243,30 @@ class ScalpDetector(Detector):
         if setup.max_retrace > c["maxPullbackPct"]:
             return self._eldob(trade, "a visszahuzas tul melyre ment")
 
-        if setup.breakout_ts is None:
+        szint = setup.breakout_level
+        if setup.breakout_ts is not None:
+            # A kitores mar megtortent, de meg megerositesre var. Ha kozben az ar
+            # visszament a szint ROSSZ OLDALARA, ez a kitores mar nem ervenyes --
+            # kulonben LONG jelzest adnank olyan aron, ami mar a szint ALATT van.
+            # Csak egy UJ, valodi cross indithat uj megerositesi ablakot.
+            if (ar <= szint) if setup.up else (ar >= szint):
+                setup.breakout_ts = None
+                log.info("KITORES VISSZA %-14s %-4s ar %.8g  vissza a %.8g szint "
+                         "rossz oldalara", trade.symbol,
+                         "UP" if setup.up else "DOWN", ar, szint)
+                return None
+            if trade.ts - setup.breakout_ts > c["maxBreakoutAgeSec"]:
+                return self._eldob(trade, "a kitores megerosites nelkul elavult")
+        else:
             # FRISS kitores: MOST kell keresztezni a szintet, nem eleg folotte allni
             if elozo is None:
                 return None
-            szint = setup.breakout_level
             keresztezte = (elozo <= szint < ar) if setup.up else (elozo >= szint > ar)
             if not keresztezte:
                 return None
             setup.breakout_ts = trade.ts
             log.info("BREAKOUT   %-14s %-4s ar %.8g  szint %.8g",
                      trade.symbol, "UP" if setup.up else "DOWN", ar, szint)
-        elif trade.ts - setup.breakout_ts > c["maxBreakoutAgeSec"]:
-            return self._eldob(trade, "a kitores megerosites nelkul elavult")
 
         # az ar mar tul messze jart a kitoresi szinttol -> nincs ertelme beszallni
         if setup.extension_pct(ar) > c["maxEntryExtensionPct"]:
@@ -423,7 +434,8 @@ class ScalpDetector(Detector):
         a = self.allapotok()
         sor = (f"setup: impulzus {a[IMPULSE]}, visszahuzas {a[WAIT_PULLBACK]}, "
                f"kitoresre var {a[WAIT_BREAKOUT]}, cooldown {a[COOLDOWN]} | "
-               f"normal kesz: {self.baseline.kesz_parok()}/{len(self.latest)} par")
+               f"normal kesz: {self.baseline.kesz_parok(self.last_ts)}/"
+               f"{len(self.latest)} par")
         legjobb = None
         for symbol, m in self.latest.items():
             if not m or m.get("baseline") is None:
